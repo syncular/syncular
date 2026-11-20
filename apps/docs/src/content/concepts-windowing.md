@@ -71,6 +71,19 @@ Cleanup yields between committed chunks. A durable pending-eviction record lets 
 
 The window registry also answers whether a local query is complete. A query is answerable in full only if every scope value it touches is windowed in and bootstrapped. Registration alone is not completeness: between `setWindow` and the unit's bootstrap, the unit is pending, and the oracle says so instead of letting the app render a false empty state on a list switch. A unit with zero server rows becomes complete once its bootstrap round finishes. A query that touches a windowed-out or pending unit is partial, and the API reports that state explicitly. The engine never reports a partial replica as complete.
 
+### Revoked values
+
+When the server revokes a windowed-in value's unit (`sync.scope_revoked`), the value stays in `units` and `pending` and also appears in `revoked`. Query coverage lists it under `revoked`, and a reactive query over it publishes the `error` phase with code `sync.scope_revoked` and the revoked base/unit pairs in `error.details.units`, keeping its last rows.
+
+`setWindow` re-arms a revoked value's unit, so the next round asks the server again. It does so once per claim: after the server refuses a unit that `setWindow` registered or re-armed, repeating the same `setWindow` sends nothing until one of these happens, and then the next `setWindow` naming the value re-arms it:
+
+- the client is reopened;
+- the value leaves the window and enters it again;
+- the client receives a `scopes` event after a grant change (`refreshScopes`);
+- a round accepts the unit, and a later round revokes it.
+
+The reactive store applies every claimed window again on a `scopes` event, so a `useQuery` or `retainWindow` claim recovers without app code. A host that calls `setWindow` directly calls it again from its `onScopesChanged` listener.
+
 ## Set a window
 
 Store an immutable UTC month bucket when each row is created, derive it from the creation timestamp, and use the same column as the scope variable. `creationTimeBucket(ms, 'month')` returns `YYYY-MM` for timestamps from 1970 through year 9999. `last(count, 'month', nowMs)` returns the current UTC month and the preceding `count - 1` months, oldest first, for a `count` from 1 through 1200; pass an explicit `nowMs` in jobs and tests that need a pinned boundary. `month` is the only bucket size.

@@ -167,7 +167,7 @@ A session whose registrations `refreshScopes` removed or narrowed also receives 
 
 ### Grown grants
 
-Re-resolution covers the units a client already registered. A client registers only units it knows, so a grant that makes new units readable (a new project, a new membership) stays invisible until the app's own discovery runs again. `refreshScopes` therefore ends with an announcement: each refreshed session receives one `{"event":"scopes","data":{"timestamp":…}}` message. It carries no scope values and changes no registration. The client surfaces it and starts no round; the app runs its discovery and subscribes the new units, whose first round delivers their rows:
+Re-resolution covers the units a client already registered. A client registers only units it knows, so a grant that makes new units readable (a new project, a new membership) stays invisible until the app's own discovery runs again. `refreshScopes` therefore ends with an announcement: each refreshed session receives one `{"event":"scopes","data":{"timestamp":…}}` message. It carries no scope values and changes no registration. The client surfaces it and starts no round; the next `setWindow` re-arms the window values the server had refused ([Revoked values](/concepts-windowing/#revoked-values)). The app runs its discovery and subscribes the new units, whose first round delivers their rows:
 
 ```ts title="src/app.ts"
 client.onScopesChanged(() => {

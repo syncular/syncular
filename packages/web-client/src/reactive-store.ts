@@ -68,6 +68,7 @@ export interface ReactiveQueryClient extends Pick<
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
   leadershipSnapshot?(): LeadershipState | undefined;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
+  onScopesChanged?(listener: () => void): () => void;
   onProgress(listener: SyncProgressListener): () => void;
   conflicts(): readonly unknown[] | Promise<readonly unknown[]>;
   rejections(): readonly unknown[] | Promise<readonly unknown[]>;
@@ -854,12 +855,27 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           mappedRows,
           this.spec.rowKey,
         );
-        const roundFailure = snapshot.coverage.complete
+        // §7.8: a revoked unit is a refusal, not a transfer still running.
+        // The same refusal keeps its error, so a read publishes nothing new.
+        const previous = this.#state.error;
+        const error = snapshot.coverage.complete
           ? undefined
-          : this.store.roundFailure.getSnapshot();
+          : snapshot.coverage.revoked.length > 0
+            ? previous instanceof ClientSyncError &&
+              previous.code === 'sync.scope_revoked' &&
+              canonicalValue(previous.details?.units) ===
+                canonicalValue(snapshot.coverage.revoked)
+              ? previous
+              : new ClientSyncError(
+                  'sync.scope_revoked',
+                  'a window unit the query covers is revoked',
+                  false,
+                  { units: snapshot.coverage.revoked },
+                )
+            : this.store.roundFailure.getSnapshot();
         const phase: LiveQueryPhase = snapshot.coverage.complete
           ? 'ready'
-          : roundFailure !== undefined
+          : error !== undefined
             ? 'error'
             : rows.length > 0
               ? 'partial'
@@ -868,7 +884,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           rows,
           phase,
           revision: snapshot.revision,
-          error: roundFailure,
+          error,
           isRefreshing: false,
           availability,
         });
@@ -971,6 +987,7 @@ class WindowEntry implements ExternalStoreEntry<
   #state: WindowState & { readonly loaded: boolean } = {
     units: [],
     pending: [],
+    revoked: [],
     loaded: false,
   };
   #generation = 0;
@@ -1017,7 +1034,7 @@ class WindowEntry implements ExternalStoreEntry<
     this.#generation += 1;
     this.#running = false;
     this.#requested = false;
-    this.#state = { units: [], pending: [], loaded: false };
+    this.#state = { units: [], pending: [], revoked: [], loaded: false };
   }
   dispose(): void {
     this.#listeners.clear();
@@ -1046,11 +1063,14 @@ class WindowEntry implements ExternalStoreEntry<
         if (
           !this.#state.loaded ||
           canonicalValue(next.units) !== canonicalValue(this.#state.units) ||
-          canonicalValue(next.pending) !== canonicalValue(this.#state.pending)
+          canonicalValue(next.pending) !==
+            canonicalValue(this.#state.pending) ||
+          canonicalValue(next.revoked) !== canonicalValue(this.#state.revoked)
         ) {
           this.#state = {
             units: next.units,
             pending: next.pending,
+            revoked: next.revoked,
             loaded: true,
           };
           for (const listener of this.#listeners) listener();
@@ -1076,6 +1096,7 @@ export class ReactiveClientStore {
   readonly #windowClaims = new Map<string, WindowClaimGroup>();
   #offChange: (() => void) | undefined;
   #offLeadership: (() => void) | undefined;
+  #offScopes: (() => void) | undefined;
   #offActivation: (() => void) | undefined;
   readonly #activation = new Set<() => void>();
   readonly status: ExternalStoreEntry<StatusStoreSnapshot>;
@@ -1473,6 +1494,12 @@ export class ReactiveClientStore {
       )
         roundFailure.set(undefined);
     });
+    // §3.3: after a grant change the core re-arms the revoked values of the
+    // next `setWindow`, so every claimed window applies again.
+    this.#offScopes = this.client.onScopesChanged?.(() => {
+      for (const group of this.#windowClaims.values()) group.appliedKey = '';
+      this.#reclaimWindows();
+    });
     this.#offLeadership = this.client.onLeadershipChange?.((leadership) => {
       const previous = this.status.getSnapshot();
       (this.status as ValueEntry<StatusStoreSnapshot>).set({
@@ -1508,6 +1535,8 @@ export class ReactiveClientStore {
     this.#offChange = undefined;
     this.#offLeadership?.();
     this.#offLeadership = undefined;
+    this.#offScopes?.();
+    this.#offScopes = undefined;
     this.#offActivation?.();
     this.#offActivation = undefined;
     this.#activation.clear();

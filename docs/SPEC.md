@@ -1737,6 +1737,35 @@ arrives receives its rows. A unit whose status is `failed` is a
 configuration error: the client leaves it in place, and the app fixes the
 schema before registering it again.
 
+**Re-arming a window value.** `setWindow` (§4.8) re-arms the revoked unit
+of every value it names, also a value the window already holds, the way
+registering the scope map does, unless the client remembers the unit. The
+client keeps in memory the ids of the units `setWindow` registered or
+re-armed since the client opened, and forgets an id when a round answers its
+unit active, when a shrink releases its value, and on a `scopes` event
+(§8.7), which clears the memory. A reopened client remembers nothing. A
+`setWindow` call that names a held value whose unit is revoked and
+remembered leaves the unit revoked, sends nothing and raises no sync-needed
+signal. So once the server refuses a unit that `setWindow` registered or
+re-armed, repeating the same window asks it nothing until the client reopens,
+a `scopes` event arrives, the value leaves the window and enters again, or a
+round accepts the unit; then the next `setWindow` naming the value re-arms it
+once. A revoked unit keeps reason code `sync.scope_revoked`, and the
+completeness oracle and query coverage report it as revoked (§4.8, §7.5).
+
+DECISION (2026-11-20): a window value re-arms its revoked unit once per
+claim. On 0.97.0 `setWindow` registered only values absent from the window
+registry, so a value whose unit a round had revoked stayed revoked after the
+grant returned, also after a reload: a web app's 67 membership units stayed
+pending next to 232 revoked units while its discovery authorized all 67. A
+re-arm on every call would send one more round per render of a host that
+repeats the same window while the server keeps refusing. The memory bounds a
+lasting refusal to one round per open, per `scopes` event, per re-entry of
+the value and per acceptance of the unit. The `scopes` event clears the
+memory instead of re-arming in the core: the reactive store applies its
+claims again, and the TypeScript client bundle stays under its 171,000-byte
+ceiling.
+
 **Registration raises sync-needed.** A `subscribe` or `subscribeMany` call
 that registers or re-arms at least one unit, and an `unsubscribe` that
 releases the last reference to a registered unit, raise sync-needed and
@@ -2780,7 +2809,10 @@ answerable in full iff every scope value its predicate touches belongs to a
 complete unit; otherwise the result is partial and the client MUST be able
 to say so (never silently return partial data as complete). A client MAY
 expose the per-unit verdict to the host; it MUST NOT represent a
-windowed-out or still-pending unit's result as complete. Because the
+windowed-out or still-pending unit's result as complete. The oracle lists
+the values whose unit is `revoked` separately as well (a subset of the
+pending values), so a host tells a refusal (reason code
+`sync.scope_revoked`, §3.3) from a bootstrap still running. Because the
 verdict can flip with no row changing (a zero-row bootstrap completing), a
 client that exposes the local-observation seam (§7.5) MUST emit a
 **window-domain** change for the base and unit when the unit's bootstrap
@@ -6087,7 +6119,8 @@ surface MUST bump it. The TypeScript client enforces this with a test that pins
 a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
-0.94.0 and 0.95.0, protocol 6 covers 0.96.0, and protocol 7 starts with 0.97.0.
+0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0, and
+protocol 8 starts with 0.98.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -7291,7 +7324,8 @@ an unsafe JSON number.
 **Atomic query snapshot.** A reactive local read returns its SQL rows, required
 window coverage, and `localRevision` from one SQLite read transaction. Coverage
 names each required window base/unit and classifies it complete, pending, or
-missing by the §4.8 registry and unit state. A client MUST NOT compose
+missing by the §4.8 registry and unit state, and lists the pending units whose
+unit is `revoked` as revoked too. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
 `r` cannot be published as current after a matching change at revision `> r`,
 except an answer that deferred batches overtook during an import (§7.8);
@@ -7758,6 +7792,15 @@ per attempt, so the client's retry schedule of §7.7 paces it), when a leader
 serves the tab again, and when the application calls `refresh`. A window-only
 change batch does not claim again, because a failed window edit can produce
 one. Reads keep reporting the rejection until a claim succeeds.
+
+A snapshot whose coverage reports a revoked unit (§7.5) publishes an error
+with code `sync.scope_revoked` naming the revoked base/unit pairs in its
+details, and keeps the rows of the snapshot. The observation reads again on
+its usual triggers and publishes the answer once a re-arm (§3.3) made the unit
+pending again. The store does not claim again for a revoked unit: the core's
+re-arm rules decide when the server is asked again. On a `scopes` event
+(§8.7) the store applies every claimed window again, once, with the same
+units, so the core re-arms their revoked values.
 
 A retained window belongs to its explicit owner. Adding an observer whose units
 are already acknowledged MUST NOT wait for an unrelated widening operation.
@@ -8739,7 +8782,9 @@ The event carries no scope values, no units and no cursor. The client
 surfaces it to the app as a scopes-changed event (TypeScript
 `onScopesChanged`, Rust `drain_scopes_changed`, a `scopes-changed` event
 on the native bindings) and changes no sync state: it raises no
-sync-needed signal and runs no round. The app asks its own discovery which
+sync-needed signal and runs no round. It clears the client's memory of
+refused window units, so the next `setWindow` re-arms their values (§3.3).
+The app asks its own discovery which
 units the actor may read and registers the new ones; their first round
 delivers their rows. A session receives the event whether its grant shrank
 or grew, because the hub cannot tell which units the actor may newly read; an

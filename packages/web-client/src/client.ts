@@ -603,6 +603,11 @@ export interface WindowState {
    * empty or partial; it MUST NOT be rendered as complete.
    */
   readonly pending: readonly string[];
+  /**
+   * The pending values whose unit the server revoked (`sync.scope_revoked`,
+   * §3.3): a refusal, not a running bootstrap.
+   */
+  readonly revoked: readonly string[];
 }
 
 /** One generated/raw query's required window units (SPEC §7.5). */
@@ -620,6 +625,8 @@ export interface CoverageSnapshot {
   readonly complete: boolean;
   readonly pending: readonly WindowUnitRef[];
   readonly missing: readonly WindowUnitRef[];
+  /** The pending units whose unit is revoked (`sync.scope_revoked`, §3.3). */
+  readonly revoked: readonly WindowUnitRef[];
 }
 
 export interface QueryReadSpec {
@@ -991,6 +998,8 @@ export class SyncClient {
   #registrationEpoch = 0;
   /** The units of each window base's latest `setWindow` (§4.8). */
   readonly #windowTargets = new Map<string, ReadonlySet<string>>();
+  /** §3.3: units `setWindow` registered or re-armed and no round accepted since. */
+  readonly #windowArmed = new Set<string>();
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
@@ -1891,6 +1900,7 @@ export class SyncClient {
         );
         const pending: WindowUnitRef[] = [];
         const missing: WindowUnitRef[] = [];
+        const revoked: WindowUnitRef[] = [];
         for (const requested of request.coverage ?? []) {
           const baseKey = windowBaseKey(requested.base);
           const state = this.windowState(requested.base);
@@ -1898,6 +1908,7 @@ export class SyncClient {
             const ref = { baseKey, unit };
             if (!state.units.includes(unit)) missing.push(ref);
             else if (state.pending.includes(unit)) pending.push(ref);
+            if (state.revoked.includes(unit)) revoked.push(ref);
           }
         }
         return {
@@ -1907,6 +1918,7 @@ export class SyncClient {
             complete: pending.length === 0 && missing.length === 0,
             pending,
             missing,
+            revoked,
           },
           units: (request.units ?? []).map(catchupOf),
           deliveries: (request.commitIds ?? []).map(deliveryOf),
@@ -3362,9 +3374,15 @@ export class SyncClient {
     const live = loadWindowUnits(this.#db, baseKey);
     // §7.8: a widen registers its values like `subscribeMany`, in one
     // transaction, and never waits for a running round.
-    const added = [...wanted].filter(
-      (value) => !live.some((entry) => entry.value === value),
-    );
+    // §3.3: a held value whose unit is revoked re-arms once per open client.
+    const added = [...wanted].filter((value) => {
+      const entry = live.find((held) => held.value === value);
+      return (
+        entry === undefined ||
+        (!this.#windowArmed.has(entry.unitId) &&
+          getUnit(this.#db, entry.unitId)?.status === 'revoked')
+      );
+    });
     if (added.length > 0) {
       this.#applyBatch((batch) => {
         for (const value of added) {
@@ -3377,6 +3395,7 @@ export class SyncClient {
             [baseKey, value, id],
           );
           this.#needsPull ||= registered;
+          if (registered) this.#windowArmed.add(id);
           batch.window(baseKey, value);
         }
         batch.status();
@@ -3413,15 +3432,15 @@ export class SyncClient {
   windowState(base: WindowBase): WindowState {
     this.#requireActive();
     const live = loadWindowUnits(this.#db, windowBaseKey(base));
-    const pending = live.flatMap(({ value, unitId: id }) => {
+    const pending: string[] = [];
+    const revoked: string[] = [];
+    for (const { value, unitId: id } of live) {
       const unit = getUnit(this.#db, id);
-      return unit === undefined ||
-        unit.status !== 'active' ||
-        bootstrapping(unit)
-        ? [value]
-        : [];
-    });
-    return { units: live.map((entry) => entry.value), pending };
+      if (unit?.status === 'revoked') revoked.push(value);
+      if (unit === undefined || unit.status !== 'active' || bootstrapping(unit))
+        pending.push(value);
+    }
+    return { units: live.map((entry) => entry.value), pending, revoked };
   }
 
   /**
@@ -3443,6 +3462,7 @@ export class SyncClient {
         baseKey,
         value,
       ]);
+      this.#windowArmed.delete(id);
       batch.window(baseKey, value);
       batch.status();
       const unit = getUnit(this.#db, id);
@@ -5375,7 +5395,12 @@ export class SyncClient {
       return;
     }
     if (event.event === 'presence') this.#applyPresence(event.data);
-    if (event.event === 'scopes') this.#scopesChanged.emit();
+    if (event.event === 'scopes') {
+      // §3.3/§8.7: the grants changed, so the next `setWindow` re-arms every
+      // revoked value it names.
+      this.#windowArmed.clear();
+      this.#scopesChanged.emit();
+    }
     return event.event === 'heartbeat';
   }
 
@@ -6641,6 +6666,8 @@ export class SyncClient {
         batch.status();
         return;
       }
+      // §3.3: the server accepted the unit, so a later refusal re-arms once.
+      this.#windowArmed.delete(unit.id);
       const fresh = rearmed || start.bootstrap;
       saveUnit(this.#db, {
         ...unit,

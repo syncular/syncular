@@ -609,6 +609,8 @@ pub struct SyncClient {
     sync_intent_queue: VecDeque<SyncIntent>,
     /// §8.7 `scopes` events received since the last drain.
     scopes_changed: usize,
+    /// §3.3: units `set_window` registered or re-armed and no round accepted since.
+    window_armed: HashSet<String>,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
     /// §7.7: the background retry the current round scheduled, if any.
@@ -1397,8 +1399,12 @@ fn persisted_window_state(
     })?;
     let mut units = Vec::new();
     let mut pending = Vec::new();
+    let mut revoked = Vec::new();
     for row in rows {
         let (unit, status, cursor, bootstrap_state) = row?;
+        if status.as_deref() == Some("revoked") {
+            revoked.push(unit.clone());
+        }
         // §4.8: complete iff registered, active and not bootstrapping.
         if status.as_deref() != Some("active")
             || cursor.is_some_and(|cursor| cursor < 0 || bootstrap_state.is_some())
@@ -1407,7 +1413,11 @@ fn persisted_window_state(
         }
         units.push(unit);
     }
-    Ok(WindowState { units, pending })
+    Ok(WindowState {
+        units,
+        pending,
+        revoked,
+    })
 }
 
 /// One read-only statement in a §7.5 snapshot read.
@@ -1500,6 +1510,7 @@ fn snapshot_read_connection(
         }
         let mut pending = Vec::new();
         let mut missing = Vec::new();
+        let mut revoked = Vec::new();
         for requested in request.coverage {
             let base_key = window_base_key(&requested.base);
             let state = persisted_window_state(conn, &requested.base)?;
@@ -1508,6 +1519,9 @@ fn snapshot_read_connection(
                     base_key: base_key.clone(),
                     unit: unit.clone(),
                 };
+                if state.revoked.iter().any(|held| held == &unit) {
+                    revoked.push(reference.clone());
+                }
                 if !state.units.iter().any(|held| held == &unit) {
                     missing.push(reference);
                 } else if state.pending.iter().any(|held| held == &unit) {
@@ -1593,6 +1607,7 @@ fn snapshot_read_connection(
                 complete: pending.is_empty() && missing.is_empty(),
                 pending,
                 missing,
+                revoked,
             },
             units,
             deliveries,
@@ -2149,6 +2164,7 @@ impl SyncClient {
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             scopes_changed: 0,
+            window_armed: HashSet::new(),
             retry_delay_ms: 250,
             round_retry_delay_ms: None,
             image_chunk_rows: HashMap::new(),
@@ -3829,6 +3845,8 @@ impl SyncClient {
     pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
         let new_schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&new_schema, &self.limits.authority_reads)?;
+        // §3.3: a reopened client remembers no re-armed window unit.
+        self.window_armed.clear();
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
@@ -5649,11 +5667,24 @@ impl SyncClient {
         let base_key = window_base_key(base);
         let live = self.load_window_units(&base_key)?;
         let mut changed = false;
-        // §7.8: the added values register in one transaction.
-        let added: Vec<&String> = units
-            .iter()
-            .filter(|value| !live.iter().any(|(held, _)| held == *value))
-            .collect();
+        // §7.8: the added values register in one transaction. §3.3: a held
+        // value whose unit is revoked re-arms once per open core.
+        let mut added: Vec<&String> = Vec::new();
+        for value in units {
+            let held = live.iter().find(|(held, _)| held == value);
+            let rearm = match held {
+                None => true,
+                Some((_, id)) => {
+                    !self.window_armed.contains(id)
+                        && self
+                            .stored(get_unit(&self.conn, id))?
+                            .is_some_and(|unit| unit.status == UnitStatus::Revoked)
+                }
+            };
+            if rearm {
+                added.push(value);
+            }
+        }
         if !added.is_empty() {
             let rollback = self.capture();
             self.begin_observation("syncular_window")?;
@@ -5663,6 +5694,9 @@ impl SyncClient {
                     let (id, registered) =
                         self.hold_unit(window_unit_scopes(base, value), false)?;
                     self.sync_needed |= registered;
+                    if registered {
+                        self.window_armed.insert(id.clone());
+                    }
                     self.conn
                         .execute(
                             "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
@@ -5765,6 +5799,7 @@ impl SyncClient {
                 rusqlite::params![base_key, value],
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.window_armed.remove(id);
         let mut batch = ChangeAccumulator::default();
         batch.window(base_key, value);
         batch.status = true;
@@ -10485,6 +10520,8 @@ impl SyncClient {
             ))?;
             return Ok(batch);
         }
+        // §3.3: the server accepted the unit, so a later refusal re-arms once.
+        self.window_armed.remove(&unit.id);
         let completed = start.bootstrap && !rearmed && bootstrap_state.is_none();
         let (cursor, bootstrap_state, seeded) = if rearmed {
             (Some(-1), None, Vec::new())
@@ -13484,7 +13521,9 @@ impl SyncClient {
                 self.set_sync_needed(true, true);
             }
             Ok(ControlMessage::Scopes { .. }) => {
-                // §8.7: surfaced to the app; no sync-needed, no round.
+                // §3.3/§8.7: the grants changed, so the next `set_window`
+                // re-arms every revoked value it names. No sync-needed, no round.
+                self.window_armed.clear();
                 self.scopes_changed += 1;
             }
             _ => {}

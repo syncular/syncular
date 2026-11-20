@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-20',
+    title: 'A claimed window value re-arms its revoked unit',
+    body: '`setWindow` registered only values missing from the window, so a value whose unit a round had revoked stayed revoked and pending after the grant returned, also after a reload. `setWindow` now re-arms such a unit once per claim, again after a reload, a `scopes` event or a re-entry of the value, and an identical claim after a repeated refusal sends nothing. `windowState` and query coverage list revoked values under `revoked`, and a reactive query over one publishes `sync.scope_revoked` instead of loading.',
+    links: [
+      {
+        href: '/concepts-windowing/#revoked-values',
+        label: 'Revoked values',
+      },
+    ],
+  },
+  {
     date: '2026-11-19',
     title: 'Store entries refused in preflight read on activation',
     body: 'A reactive store entry whose first read ran inside the security preflight kept `client.security_preflight_required` after activation when it was an outcome or conflict journal entry, so `useCommitOutcomes().error` stayed set until the app refreshed it. Every refused store entry (live queries, window claims, the outcome and conflict journals, window state) now keeps its last snapshot without an error and reads again when the client reports `active`, on direct, Worker and native hosts.',

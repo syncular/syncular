@@ -1086,8 +1086,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     const result = (await this.command('windowState', { base })) as {
       units: string[];
       pending: string[];
+      revoked: string[];
     };
-    return { units: result.units, pending: result.pending };
+    return {
+      units: result.units,
+      pending: result.pending,
+      revoked: result.revoked,
+    };
   }
 
   async sync(): Promise<unknown> {

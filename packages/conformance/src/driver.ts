@@ -997,6 +997,10 @@ export interface DriverSnapshotRead {
       readonly baseKey: string;
       readonly unit: string;
     }[];
+    readonly revoked: readonly {
+      readonly baseKey: string;
+      readonly unit: string;
+    }[];
   };
   readonly units: readonly DriverUnitCatchup[];
   readonly deliveries: readonly DriverCommitDelivery[];
@@ -1279,6 +1283,7 @@ export interface ClientInstance {
   windowState?(base: DriverWindowBase): Promise<{
     readonly units: readonly string[];
     readonly pending: readonly string[];
+    readonly revoked: readonly string[];
   }>;
   timeWindowSugar(
     createdAtMs: number,
@@ -1314,6 +1319,10 @@ export interface ClientInstance {
         readonly unit: string;
       }[];
       readonly missing: readonly {
+        readonly baseKey: string;
+        readonly unit: string;
+      }[];
+      readonly revoked: readonly {
         readonly baseKey: string;
         readonly unit: string;
       }[];

@@ -430,6 +430,7 @@ describe('§9 a replica the real 0.59.0 binary wrote under wire version 3', () =
       expect(client.windowState({ variable: 'project_id' })).toEqual({
         units: [],
         pending: [],
+        revoked: [],
       });
       expect(
         db.query(

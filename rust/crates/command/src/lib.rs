@@ -1041,7 +1041,7 @@ pub fn dispatch<T: Transport>(
             let state = need_client(client)?
                 .window_state(&base)
                 .map_err(client_err)?;
-            Ok(json!({ "units": state.units, "pending": state.pending }))
+            Ok(json!({ "units": state.units, "pending": state.pending, "revoked": state.revoked }))
         }
         "timeWindowSugar" => {
             let created_at_ms = params

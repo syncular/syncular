@@ -1787,7 +1787,7 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
     ).toEqual({
       id,
       old: undefined,
-      window: { units: [], pending: [] },
+      window: { units: [], pending: [], revoked: [] },
       pending: 1,
     });
     await page.evaluate(async () => {

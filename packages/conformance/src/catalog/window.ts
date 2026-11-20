@@ -9,9 +9,10 @@
  * converges — and the completeness oracle tells the truth throughout. The
  * server is never told of any eviction (evicted ≠ revoked).
  */
+import { unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task, FIXTURE_SCHEMA } from '../fixture';
-import type { ClientHandle, Scenario } from '../scenario';
+import { ScenarioSkip, type ClientHandle, type Scenario } from '../scenario';
 import {
   expectConverged,
   seedTasks,
@@ -635,6 +636,135 @@ export const windowScenarios: readonly Scenario[] = [
         t1Server?.version,
         'the re-entered row converged to the server version',
       );
+    },
+  },
+  {
+    name: 'window/revoked-value-re-arms-once-per-claim',
+    specRefs: ['§3.3', '§4.8', '§7.5'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      const P1 = unitId({ project_id: 'p1' });
+      await seedTasks(ctx, [task('t1', 'p1', 'granted')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      if (a.api.setWindow === undefined || a.api.snapshotRead === undefined)
+        throw new ScenarioSkip('the client driver has no window surface');
+      await a.api.setWindow(BASE, ['p1']);
+      await syncIdle(a);
+      checkEqual(await readIds(a), ['t1'], 'the claimed value bootstrapped');
+
+      // The server revokes the scope: the unit is revoked, not pending.
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p2'] });
+      const revoked = await syncIdle(a);
+      checkEqual(revoked.revoked, [P1], 'the round revoked the window unit');
+      checkEqual(
+        await a.api.windowState?.(BASE),
+        { units: ['p1'], pending: ['p1'], revoked: ['p1'] },
+        'the oracle reports the value as revoked',
+      );
+      const coverage = (
+        await a.api.snapshotRead({
+          statements: [],
+          coverage: [{ base: BASE, units: ['p1'] }],
+        })
+      ).coverage;
+      checkEqual(
+        coverage.revoked,
+        [{ baseKey: coverage.pending[0]?.baseKey ?? '', unit: 'p1' }],
+        'query coverage names the revoked unit',
+      );
+      check(!coverage.complete, 'revoked coverage is incomplete');
+
+      // The first identical claim after the refusal re-arms the unit once.
+      await a.api.setWindow(BASE, ['p1']);
+      checkEqual(
+        (await a.api.unitState(P1))?.status,
+        'active',
+        'the claim re-armed the revoked unit',
+      );
+      const refusedAgain = await syncIdle(a);
+      checkEqual(refusedAgain.revoked, [P1], 'the server refused it again');
+
+      // A refusal that persists: repeating the claim asks the server nothing.
+      await a.api.setWindow(BASE, ['p1']);
+      check(!(await a.api.syncNeeded()), 'the repeated claim needs no round');
+      const quiet = await syncIdle(a);
+      checkEqual(quiet.revoked, [], 'no request carried the unit again');
+      const state = await a.api.unitState(P1);
+      checkEqual(state?.status, 'revoked', 'the unit stays revoked');
+      checkEqual(
+        state?.reasonCode,
+        'sync.scope_revoked',
+        'the refusal keeps its reason',
+      );
+
+      // The grant returns. A reopened replica claims the value again.
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p1'] });
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      await a.api.setWindow(BASE, ['p1']);
+      await syncIdle(a);
+      checkEqual(await readIds(a), ['t1'], 'the reopened claim completes');
+      checkEqual(
+        await a.api.windowState?.(BASE),
+        { units: ['p1'], pending: [], revoked: [] },
+        'the value is complete after the reopen',
+      );
+
+      // An accepted unit that is revoked later re-arms on the next claim.
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p2'] });
+      checkEqual((await syncIdle(a)).revoked, [P1], 'revoked once more');
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p1'] });
+      await a.api.setWindow(BASE, ['p1']);
+      await syncIdle(a);
+      checkEqual(await readIds(a), ['t1'], 'the live claim completes');
+      checkEqual(
+        (await a.api.windowState?.(BASE))?.pending,
+        [],
+        'the value is complete in the same session',
+      );
+    },
+  },
+  {
+    name: 'window/scope-refresh-re-arms-a-refused-value',
+    specRefs: ['§3.3', '§4.8', '§8.7'],
+    requires: ['realtime', 'scope-authorization'],
+    async run(ctx) {
+      const refresh = ctx.server.refreshScopes?.bind(ctx.server);
+      if (refresh === undefined)
+        throw new ScenarioSkip('the server driver cannot refresh scopes');
+      const P1 = unitId({ project_id: 'p1' });
+      await seedTasks(ctx, [task('t1', 'p1', 'granted')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p2'] },
+      });
+      if (a.api.setWindow === undefined || a.api.scopesChanged === undefined)
+        throw new ScenarioSkip('the client driver has no window surface');
+      // The claim precedes the grant and is refused; repeating it asks nothing.
+      await a.api.setWindow(BASE, ['p1']);
+      checkEqual((await syncIdle(a)).revoked, [P1], 'the claim was refused');
+      await a.api.setWindow(BASE, ['p1']);
+      check(!(await a.api.syncNeeded()), 'the repeated claim asks nothing');
+
+      await a.api.connectRealtime();
+      await syncIdle(a);
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p1'] });
+      await refresh('actor-a');
+      await a.realtime.waitForScopes(1);
+      checkEqual(await a.api.scopesChanged(), 1, 'the client surfaced it');
+      check(!(await a.api.syncNeeded()), 'the event raises no sync-needed');
+      await a.api.setWindow(BASE, ['p1']);
+      checkEqual(
+        (await a.api.unitState(P1))?.status,
+        'active',
+        'the claim after the scopes event re-armed the refused unit',
+      );
+      await syncIdle(a);
+      checkEqual(await readIds(a), ['t1'], 'the refused value completes');
     },
   },
 ];

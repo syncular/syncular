@@ -2,6 +2,47 @@
 
 ## 0.98.0 release notes
 
+### Upgrading
+
+- **Window coverage.** A window value whose unit the server revoked used to
+  read as pending only. It now also appears in TypeScript
+  `WindowState.revoked` (`client.windowState(base)`, `useWindow()`) and in
+  `CoverageSnapshot.revoked` (`querySnapshot(...).coverage`,
+  `snapshotRead(...).coverage`, as `{ baseKey, unit }` pairs), and in Rust
+  `WindowState::revoked` (`SyncClient::window_state`) and
+  `CoverageSnapshot::revoked`. The reason is `sync.scope_revoked`, the
+  unit's `reasonCode` in `client.unit(id)` (Rust `UnitRecord::reason_code`).
+  The value stays in `pending`, so `windowComplete` and the Swift, Kotlin
+  and Flutter `WindowState` keep reporting it incomplete. A reactive query
+  over a revoked unit now has phase `error` with code `sync.scope_revoked`
+  where it stayed `loading`. `setWindow` re-arms a revoked value on the
+  first claim that contains it, on the first claim after a `scopes` event
+  (scope refresh), after a reload, and after the value was dropped from the
+  window and added again; a claim repeated after the server refused the unit
+  again sends nothing. Test doubles that build `WindowState` or
+  `CoverageSnapshot` add `revoked`.
+- **Multi-tab protocol 8.** Reload tabs of 0.97.0 or older after deploying.
+
+### A claimed window value re-arms its revoked unit
+
+A web app's 67 membership window units stayed pending after a round had
+revoked them, although the app's discovery authorized all 67 again; the
+diagnostics showed 232 revoked units, no failed or bootstrapping unit and
+successful rounds, and a reload with the same claim did not recover
+(SYNCULAR-WINDOW-REVOKED-RECLAIM-001). `setWindow` registered only values
+absent from the window registry, so a value whose unit was revoked never
+reached the code that re-arms a revoked unit, in the TypeScript and the Rust
+client alike.
+
+`setWindow` now re-arms the revoked unit of every value it names, once per
+claim. Each client remembers the units `setWindow` registered or re-armed
+until a round accepts them; a remembered unit that the server refused again
+stays revoked, and repeating the same window sends no further round. Reopening
+the client, a `scopes` event, and dropping and re-adding the value clear the
+memory. The reactive store applies every claimed window again on a `scopes`
+event. Two conformance scenarios cover the rule in the TypeScript and Rust
+pairings. The TypeScript client bundle grows by 281 bytes to 170,881.
+
 ### OPFS quota exhaustion reports client.storage_full
 
 Two Windows browser replicas at 433 MB and 521 MB failed an image import with

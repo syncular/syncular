@@ -27,7 +27,11 @@ import { BunClientDatabase } from '../src/bun-database';
 import type { SqlRow, SqlValue } from '../src/database';
 import { deleteUnit } from '../src/state';
 import type { RealtimeHandlers } from '../src/transport';
-import { savePendingEviction, WINDOWS_TABLE } from '../src/window';
+import {
+  savePendingEviction,
+  WINDOWS_TABLE,
+  windowBaseKey,
+} from '../src/window';
 import { outcomeOf } from './helpers';
 
 const TASKS: readonly RowColumn[] = [
@@ -264,7 +268,7 @@ async function scripted(db = new BunClientDatabase()) {
     );
     await settle();
   };
-  return { client, db, requests, last, round, ids, delta, acks };
+  return { client, db, requests, last, round, ids, delta, acks, handlers };
 }
 
 function framesOf<T extends RequestFrame['type']>(
@@ -761,6 +765,7 @@ describe('§4.8 windows as sets of units', () => {
     expect(client.windowState(base)).toEqual({
       units: ['p1', 'p2'],
       pending: ['p1', 'p2'],
+      revoked: [],
     });
     await round(
       ...bootstrap(P1, 3, [rows('notes'), rows('tasks', ['t1', 'p1', 'a'])]),
@@ -990,6 +995,7 @@ describe('§4.8 windows as sets of units', () => {
     expect(client.windowState(base)).toEqual({
       units: ['p1', 'p2'],
       pending: [],
+      revoked: [],
     });
   });
 
@@ -1016,6 +1022,7 @@ describe('§4.8 windows as sets of units', () => {
     expect(client.windowState(base)).toEqual({
       units: ['p1', 'p2'],
       pending: [],
+      revoked: [],
     });
     expect(ids('tasks')).toEqual(['t2a', 't2b', 't2c']);
   });
@@ -1460,5 +1467,110 @@ describe('§9 upgrade of a version 3 replica', () => {
         "SELECT 1 FROM sqlite_master WHERE name='_syncular_subscriptions'",
       ),
     ).toHaveLength(1);
+  });
+});
+
+describe('§3.3 re-arming a revoked window value', () => {
+  const base = { variable: 'project_id' };
+  const revoke = (scopes: typeof P1) => [
+    start(unitId(scopes), { status: 'revoked' }),
+    { type: 'SUB_END', nextCursor: -1 } as const,
+    ...live(3),
+  ];
+
+  test('the same window re-arms a revoked value once until the server accepts it', async () => {
+    const { client, round } = await scripted();
+    await client.setWindow(base, ['p1']);
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks')]),
+      ...live(3),
+    );
+    await round(...revoke(P1));
+    expect(client.windowState(base)).toEqual({
+      units: ['p1'],
+      pending: ['p1'],
+      revoked: ['p1'],
+    });
+    expect(
+      client.querySnapshot({
+        sql: 'SELECT 1',
+        coverage: [{ base, units: ['p1'] }],
+      }).coverage.revoked,
+    ).toEqual([{ baseKey: windowBaseKey(base), unit: 'p1' }]);
+
+    const rearmed = await client.setWindowCommand(base, ['p1']);
+    expect(rearmed.effects.sync.kind).toBe('interactive');
+    expect(client.unit(unitId(P1))?.status).toBe('active');
+    expect(client.windowState(base).revoked).toEqual([]);
+
+    // Refused again: the identical window asks nothing.
+    await round(...revoke(P1));
+    const repeated = await client.setWindowCommand(base, ['p1']);
+    expect(repeated.effects.sync.kind).toBe('none');
+    expect(client.unit(unitId(P1))).toMatchObject({
+      status: 'revoked',
+      reasonCode: 'sync.scope_revoked',
+    });
+
+    // A value that leaves the window and enters again registers once more.
+    await client.setWindow(base, []);
+    await client.setWindow(base, ['p1']);
+    expect(client.unit(unitId(P1))?.status).toBe('active');
+
+    // An accepted unit that a later round revokes re-arms on the next claim.
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks')]),
+      ...live(3),
+    );
+    await round(...revoke(P1));
+    await client.setWindow(base, ['p1']);
+    expect(client.unit(unitId(P1))?.status).toBe('active');
+  });
+
+  test('the same window leaves an active value untouched', async () => {
+    const { client, round } = await scripted();
+    await client.setWindow(base, ['p1']);
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks', ['t1', 'p1', 'a'])]),
+      ...live(3),
+    );
+    const before = client.unit(unitId(P1));
+    const again = await client.setWindowCommand(base, ['p1']);
+    expect(again.effects.sync.kind).toBe('none');
+    expect(client.unit(unitId(P1))).toEqual(before);
+    expect(client.statusSnapshot().syncNeeded).toBe(false);
+  });
+
+  test('after a scopes event the same window re-arms its revoked values', async () => {
+    const { client, round, handlers } = await scripted();
+    await client.setWindow(base, ['p1', 'p2']);
+    client.subscribe({ project_id: 'p3' });
+    await round(
+      ...bootstrap(P1, 3, [rows('notes'), rows('tasks')]),
+      ...revoke(P2).slice(0, 2),
+      start(unitId({ project_id: 'p3' }), { status: 'revoked' }),
+      { type: 'SUB_END', nextCursor: -1 },
+      ...live(3),
+    );
+    await client.setWindow(base, ['p1', 'p2']);
+    await round(...revoke(P2));
+    expect(await client.setWindowCommand(base, ['p1', 'p2'])).toMatchObject({
+      effects: { sync: { kind: 'none' } },
+    });
+    await client.connectRealtime();
+    let announced = 0;
+    client.onScopesChanged(() => (announced += 1));
+    handlers[handlers.length - 1]!.onText(
+      JSON.stringify({ event: 'scopes', data: { timestamp: 1 } }),
+    );
+    expect(announced).toBe(1);
+    // The event changes no sync state (§8.7).
+    expect(client.unit(unitId(P2))?.status).toBe('revoked');
+    expect(client.statusSnapshot().syncNeeded).toBe(false);
+    const rearmed = await client.setWindowCommand(base, ['p1', 'p2']);
+    expect(rearmed.effects.sync.kind).toBe('interactive');
+    expect(client.unit(unitId(P2))?.status).toBe('active');
+    // An explicit unit outside every window waits for its own subscribe.
+    expect(client.unit(unitId({ project_id: 'p3' }))?.status).toBe('revoked');
   });
 });

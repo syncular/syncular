@@ -326,6 +326,7 @@ export class FakeClient implements SyncClientLike {
         complete: pending.length === 0 && missing.length === 0,
         pending,
         missing,
+        revoked: [],
       },
     };
   }
@@ -449,7 +450,11 @@ export class FakeClient implements SyncClientLike {
     const key = windowBaseKey(base);
     const units = this.#windowUnits.get(key) ?? [];
     const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
-    return { units, pending: units.filter((unit) => !done.has(unit)) };
+    return {
+      units,
+      pending: units.filter((unit) => !done.has(unit)),
+      revoked: [],
+    };
   }
 
   // These four are getters on the real SyncClient — as plain values here,

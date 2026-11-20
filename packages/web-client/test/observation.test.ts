@@ -232,6 +232,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       expect(client.windowState(BASE)).toEqual({
         units: ['p1'],
         pending: ['p1'],
+        revoked: [],
       });
       expect(db.query('SELECT * FROM _syncular_pending_evictions')).toEqual([]);
     } finally {
@@ -792,6 +793,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       complete: true,
       pending: [],
       missing: [],
+      revoked: [],
     });
 
     await client.client.setWindowCommand(DOC_BASE, []);
@@ -851,6 +853,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       complete: true,
       pending: [],
       missing: [],
+      revoked: [],
     });
     expect(ready.rows.map(taskPriorityPeersQuery.mapRow)).toEqual([
       { taskId: 'a1', peerId: 'a2', title: 'a2' },

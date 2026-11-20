@@ -28,7 +28,7 @@ export async function reactiveChurn(count = 10_000) {
       return {
         revision,
         rows: rows as Row[],
-        coverage: { complete: true, pending: [], missing: [] },
+        coverage: { complete: true, pending: [], missing: [], revoked: [] },
       };
     },
     statusSnapshot: () => ({
@@ -46,7 +46,7 @@ export async function reactiveChurn(count = 10_000) {
     rejections: () => [],
     commitOutcomes: () => [],
     setWindow: () => undefined,
-    windowState: () => ({ units: [], pending: [] }),
+    windowState: () => ({ units: [], pending: [], revoked: [] }),
   };
   const store = new ReactiveClientStore(client);
   const spec = {

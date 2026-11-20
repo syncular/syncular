@@ -727,7 +727,7 @@ if (!available) {
         expect(await unit(old)).toBeNull();
         expect(
           await client.windowState({ variable: 'theatre_calendar_id' }),
-        ).toEqual({ units: [], pending: [] });
+        ).toEqual({ units: [], pending: [], revoked: [] });
         expect((await pendingIds()).result.ids).toEqual([pending]);
         const current = await client.subscribe({ calendar_theatre_id: 'one' });
         await host.exec(

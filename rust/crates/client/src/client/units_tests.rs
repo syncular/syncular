@@ -937,6 +937,7 @@ fn a_window_and_an_explicit_subscribe_share_one_unit_and_the_last_release_evicts
         WindowState {
             units: vec!["p1".into(), "p2".into()],
             pending: vec!["p1".into(), "p2".into()],
+            revoked: vec![],
         }
     );
     let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[&["t1", "p1", "a"]])];
@@ -2211,4 +2212,142 @@ fn a_restricted_unit_owns_the_rows_of_tables_outside_its_restriction() {
     };
     assert_eq!(owners("notes").len(), 1);
     assert!(owners("tasks").is_empty());
+}
+
+// -- §3.3 re-arming a revoked window value ---------------------------------------
+
+fn revoke(unit: &UnitScopes) -> Vec<Frame> {
+    concat(vec![
+        vec![
+            start(&id_of(unit), SubStatus::Revoked, false, vec![]),
+            end(3, None),
+        ],
+        live(3, vec![]),
+    ])
+}
+
+#[test]
+fn the_same_window_rearms_a_revoked_value_once_until_the_server_accepts_it() {
+    let mut h = Harness::new();
+    let base = project_window();
+    let p1_value = vec!["p1".to_owned()];
+    h.client.set_window(&base, &p1_value).unwrap();
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    h.round(revoke(&p1()));
+    assert_eq!(
+        h.client.window_state(&base).unwrap(),
+        WindowState {
+            units: p1_value.clone(),
+            pending: p1_value.clone(),
+            revoked: p1_value.clone(),
+        }
+    );
+    let coverage = h
+        .client
+        .query_snapshot(
+            "SELECT 1",
+            &[],
+            &[WindowCoverage {
+                base: base.clone(),
+                units: p1_value.clone(),
+            }],
+            None,
+        )
+        .unwrap()
+        .coverage;
+    assert_eq!(coverage.revoked.len(), 1);
+    assert_eq!(coverage.revoked[0].unit, "p1");
+
+    let rearmed = h.client.set_window(&base, &p1_value).unwrap();
+    assert!(matches!(rearmed.sync, SyncIntent::Interactive));
+    assert_eq!(h.unit(&p1()).status, UnitStatus::Active);
+    assert!(h.client.window_state(&base).unwrap().revoked.is_empty());
+
+    // Refused again: the identical window asks nothing.
+    h.round(revoke(&p1()));
+    let repeated = h.client.set_window(&base, &p1_value).unwrap();
+    assert!(matches!(repeated.sync, SyncIntent::None));
+    let unit = h.unit(&p1());
+    assert_eq!(unit.status, UnitStatus::Revoked);
+    assert_eq!(unit.reason_code.as_deref(), Some("sync.scope_revoked"));
+
+    // A value that leaves the window and enters again registers once more.
+    h.client.set_window(&base, &[]).unwrap();
+    h.client.set_window(&base, &p1_value).unwrap();
+    assert_eq!(h.unit(&p1()).status, UnitStatus::Active);
+
+    // An accepted unit that a later round revokes re-arms on the next claim.
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    h.round(revoke(&p1()));
+    h.client.set_window(&base, &p1_value).unwrap();
+    assert_eq!(h.unit(&p1()).status, UnitStatus::Active);
+}
+
+#[test]
+fn the_same_window_leaves_an_active_value_untouched() {
+    let mut h = Harness::new();
+    let base = project_window();
+    let p1_value = vec!["p1".to_owned()];
+    h.client.set_window(&base, &p1_value).unwrap();
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[&["t1", "p1", "a"]])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    let before = h.unit(&p1());
+    let again = h.client.set_window(&base, &p1_value).unwrap();
+    assert!(matches!(again.sync, SyncIntent::None));
+    let after = h.unit(&p1());
+    assert_eq!(
+        (after.status, after.cursor, after.echo.is_some()),
+        (before.status, before.cursor, before.echo.is_some())
+    );
+    assert!(!h.client.sync_needed());
+}
+
+#[test]
+fn after_a_scopes_event_the_same_window_rearms_its_revoked_values() {
+    let mut h = Harness::new();
+    let base = project_window();
+    let values = vec!["p1".to_owned(), "p2".to_owned()];
+    let p3 = scopes(&[("project_id", "p3")]);
+    h.client.set_window(&base, &values).unwrap();
+    h.client.subscribe(p3.clone()).unwrap();
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        vec![
+            start(&id_of(&p2()), SubStatus::Revoked, false, vec![]),
+            end(3, None),
+        ],
+        vec![
+            start(&id_of(&p3), SubStatus::Revoked, false, vec![]),
+            end(3, None),
+        ],
+        live(3, vec![]),
+    ]));
+    h.client.set_window(&base, &values).unwrap();
+    h.round(revoke(&p2()));
+    let quiet = h.client.set_window(&base, &values).unwrap();
+    assert!(matches!(quiet.sync, SyncIntent::None));
+    h.client.connect_realtime(&mut h.transport).unwrap();
+    h.client
+        .on_realtime_text(r#"{"event":"scopes","data":{"timestamp":1}}"#);
+    assert_eq!(h.client.drain_scopes_changed(), 1);
+    // The event changes no sync state (§8.7).
+    assert_eq!(h.unit(&p2()).status, UnitStatus::Revoked);
+    assert!(!h.client.sync_needed());
+    let rearmed = h.client.set_window(&base, &values).unwrap();
+    assert!(matches!(rearmed.sync, SyncIntent::Interactive));
+    assert_eq!(h.unit(&p2()).status, UnitStatus::Active);
+    // An explicit unit outside every window waits for its own subscribe.
+    assert_eq!(h.unit(&p3).status, UnitStatus::Revoked);
 }

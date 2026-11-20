@@ -197,6 +197,10 @@ pub struct WindowState {
     pub units: Vec<String>,
     /// Registered units whose bootstrap has not yet completed.
     pub pending: Vec<String>,
+    /// The pending units whose unit the server revoked
+    /// (`sync.scope_revoked`, §3.3): a refusal, not a running bootstrap.
+    #[serde(default)]
+    pub revoked: Vec<String>,
 }
 
 #[cfg(test)]
@@ -588,6 +592,8 @@ pub struct CoverageSnapshot {
     pub complete: bool,
     pub pending: Vec<WindowUnitRef>,
     pub missing: Vec<WindowUnitRef>,
+    /// The pending units whose unit is revoked (`sync.scope_revoked`, §3.3).
+    pub revoked: Vec<WindowUnitRef>,
 }
 
 /// §7.5: the query that owns a snapshot read. The id is application-owned,

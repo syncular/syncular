@@ -2316,7 +2316,7 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
     ).toBeUndefined();
     expect(
       entry.client.windowState({ variable: 'theatre_calendar_id' }),
-    ).toEqual({ units: [], pending: [] });
+    ).toEqual({ units: [], pending: [], revoked: [] });
     expect(
       entry.client.pendingCommits().map((commit) => commit.clientCommitId),
     ).toEqual([pending]);

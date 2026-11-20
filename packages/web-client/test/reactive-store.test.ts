@@ -38,7 +38,12 @@ const STATUS: SyncStatusSnapshot = {
   securityLifecycle: 'active',
 };
 
-const COMPLETE = { complete: true, pending: [], missing: [] } as const;
+const COMPLETE = {
+  complete: true,
+  pending: [],
+  missing: [],
+  revoked: [],
+} as const;
 const BASE: WindowBase = { variable: 'project_id' };
 
 function batch(
@@ -153,7 +158,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
   held: readonly string[] = [];
 
   windowState(): WindowState {
-    return { units: this.held, pending: [] };
+    return { units: this.held, pending: [], revoked: [] };
   }
 }
 
@@ -237,7 +242,7 @@ describe('reactive cache identity', () => {
       client.snapshots.push({
         revision: 1n,
         rows: [],
-        coverage: { complete: false, pending: [], missing: [] },
+        coverage: { complete: false, pending: [], missing: [], revoked: [] },
       });
       const store = new ReactiveClientStore(client);
       const query = store.query<Row>(querySpec({ publishFirstAnswer }));
@@ -257,6 +262,35 @@ describe('reactive cache identity', () => {
       store.dispose();
     },
   );
+});
+
+describe('scopes events', () => {
+  test('a scopes event applies every claimed window again, once', async () => {
+    class ScopesClient extends FakeReactiveClient {
+      readonly scopes = new Set<() => void>();
+      onScopesChanged(listener: () => void): () => void {
+        this.scopes.add(listener);
+        return () => this.scopes.delete(listener);
+      }
+    }
+    const client = new ScopesClient();
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const retained = store.retainWindow(BASE, ['p1']);
+    await retained.ready;
+    expect(client.setWindowCalls).toHaveLength(1);
+    // An unchanged claim makes no call.
+    await store.retainWindow(BASE, ['p1']).ready;
+    expect(client.setWindowCalls).toHaveLength(1);
+    for (const listener of client.scopes) listener();
+    await drainMicrotasks();
+    expect(client.setWindowCalls).toEqual([
+      { base: BASE, units: ['p1'] },
+      { base: BASE, units: ['p1'] },
+    ]);
+    store.dispose();
+    expect(client.scopes.size).toBe(0);
+  });
 });
 
 describe('leader link recovery', () => {
@@ -721,6 +755,7 @@ describe('revision race gates', () => {
         complete: false,
         pending: [{ baseKey: 'tasks', unit: 'p1' }],
         missing: [],
+        revoked: [],
       },
     });
     const gate = deferred<void>();
@@ -761,6 +796,7 @@ describe('failed sync rounds', () => {
     complete: false,
     pending: [{ baseKey: 'tasks', unit: 'p1' }],
     missing: [],
+    revoked: [],
   } as const;
   const windowBatch = (revision: bigint) =>
     batch(revision, {
@@ -914,6 +950,7 @@ describe('reads during an import (SPEC §7.8)', () => {
     complete: false,
     pending: units.map((unit) => ({ baseKey: KEY, unit })),
     missing: [],
+    revoked: [],
   });
   const rows = (revision: bigint) =>
     batch(revision, {
@@ -1246,6 +1283,42 @@ describe('reads during an import (SPEC §7.8)', () => {
 });
 
 describe('local snapshots during window registration', () => {
+  test('a revoked unit publishes sync.scope_revoked instead of loading', async () => {
+    const client = new FakeReactiveClient();
+    const revoked = [{ baseKey: 'tasks', unit: 'p1' }];
+    const coverage = {
+      complete: false,
+      pending: revoked,
+      missing: [],
+      revoked,
+    };
+    client.snapshots.push(
+      { revision: 1n, rows: [], coverage },
+      { revision: 2n, rows: [], coverage },
+      { revision: 3n, rows: [], coverage },
+      { revision: 4n, rows: [], coverage },
+    );
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    const first = entry.getSnapshot();
+    expect(first.phase).toBe('error');
+    expect(first.error).toBeInstanceOf(ClientSyncError);
+    expect(first.error).toMatchObject({
+      code: 'sync.scope_revoked',
+      details: { units: revoked },
+    });
+    // The same refusal read again keeps its error object.
+    entry.refresh();
+    await drainMicrotasks();
+    expect(entry.getSnapshot().error).toBe(first.error);
+    off();
+    store.dispose();
+  });
+
   for (const complete of [true, false]) {
     test(`cached rows are ${complete ? 'ready' : 'partial'} while registration waits`, async () => {
       const client = new FakeReactiveClient();
@@ -1260,6 +1333,7 @@ describe('local snapshots during window registration', () => {
               complete: false,
               pending: [],
               missing: [{ baseKey: 'tasks', unit: 'p1' }],
+              revoked: [],
             },
       });
       const store = new ReactiveClientStore(client);
@@ -1296,6 +1370,7 @@ describe('local snapshots during window registration', () => {
         complete: false,
         pending: [],
         missing: [{ baseKey: 'tasks', unit: 'p1' }],
+        revoked: [],
       },
     });
     const store = new ReactiveClientStore(client);
@@ -1861,12 +1936,14 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     expect(entry.getSnapshot()).toEqual({
       units: [],
       pending: [],
+      revoked: [],
       loaded: false,
     });
     await drainMicrotasks();
     expect(entry.getSnapshot()).toEqual({
       units: [],
       pending: [],
+      revoked: [],
       loaded: true,
     });
     expect(notified).toBe(1);
@@ -1882,6 +1959,7 @@ describe('keyed reconciliation performance', () => {
       complete: false,
       pending: [{ baseKey: 'tasks', unit: 'p1' }],
       missing: [],
+      revoked: [],
     };
     client.snapshots.push({ revision: 1n, rows: [], coverage: pending });
     const store = new ReactiveClientStore(client);
@@ -2399,6 +2477,7 @@ describe('security preflight gate (SPEC §5.11)', () => {
     expect(window.getSnapshot()).toEqual({
       units: [],
       pending: [],
+      revoked: [],
       loaded: true,
     });
     offWindow();
@@ -2462,6 +2541,7 @@ describe('schema bump availability (SPEC §7.4.5)', () => {
         complete: false,
         pending: [{ baseKey: 'project_id\0{}', unit: 'p2' }],
         missing: [],
+        revoked: [],
       },
     };
     // The reset entry reads again once its window claim settles.

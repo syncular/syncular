@@ -579,6 +579,7 @@ class TsClientInstance implements ClientInstance {
   async windowState(base: DriverWindowBase): Promise<{
     readonly units: readonly string[];
     readonly pending: readonly string[];
+    readonly revoked: readonly string[];
   }> {
     return this.#client.windowState(base);
   }

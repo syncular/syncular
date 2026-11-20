@@ -16,6 +16,8 @@ import { useReactiveStore } from './use-client';
 export interface UseWindowResult {
   readonly units: readonly string[];
   readonly pending: readonly string[];
+  /** The pending values whose unit the server revoked (`sync.scope_revoked`). */
+  readonly revoked: readonly string[];
   /** False until the first read of the window state returns; `units` is
    * empty before it whatever the window holds. */
   readonly loaded: boolean;
@@ -121,6 +123,7 @@ export function useWindow(base: WindowBase): UseWindowResult {
   return {
     units: state.units,
     pending: state.pending,
+    revoked: state.revoked,
     loaded: state.loaded,
     setWindow,
     isComplete,

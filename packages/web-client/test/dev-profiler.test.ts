@@ -43,7 +43,7 @@ function stubClient(rows: () => readonly SqlRow[], async = false) {
       const snapshot: QuerySnapshot = {
         revision: 1n,
         rows: rows(),
-        coverage: { complete: true, pending: [], missing: [] },
+        coverage: { complete: true, pending: [], missing: [], revoked: [] },
       };
       expect(spec.sql).toBe('SELECT id FROM tasks');
       return async ? Promise.resolve(snapshot) : snapshot;

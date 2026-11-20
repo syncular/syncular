@@ -1111,6 +1111,7 @@ function driverCoverageFrom(
     complete: coverage.complete,
     pending: refs(coverage.pending, 'pending'),
     missing: refs(coverage.missing, 'missing'),
+    revoked: refs(coverage.revoked, 'revoked'),
   };
 }
 
@@ -1194,6 +1195,7 @@ class RustClientInstance implements ClientInstance {
   async windowState(base: DriverWindowBase): Promise<{
     readonly units: readonly string[];
     readonly pending: readonly string[];
+    readonly revoked: readonly string[];
   }> {
     const result = await this.#shim.call('windowState', {
       base: base as unknown as JsonValue,
@@ -1201,6 +1203,7 @@ class RustClientInstance implements ClientInstance {
     return result as unknown as {
       readonly units: readonly string[];
       readonly pending: readonly string[];
+      readonly revoked: readonly string[];
     };
   }
 
@@ -1338,6 +1341,10 @@ class RustClientInstance implements ClientInstance {
           readonly unit: string;
         }[];
         readonly missing: readonly {
+          readonly baseKey: string;
+          readonly unit: string;
+        }[];
+        readonly revoked: readonly {
           readonly baseKey: string;
           readonly unit: string;
         }[];
