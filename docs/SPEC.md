@@ -1572,6 +1572,18 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
    with `sync.invalid_subscription` (fail loud, do not guess). Keys
    declared only by *other* tables are legal in the result; they simply
    do not participate in this table's intersection (rule 4).
+   A resolver that throws anything other than a `SyncError` fails the
+   whole request: the server emits `scopes.resolve_failed` (`phase:
+   'request'`) and rethrows the error, which the adapter answers as
+   `sync.internal_error` (retryable). No unit is revoked, no row is
+   purged, no write is applied or rejected, pending commits stay in the
+   client's outbox, and no lease is issued (§7.3.3). No data leaves the
+   server, so the failure stays closed.
+   DECISION (2026-11-20): a throw is a request failure. Until 0.97.0 a
+   throw revoked every unit of the request and rejected its writes with
+   `sync.forbidden`; a host whose resolver hit a planning limit revoked
+   and purged 277 units of a client whose permissions had not changed.
+   A resolver `SyncError` keeps its own code.
    A resolver that reads its authority from the sync storage reads it in a
    host-owned read transaction (§6.8): one snapshot, no partition lock, so
    resolving a pull's scopes never waits on a push.
@@ -1604,8 +1616,6 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
      fence applies wherever effective scopes are computed: pull, segment
      download (§5.5), realtime registration (§8.1, §8.7).
 5. The pair is **revoked** when any of:
-   - `resolveScopes` threw (fail-loud: no data on errors — an
-     authorization bug must fence, not leak);
    - a requested key is missing from effective (partial scope loss must
      not silently deliver a subset the client didn't ask to trust);
    - the wildcard fence (rule 4) adds a variable whose allowed list is
@@ -1615,11 +1625,10 @@ On every pull (and on realtime connect), per (unit, covered table) pair:
    echo (§4.4) tells the client exactly what it receives, including the
    variables the wildcard fence added.
 
-The first two conditions of rule 5 hold for every covered table of a unit
+The first condition of rule 5 holds for every covered table of a unit
 at once, because the unit's variables and the resolver result are the same
-for each table. A unit is therefore **revoked** when `resolveScopes` threw,
-when a unit variable's value is missing from allowed, or when every covered
-pair is revoked. A pair that the wildcard fence alone revokes inside an
+for each table. A unit is therefore **revoked** when a unit variable's value
+is missing from allowed, or when every covered pair is revoked. A pair that the wildcard fence alone revokes inside an
 otherwise active unit is echoed as a revoked fenced record (§4.4).
 
 A live section returns, for an active pair, exactly the changes whose
@@ -1819,8 +1828,10 @@ On every push operation:
    (REMOTE.md §5.1). The same check applies to the parent of a declared reference
    (§6.11), every child a reference cascade reaches, a cached conflict on
    replay (§6.3), and a registered command's row reads.
-4. Any denial, or a throwing `resolveScopes`, rejects the operation with
-   `sync.forbidden` (non-retryable) and rolls back the commit (§6.4).
+4. Any denial rejects the operation with `sync.forbidden`
+   (non-retryable) and rolls back the commit (§6.4). A throwing
+   `resolveScopes` fails the whole request before any commit runs
+   (§3.2 rule 3).
 5. **Scope columns are immutable on update.** A present scope column on
    an upsert that targets an existing row MUST equal the stored value;
    a different value is `sync.invalid_request` and rolls back the commit
@@ -6544,7 +6555,7 @@ discipline, the blob/segment-store pattern). When configured with a TTL:
   emits a `LEASE` frame. Refresh is sliding: every authorized round
   extends the window and re-captures the current allowed scopes, so a
   client that keeps syncing keeps a fresh lease. A round that does not
-  resolve scopes (schema floor §1.6, or a failed resolver §3.2 rule 5)
+  resolve scopes (schema floor §1.6, or a throwing resolver §3.2 rule 3)
   issues **no** lease and emits no frame. Issuance reuses the stable
   `leaseId` for the `(partition, clientId)` pair across refreshes — a
   refresh slides the same lease, it does not mint a new handle — so the
@@ -6554,8 +6565,8 @@ discipline, the blob/segment-store pattern). When configured with a TTL:
   whenever it is reachable — leases never override a live resolver. The
   host opts a request into lease authorization by signalling, through the
   resolver seam, that the live authority is **unavailable** (an outage)
-  rather than throwing: a thrown resolver still fails loud and revokes
-  (§3.2 rule 5, unchanged). On that signal the server loads the stored
+  rather than throwing: a thrown resolver still fails the request
+  (§3.2 rule 3). On that signal the server loads the stored
   lease for `(partition, clientId)` and, if the lease is **valid**
   (§7.3.1) and its `actorId` and `context` match the request's, uses its `allowedScopes` as the
   request's resolved allowed map — the request's pull filtering (§3.2)
@@ -9210,7 +9221,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
 | `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in SSP2*; request-level |
 | `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in SSP2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
-| `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5); `resolveScopes` threw on a write |
+| `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5) |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
 | `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor or uses the reserved server-command namespace (§1.5) |
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | A unit with an empty scope map, a requested `'*'`, a variable no table declares, or no covered table; a scope map listed twice; a registration digest that differs from a traveling list (`details.reason = "registration_digest"`); a `PROGRESS` id that names no registered unit or appears twice (§4.1); an undeclared resolved scope key (§3.2) |

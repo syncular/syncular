@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-20',
+    title: 'A throwing resolver fails the request',
+    body: 'A `resolveScopes` that throws now fails the sync request with the retryable `sync.internal_error` and emits `scopes.resolve_failed`. It used to revoke every unit of the request and reject its writes with `sync.forbidden`, so a host bug purged replicas whose permissions had not changed. Clients keep their units, rows and outbox and retry on their backoff.',
+    links: [
+      {
+        href: '/server-operations/',
+        label: 'Server operations',
+      },
+    ],
+  },
+  {
+    date: '2026-11-20',
     title: 'A claimed window value re-arms its revoked unit',
     body: '`setWindow` registered only values missing from the window, so a value whose unit a round had revoked stayed revoked and pending after the grant returned, also after a reload. `setWindow` now re-arms such a unit once per claim, again after a reload, a `scopes` event or a re-entry of the value, and an identical claim after a repeated refusal sends nothing. `windowState` and query coverage list revoked values under `revoked`, and a reactive query over one publishes `sync.scope_revoked` instead of loading.',
     links: [

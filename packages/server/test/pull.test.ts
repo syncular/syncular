@@ -242,6 +242,7 @@ describe('registration by digest (§4.1)', () => {
     const replica = new TestReplica().register(P1);
     await replica.pull(t);
     const before = await t.storage.getClientRecord('part-1', 'client-1');
+    if (before === undefined) throw new Error('expected a client record');
     t.now.ms += 1_000;
     const stale = await sync(t, [
       pullHeader({ cursor: 0, registrationDigest: unknown }),
@@ -459,16 +460,32 @@ describe('revocation (§3.2 rule 5, §3.3)', () => {
     expect(live(message).commits).toHaveLength(0);
   });
 
-  test('an empty intersection and a throwing resolver revoke', async () => {
+  test('an empty intersection revokes', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p2'] };
     expect(section(await sync(t, pullFrames([P1])), P1).start.status).toBe(
       'revoked',
     );
+  });
+
+  test('a throwing resolver fails the request and revokes nothing (§3.2 rule 3)', async () => {
+    const t = makeContext();
+    const replica = new TestReplica().register(P1);
+    await replica.pull(t);
+    const before = await t.storage.getClientRecord('part-1', 'client-1');
     t.scopes.error = true;
-    expect(section(await sync(t, pullFrames([P1])), P1).start.status).toBe(
-      'revoked',
-    );
+    await expect(replica.pull(t)).rejects.toThrow('resolver failure');
+    const after = await t.storage.getClientRecord('part-1', 'client-1');
+    expect(after?.registration).toEqual(before?.registration);
+    expect(after?.catchingUp).toEqual(before?.catchingUp);
+    expect(after?.lastErrorCode).toBe('sync.internal_error');
+    t.scopes.error = false;
+    const recovered = await replica.pull(t);
+    expect(
+      recovered.frames.some(
+        (frame) => frame.type === 'SUB_START' && frame.status === 'revoked',
+      ),
+    ).toBe(false);
   });
 
   test("allowed '*' passes requested values through", async () => {

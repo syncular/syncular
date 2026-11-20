@@ -205,9 +205,8 @@ async function resolveOnce(
     });
   } catch (error) {
     if (error instanceof SyncError) throw error;
-    // §3.2 rule 5 / §3.4 step 4: fail loud, never leak — units revoke and
-    // writes reject with sync.forbidden. A throw is NOT an
-    // outage (§7.3.3): it never reaches the lease.
+    // §3.2 rule 3: a throw fails the whole request; nothing is revoked,
+    // rejected or leased. A throw is NOT an outage (§7.3.3).
     const events = ctx.events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -219,7 +218,7 @@ async function resolveOnce(
         message: error instanceof Error ? error.message : String(error),
       });
     }
-    return { resolved: { ok: false }, leaseToEmit: undefined };
+    throw error;
   }
 
   if (allowed === RESOLVER_OUTAGE) {

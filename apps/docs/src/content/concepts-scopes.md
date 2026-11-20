@@ -70,7 +70,7 @@ const config: SyncServerConfig = {
 };
 ```
 
-Return `{ list_id: ['*'] }` to grant every value of a variable, as the [quickstart](/quickstart/) does for its single demo user. If the resolver throws, the server fences the request and no data leaks.
+Return `{ list_id: ['*'] }` to grant every value of a variable, as the [quickstart](/quickstart/) does for its single demo user. If the resolver throws, the sync request fails with the retryable `sync.internal_error` and the server emits `scopes.resolve_failed`: no data leaves the server, no unit is revoked, no local row is purged, and pending writes stay in the outbox until a later round succeeds.
 
 ## Write-path authorization
 

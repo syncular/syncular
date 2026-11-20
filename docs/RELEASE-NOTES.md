@@ -2,6 +2,9 @@
 
 ## 0.98.0 release notes
 
+A host whose `resolveScopes` throws now gets failed rounds instead of revoked
+units, so its error monitoring should watch `scopes.resolve_failed`.
+
 ### Upgrading
 
 - **Window coverage.** A window value whose unit the server revoked used to
@@ -21,6 +24,18 @@
   window and added again; a claim repeated after the server refused the unit
   again sends nothing. Test doubles that build `WindowState` or
   `CoverageSnapshot` add `revoked`.
+- **Resolver throw.** A `resolveScopes` that throws anything other than a
+  `SyncError` now fails the sync request with `sync.internal_error`
+  (retryable; HTTP 500 or an in-band `ERROR`) where it revoked every unit of
+  the request and rejected its writes with `sync.forbidden`. Clients keep
+  their units, rows and outbox and retry on their backoff. The server still
+  emits `scopes.resolve_failed` with `type`, `atMs`, `partition`,
+  `actorId`, `phase` (`'request'` for a sync request) and `message` (the
+  thrown error's message), and passes the original error to the adapter's
+  `onError`. A host subscribes through the `events` sink of
+  `SyncServerConfig`, which the adapters pass through, and the realtime
+  hub's own `events` option. Segment and blob downloads and realtime
+  registrations still deny on a throw.
 - **Multi-tab protocol 8.** Reload tabs of 0.97.0 or older after deploying.
 
 ### A claimed window value re-arms its revoked unit
@@ -42,6 +57,24 @@ the client, a `scopes` event, and dropping and re-adding the value clear the
 memory. The reactive store applies every claimed window again on a `scopes`
 event. Two conformance scenarios cover the rule in the TypeScript and Rust
 pairings. The TypeScript client bundle grows by 281 bytes to 170,881.
+
+### A throwing resolver fails the request
+
+A host's `resolveScopes` hit a planning limit, threw, and the server revoked
+all 277 units of the request; the client purged their rows although no
+permission had changed. `handleSyncRequest` turned any non-`SyncError` throw
+into an empty authorization, so every unit revoked and every write rejected
+with `sync.forbidden`.
+
+The server now emits `scopes.resolve_failed` and rethrows the error. No unit
+is revoked, no write applies or rejects, pushes stay in the outbox, and no
+lease is issued; no data leaves the server, so the request still fails closed.
+The adapter answers `sync.internal_error` as for any exception outside the
+catalog. A resolver that keeps throwing costs one request per client drive,
+paced by the client's retry backoff. The conformance scenario
+`scopes/resolver-failure-fails-the-request` covers it in the TypeScript and
+Rust pairings. The Rust crates have no resolver path, and the local authority
+resolves with a constant allowed map that cannot throw.
 
 ### OPFS quota exhaustion reports client.storage_full
 

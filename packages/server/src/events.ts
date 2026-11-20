@@ -324,8 +324,9 @@ export interface PruneCompletedEvent {
   readonly removedCommits: number;
 }
 
-/** The host `resolveScopes` callback threw — the §3.2/§3.4 fail-loud
- * path (units revoke, writes reject, downloads deny). */
+/** The host `resolveScopes` callback threw (§3.2 rule 3): a sync request
+ * fails with `sync.internal_error`, a download or realtime registration is
+ * denied. */
 export interface ScopesResolveFailedEvent {
   readonly type: 'scopes.resolve_failed';
   readonly atMs: number;

@@ -582,15 +582,15 @@ describe('write-path authorization (§3.4)', () => {
     expect(record.code).toBe('sync.forbidden');
   });
 
-  test('a throwing resolveScopes rejects writes with sync.forbidden (§3.4 step 4)', async () => {
+  test('a throwing resolveScopes fails the request; the write neither applies nor rejects (§3.2 rule 3)', async () => {
     const t = makeContext();
-    t.scopes.error = true;
-    const message = await sync(t, [
+    const frames = [
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-    ]);
-    const record = pushResults(message)[0]?.results[0];
-    if (record?.status !== 'error') throw new Error('expected error record');
-    expect(record.code).toBe('sync.forbidden');
+    ];
+    t.scopes.error = true;
+    await expect(sync(t, frames)).rejects.toThrow('resolver failure');
+    t.scopes.error = false;
+    expect(pushResults(await sync(t, frames))[0]?.status).toBe('applied');
   });
 });
 

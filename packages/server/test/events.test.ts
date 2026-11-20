@@ -251,14 +251,17 @@ describe('push events', () => {
   test('resolver failure emits scopes.resolve_failed on the request path', async () => {
     const t = eventsContext();
     t.scopes.error = true;
-    await sync(t, [
-      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-    ]);
+    await expect(
+      sync(t, [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])]),
+    ).rejects.toThrow('resolver failure');
     const failed = ofType(t.events, 'scopes.resolve_failed');
     expect(failed).toHaveLength(1);
-    expect(failed[0]?.phase).toBe('request');
-    expect(failed[0]?.message).toBe('resolver failure');
-    expect(ofType(t.events, 'push.rejected')[0]?.code).toBe('sync.forbidden');
+    expect(failed[0]).toMatchObject({
+      phase: 'request',
+      message: 'resolver failure',
+      partition: 'part-1',
+    });
+    expect(ofType(t.events, 'push.rejected')).toEqual([]);
   });
 });
 
@@ -405,7 +408,7 @@ describe('pull events', () => {
     await t.storage.setHorizonSeq('part-1', seq + 1);
     // A unit cursor behind the horizon ⇒ reset (sync.cursor_expired).
     await sync(t, pullFrames([P1], { progress: [progressFrame(P1, seq)] }));
-    t.scopes.error = true;
+    t.scopes.value = { project_id: ['p2'] };
     await sync(t, pullFrames([P1]));
     await sync(t, [
       pullHeader({ registrationDigest: registrationDigest([{ x: 'y' }]) }),
@@ -784,7 +787,9 @@ describe('discipline', () => {
     await seedTask(t, 'c1', 't1', 'p1');
     await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
     t.scopes.error = true;
-    await sync(t, [...pullFrames([{ project_id: 'p1' }])]);
+    await expect(
+      sync(t, [...pullFrames([{ project_id: 'p1' }])]),
+    ).rejects.toThrow('resolver failure');
     await pruneCommitLog({
       storage: t.storage,
       partition: 'part-1',

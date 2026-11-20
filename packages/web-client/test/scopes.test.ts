@@ -197,18 +197,18 @@ describe('revocation purge (§3.3)', () => {
     expect(a.client.unit(unitId({ project_id: 'p1' }))?.status).toBe('revoked');
   });
 
-  test('a throwing resolver revokes (fail loud, §3.2 rule 5)', async () => {
+  test('a throwing resolver fails the round and revokes nothing (§3.2 rule 3)', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    a.client.subscribe({ project_id: 'p1' });
+    const id = a.client.subscribe({ project_id: 'p1' });
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
     await a.client.syncUntilIdle();
     server.resolverError.value = true;
-    const summary = await a.client.sync();
-    expect(summary.revoked).toEqual([unitId({ project_id: 'p1' })]);
-    expect(tableRows(a.db, 'tasks')).toHaveLength(0);
+    await expect(a.client.sync()).rejects.toThrow();
+    expect(a.client.unit(id)?.status).toBe('active');
+    expect(tableRows(a.db, 'tasks')).toHaveLength(1);
   });
 
   test('a unit whose variable no local table maps is refused before it registers', async () => {

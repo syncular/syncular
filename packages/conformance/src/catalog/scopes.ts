@@ -1074,8 +1074,8 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
-    name: 'scopes/resolver-failure-fails-loud-and-closed',
-    specRefs: ['§3.2', '§3.4'],
+    name: 'scopes/resolver-failure-fails-the-request',
+    specRefs: ['§3.2', '§3.4', '§7.7'],
     requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
@@ -1087,40 +1087,59 @@ export const scopeScenarios: readonly Scenario[] = [
       await a.api.subscribe({ project_id: 'p1' });
       await syncIdle(a);
 
+      // A throwing resolver fails the whole request (§3.2 rule 3): no unit
+      // revokes, no write rejects, nothing purges.
       await ctx.server.setResolverFailing(true);
       const m1 = await a.api.mutate([
-        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'blocked') },
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'held') },
       ]);
-      const report = await syncOk(a);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const sent = a.sentRequests.length;
+        const failed = await a.api.syncUntilIdle();
+        check(!failed.ok, 'the round fails while the resolver throws');
+        if (!failed.ok)
+          checkEqual(
+            failed.errorCode,
+            'sync.internal_error',
+            'the request fails with sync.internal_error',
+          );
+        checkEqual(
+          a.sentRequests.length - sent,
+          1,
+          'one drive sends one request and waits for the backoff (§7.7)',
+        );
+      }
       checkEqual(
-        report.rejected,
-        [m1],
-        'writes reject while authorization is broken (§3.4 step 4)',
+        (await a.api.unitState(unitId(U1)))?.status,
+        'active',
+        'the unit stays active',
       );
       checkEqual(
-        (await a.api.rejections())[0]?.code,
-        'sync.forbidden',
-        'the write rejects with sync.forbidden, never applies blind',
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2'],
+        'no purge: the rows and the optimistic write stay',
       );
       checkEqual(
-        report.revoked,
-        [unitId(U1)],
-        'the unit revokes: no data on resolver errors (§3.2 rule 5)',
+        (await a.api.pendingCommits()).length,
+        1,
+        'the write stays in the outbox',
       );
+      checkEqual(await a.api.rejections(), [], 'no write was rejected');
       checkEqual(
         await ctx.server.getMaxCommitSeq(),
         1,
         'only the seed commit exists server-side',
       );
 
-      // Recovery: the host fixes the resolver; a fresh subscription syncs.
+      // The host fixes the resolver; the next round pushes and pulls.
       await ctx.server.setResolverFailing(false);
-      await a.api.subscribe({ project_id: 'p1' });
-      await syncIdle(a);
+      const report = await syncIdle(a);
+      checkEqual(report.applied, [m1], 'the held write applies');
+      checkEqual(report.revoked, [], 'nothing was revoked');
       checkEqual(
-        (await a.api.readRows('tasks')).map((row) => row.rowId),
-        ['t1'],
-        'data returns once authorization works again',
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2'],
+        'the replica converged without a re-bootstrap',
       );
     },
   },
