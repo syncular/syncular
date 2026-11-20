@@ -37,6 +37,36 @@ A page that sizes all 400 candidates, as when most changes fall outside the
 units' tables, takes 183 ms on PostgreSQL 17, where it took 1,615 ms, and
 106 ms on SQLite. No schema or index changes.
 
+### The Tauri host loop starts no round in the background
+
+In a Diego production trace on iOS (20 November 2026), the replica's
+connectivity turned `unknown` as the app went to the background, the round
+in flight ended as `client.round_cancelled`, and the next round began 1 to
+12 ms later. The server answered its pull after about 7 s. When the app
+returned 3.5 and 6.5 minutes later, that round failed within 9 to 38 ms as
+`transport.failed` with cause `io` or `connect`. The realtime supervisor
+held its own drives in the background, but its disconnect ended the round
+the socket carried, and the plugin's host loop, which had no lifecycle
+input, ran the pending intent over HTTP at once.
+
+The supervisor now reports its lifecycle signal to a client that offers
+`setHostLifecycle('active' | 'background')`, which `TauriSyncClient` does.
+It reports `background` before it releases the socket and `active` before
+its foreground drive, and `stop()` reports `active`. In `background` the
+plugin's owner loop starts no drive on intent or background deadline and
+ends the round in flight as `client.round_cancelled`; the round's late reply
+applies nothing. The held intents and one drive for the cancelled round run
+on `active`. Drives the app requests still run. A supervisor with
+`sharedTransport` reports nothing (SPEC §8.4).
+
+Upgrade notes: update `@syncular/client`, `@syncular/tauri` and
+`tauri-plugin-syncular` together. An older plugin refuses
+`setHostLifecycle` as an unknown method, which the supervisor ignores, and
+keeps starting rounds in the background. An
+app that installs the supervisor with a lifecycle signal needs no change. An
+app without the supervisor calls `client.setHostLifecycle` from its own
+lifecycle evidence.
+
 ## 0.98.0 release notes
 
 0.98.0 reports a full browser quota as `client.storage_full`

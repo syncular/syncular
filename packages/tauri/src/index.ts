@@ -10,7 +10,9 @@ export * from './remote';
 /** Tauri bridge with the optional local-authority lifecycle (§12). */
 export class TauriSyncClient extends RemoteTauriSyncClient {
   protected override allowPreflightCommand(method: string): boolean {
-    return method === 'localAuthorityState';
+    return (
+      method === 'localAuthorityState' || super.allowPreflightCommand(method)
+    );
   }
 
   /** Local authority state, or null when the plugin configured no authority. */

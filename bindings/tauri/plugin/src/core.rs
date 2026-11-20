@@ -329,6 +329,16 @@ impl SyncularCore {
         applied
     }
 
+    /// §8.4: the app went to the background. The round in flight ends as
+    /// `client.round_cancelled`; its late reply applies nothing.
+    pub fn cancel_round(&mut self) {
+        if let Some(client) = self.client.as_mut() {
+            client.cancel_sync_round();
+        }
+        self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
+    }
+
     /// Replace the native transport's bounds for subsequent network calls
     /// (per-round deadlines, request/response byte limits, redirect policy).
     /// JSON config reaches the same policy through `new`; this is the

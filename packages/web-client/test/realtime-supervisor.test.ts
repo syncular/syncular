@@ -1547,6 +1547,89 @@ describe('realtime supervisor lifecycle (SPEC §8.4)', () => {
     expect(f.counts).toMatchObject({ sync: base, sockets: 1, connect: 1 });
     await supervisor.stop();
   });
+
+  test('a native host hears background before the disconnect and active before the drive', async () => {
+    const realtime = fixture();
+    const order: string[] = [];
+    const host = {
+      ...realtime.client,
+      async connectRealtime() {
+        order.push('connect');
+        await realtime.client.connectRealtime();
+      },
+      async syncUntilIdle() {
+        order.push('drive');
+      },
+      disconnectRealtime() {
+        order.push('disconnect');
+        realtime.client.disconnectRealtime();
+      },
+      async setHostLifecycle(state: 'active' | 'background') {
+        order.push(state);
+      },
+    };
+    const app = signal<RealtimeSupervisorLifecycleState>('background');
+    const timers = scheduler();
+    const supervisor = new RealtimeSupervisor(host, {
+      lifecycle: app.port,
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    expect(order).toEqual(['background']);
+
+    app.emit('active');
+    await settle();
+    timers.runNext();
+    await settle();
+    expect(supervisor.snapshot().phase).toBe('connected');
+    order.length = 0;
+    app.emit('background');
+    // Nothing is released until the host holds its drives.
+    expect(order).toEqual([]);
+    await settle();
+    expect(order).toEqual(['background', 'disconnect']);
+
+    // A flap sends the state current when each report runs: the host ends
+    // active, and the foreground drive follows the report.
+    order.length = 0;
+    app.emit('active');
+    app.emit('background');
+    app.emit('active');
+    await settle();
+    expect(order.filter((call) => call !== 'drive')).toEqual(['active']);
+    expect(order.indexOf('drive')).toBeGreaterThan(0);
+
+    // Stopping in the background releases the hold.
+    app.emit('background');
+    await settle();
+    order.length = 0;
+    await supervisor.stop();
+    expect(order).toEqual(['active']);
+  });
+
+  test('a shared transport reports no host lifecycle', async () => {
+    const realtime = fixture();
+    const reports: string[] = [];
+    const app = signal<RealtimeSupervisorLifecycleState>('active');
+    const supervisor = new RealtimeSupervisor(
+      {
+        ...realtime.client,
+        setHostLifecycle: (state: string) => void reports.push(state),
+      },
+      {
+        lifecycle: app.port,
+        schedule: scheduler().schedule,
+        sharedTransport: true,
+      },
+    );
+    supervisor.start();
+    app.emit('background');
+    await settle();
+    await supervisor.stop();
+    expect(reports).toEqual([]);
+  });
 });
 
 describe('realtime supervisor failures (SPEC §8.4, §10.3)', () => {

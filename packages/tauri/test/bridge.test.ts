@@ -1375,6 +1375,23 @@ describe('createTauriSyncClient', () => {
     });
   });
 
+  test('the host lifecycle report passes the preflight gate (§8.4)', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      tauri,
+    });
+    await client.setHostLifecycle('background');
+    await client.setHostLifecycle('active');
+    expect(
+      calls
+        .map((c) => c.args.command as { method?: string; params?: unknown })
+        .filter((command) => command?.method === 'setHostLifecycle')
+        .map((command) => command.params),
+    ).toEqual([{ state: 'background' }, { state: 'active' }]);
+  });
+
   test('setHeaders posts the full set to syncular_set_headers', async () => {
     const { client, calls } = await build();
     await client.setHeaders({ authorization: 'Bearer fresh' });

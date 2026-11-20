@@ -21,6 +21,8 @@ export interface RealtimeSupervisorClient {
     | Promise<ClientDiagnosticsSnapshot>;
   onDiagnostics(listener: ClientDiagnosticsListener): () => void;
   close(): void | Promise<void>;
+  /** §8.4: a native host that runs its own drives holds them in `background`. */
+  setHostLifecycle?(state: 'active' | 'background'): void | Promise<void>;
 }
 
 export interface RealtimeSupervisorSignal<State> {
@@ -345,6 +347,9 @@ export class RealtimeSupervisor {
     diagnosticsFailureCode?: 'realtime.diagnostics_unavailable';
   } = {};
   #disconnectCause: string | undefined;
+  /** The state the host last accepted from `setHostLifecycle`. */
+  #hostState: 'active' | 'background' = 'active';
+  #hostReport: Promise<void> = Promise.resolve();
   #snapshot: RealtimeSupervisorSnapshot = { phase: 'idle', attempt: 0 };
 
   constructor(
@@ -394,15 +399,48 @@ export class RealtimeSupervisor {
       if (state === 'online') this.#drive();
     });
     const lifecycle = this.#lifecycle?.subscribe((state) => {
-      this.#reconcile();
-      if (state === 'active') this.#drive();
+      const settle = () => {
+        this.#reconcile();
+        if (state === 'active') this.#drive();
+      };
+      // The host hears `background` before the disconnect frees its round.
+      const reported = this.#reportLifecycle();
+      if (reported) void reported.then(settle);
+      else settle();
     });
     const protection = this.#protection?.subscribe(() => this.#reconcile());
     for (const unsubscribe of [connectivity, lifecycle, protection]) {
       if (unsubscribe) this.#unsubscribers.push(unsubscribe);
     }
+    if (this.#lifecycle?.current() === 'background') {
+      void this.#reportLifecycle();
+    }
     this.#reconcile();
     this.#read();
+  }
+
+  /**
+   * §8.4: report the lifecycle to a native host loop, which holds its own
+   * drives in `background`; a shared transport reports nothing. Reports run
+   * one at a time and each sends the state current when it runs, so the host
+   * ends on the latest state; a stopped supervisor releases the hold. A
+   * report the client refuses (it closed) changes nothing.
+   */
+  #reportLifecycle(): Promise<void> | undefined {
+    const report = this.#client.setHostLifecycle;
+    if (!report || this.#sharedTransport) return undefined;
+    this.#hostReport = this.#hostReport
+      .then(async () => {
+        const state =
+          !this.#stopped && this.#lifecycle?.current() === 'background'
+            ? 'background'
+            : 'active';
+        if (state === this.#hostState) return;
+        await report.call(this.#client, state);
+        this.#hostState = state;
+      })
+      .catch(() => undefined);
+    return this.#hostReport;
   }
 
   /** The initial diagnostics read, repeated after a held security gate opens. */
@@ -452,6 +490,7 @@ export class RealtimeSupervisor {
       await this.#disconnecting;
       await this.#attemptJob;
       await this.#round;
+      await this.#hostReport;
       this.#listeners.clear();
       if (this.#failure) {
         throw new RealtimeSupervisorError(this.#failure, this.#failures);
@@ -469,6 +508,7 @@ export class RealtimeSupervisor {
     }
     this.#publish({ phase: 'stopped', attempt: 0 });
     void this.#disconnect();
+    void this.#reportLifecycle();
     return this.#stopping;
   }
 

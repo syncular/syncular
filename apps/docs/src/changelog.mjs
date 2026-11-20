@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-20',
+    title: 'The Tauri host loop starts no round in the background',
+    body: "On iOS every move to the background started an HTTP round: the realtime supervisor released the socket, the release ended the round it carried, and the plugin's host loop ran the pending intent at once. iOS suspended that request, and on return it failed as `transport.failed` with cause `io` or `connect`. The supervisor now reports its lifecycle signal to the plugin with `setHostLifecycle` before it releases the socket. In `background` the plugin starts no round of its own and ends the round in flight as `client.round_cancelled`; on `active` it runs the work it held.",
+    links: [
+      {
+        href: '/platform-tauri-realtime/#the-app-in-the-background',
+        label: 'Tauri: realtime & lifecycle',
+      },
+    ],
+  },
+  {
+    date: '2026-11-20',
     title: 'A far-behind live page sizes the commits it delivers',
     body: 'The live-section candidate read sized up to 1,000 candidate commits per page and matched every change of each against every unit key, so a pull 1,816 commits behind spent 8.2 s on PostgreSQL to deliver 2 commits. It now sizes candidates in commit order until the change or byte budget is reached, and each change finds its unit key in one lookup. On 400 commits of 200 changes across 120 keys the read takes 16 ms on PostgreSQL 17, where it took 1,612 ms, and 6 ms on SQLite, where it took 8,875 ms. Delivered commits and the cut are unchanged.',
     links: [

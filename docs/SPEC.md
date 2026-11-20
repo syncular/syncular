@@ -8334,6 +8334,21 @@ pinned, never interpreted.
   promise that settles after the attempt, its disconnect and any driven round
   have settled; repeated and reentrant calls share it, and so do calls of the
   installed `close()`.
+- **A native host loop holds its own drives in the background.** The Tauri
+  plugin runs drives on intent without the webview (`auto_sync`), and a
+  mobile OS suspends the app's network within seconds of a move to the
+  background. A request that the OS suspends fails on return as a dead
+  connection (`transport.failed`, cause `io` or `connect`). The
+  supervisor therefore reports its lifecycle signal to a client that offers
+  `setHostLifecycle('active' | 'background')`, unless it runs with
+  `sharedTransport`. It reports `background` before it releases the socket,
+  because the release ends the round the socket carried, and `active`
+  before its foreground drive. Reports run one at a time and each sends the
+  state current when it runs; `stop()` reports `active`. In `background`
+  the plugin starts no drive on intent or background deadline and ends the
+  round in flight as `client.round_cancelled`, whose late reply applies
+  nothing. The intents and the cancelled round's drive wait for `active`.
+  A drive the app requests (`sync`, `syncUntilIdle`) still runs.
 - **A refused disconnect does not latch.** When `disconnectRealtime()`
   rejects, the supervisor counts the socket as released and counts one retry
   on the ordinary schedule. The snapshot carries the rejection's Syncular code

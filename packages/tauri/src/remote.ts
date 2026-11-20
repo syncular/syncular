@@ -178,6 +178,11 @@ export class TauriSyncClient extends NativeBridgeClient {
     return this.#tauri.invoke(`${PLUGIN}syncular_set_headers`, { headers });
   }
 
+  /** The host lifecycle report passes the preflight gate. */
+  protected override allowPreflightCommand(method: string): boolean {
+    return method === 'setHostLifecycle';
+  }
+
   /** Shut down the native core and release its keyring. */
   protected override async shutdown(): Promise<void> {
     await this.command('shutdown', {});
@@ -203,6 +208,17 @@ export class TauriSyncClient extends NativeBridgeClient {
   /** Suspend new network work while retaining local access and queued commits. */
   async setTransportEnabled(enabled: boolean): Promise<void> {
     await this.command('setTransportEnabled', { enabled });
+  }
+
+  /**
+   * §8.4: the app's foreground state. In `background` the plugin's host loop
+   * starts no drive of its own and ends the round in flight as
+   * `client.round_cancelled`; `active` runs the work it held. Drives the
+   * app requests still run. The realtime supervisor reports its lifecycle
+   * signal here before it releases the socket.
+   */
+  async setHostLifecycle(state: 'active' | 'background'): Promise<void> {
+    await this.command('setHostLifecycle', { state });
   }
 
   /** Browser offline-control parity; local reads and commits remain available. */

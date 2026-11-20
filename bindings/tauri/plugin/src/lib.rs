@@ -541,6 +541,23 @@ struct RoundRun {
     decisions: Option<Vec<syncular_client::CurrentBasePreparation>>,
 }
 
+impl RoundRun {
+    /// A drive the host loop starts on its own, with no caller to reply to.
+    fn host() -> Self {
+        Self {
+            reply: None,
+            until_idle: true,
+            max_rounds: None,
+            timeout_ms: syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
+            started_at: Instant::now(),
+            spent: 0,
+            aggregate: Default::default(),
+            proof: None,
+            decisions: None,
+        }
+    }
+}
+
 fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
 where
     F: Fn(&Value) + Send + Sync + 'static,
@@ -605,6 +622,9 @@ where
     let mut active: Option<RoundRun> = None;
     let mut queued = std::collections::VecDeque::new();
     let mut background_deadline: Option<Instant> = None;
+    // §8.4: while the app is in the background the host starts no drive of
+    // its own; app drives still run.
+    let mut suspended = false;
     loop {
         if !core.transport_enabled() {
             background_deadline = None;
@@ -620,23 +640,16 @@ where
         // Consume sync intent only while idle. Mutations arriving mid-round
         // retain their coalesced intent and enter the next captured request.
         if active.is_none() {
-            if let Some(run) = queued.pop_front() {
-                active = Some(run);
-            } else if config.auto_sync {
+            if let Some(index) = queued
+                .iter()
+                .position(|run: &RoundRun| !suspended || run.reply.is_some())
+            {
+                active = queued.remove(index);
+            } else if config.auto_sync && !suspended {
                 match core.take_sync_intent() {
                     syncular_client::SyncIntent::Interactive => {
                         background_deadline = None;
-                        active = Some(RoundRun {
-                            reply: None,
-                            until_idle: true,
-                            max_rounds: None,
-                            timeout_ms: syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
-                            started_at: Instant::now(),
-                            spent: 0,
-                            aggregate: Default::default(),
-                            proof: None,
-                            decisions: None,
-                        });
+                        active = Some(RoundRun::host());
                     }
                     syncular_client::SyncIntent::Background { delay_ms } => {
                         let candidate = Instant::now()
@@ -706,22 +719,12 @@ where
             }
         }
         let request = if active.is_none() {
-            if let Some(deadline) = background_deadline {
+            if let Some(deadline) = background_deadline.filter(|_| !suspended) {
                 match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                     Ok(request) => request,
                     Err(RecvTimeoutError::Timeout) => {
                         background_deadline = None;
-                        queued.push_back(RoundRun {
-                            reply: None,
-                            until_idle: true,
-                            max_rounds: None,
-                            timeout_ms: syncular_client::SyncClient::SYNC_IDLE_TIMEOUT_MS,
-                            started_at: Instant::now(),
-                            spent: 0,
-                            aggregate: Default::default(),
-                            proof: None,
-                            decisions: None,
-                        });
+                        queued.push_back(RoundRun::host());
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -830,6 +833,31 @@ where
             }
             Request::Command { command, reply } => {
                 let method = command.get("method").and_then(Value::as_str);
+                if method == Some("setHostLifecycle") {
+                    match command.pointer("/params/state").and_then(Value::as_str) {
+                        Some(state @ ("active" | "background")) => {
+                            let background = state == "background";
+                            // A round in flight would be suspended with the
+                            // app and fail on return; it ends now, and its
+                            // work runs as a held drive on return.
+                            if background && !suspended && active.is_some() {
+                                core.cancel_round();
+                                queued.push_back(RoundRun::host());
+                                pump_events(&mut core, &*emit);
+                            }
+                            suspended = background;
+                            let _ = reply.send(json!({ "result": null }));
+                        }
+                        _ => {
+                            let _ = reply.send(json!({ "error": {
+                                "code": "sync.invalid_request",
+                                "message": "setHostLifecycle state must be active or background",
+                                "retryable": false
+                            } }));
+                        }
+                    }
+                    continue;
+                }
                 if matches!(method, Some("sync" | "syncUntilIdle" | "proveCurrentBase"))
                     && core.transport_enabled()
                 {
@@ -2726,6 +2754,168 @@ mod tests {
                 second_reply["result"]["clientCommitId"].as_str().unwrap()
             ]
         );
+    }
+
+    /// §8.4: in the background the host loop starts no drive of its own, and
+    /// the round in flight ends as `client.round_cancelled` instead of failing
+    /// on return; `active` runs the held work.
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn background_lifecycle_holds_host_drives() {
+        use ssp2::model::{Frame, Message, MsgKind};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (entered_tx, entered) = channel();
+        let (release, release_rx) = channel::<()>();
+        let resumed = Arc::new(AtomicBool::new(false));
+        let server_resumed = Arc::clone(&resumed);
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let server = std::thread::spawn(move || {
+            // Whether the app was active when each request arrived. Only
+            // the first request waits for `release`.
+            let mut seen = Vec::new();
+            for socket in listener.incoming() {
+                if server_stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let mut socket = socket.unwrap();
+                seen.push(server_resumed.load(Ordering::SeqCst));
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let length: usize = String::from_utf8(header)
+                    .unwrap()
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut bytes = vec![0; length];
+                socket.read_exact(&mut bytes).unwrap();
+                let request = ssp2::decode_message(&bytes).unwrap();
+                let reset = matches!(
+                    &request.frames[0],
+                    Frame::ReqHeader {
+                        log_epoch: None,
+                        ..
+                    }
+                );
+                let _ = entered_tx.send(seen.len());
+                if seen.len() == 1 {
+                    release_rx.recv().unwrap();
+                }
+                let mut frames = vec![Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: "epoch".into(),
+                    reset_required: reset,
+                }];
+                if !reset {
+                    frames.extend(scripted_sections(&request, 0, Vec::new()));
+                }
+                let response = ssp2::encode_message(&Message {
+                    wire_version: ssp2::decode::WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames,
+                });
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                socket.write_all(&response).unwrap();
+            }
+            seen
+        });
+        let (tx, rx) = channel();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: true,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                |_| {},
+            )
+        });
+        let call = |command: Value| {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+        let lifecycle = |state: &str| {
+            call(json!({ "method": "setHostLifecycle", "params": { "state": state } }))
+        };
+        assert!(call(json!({ "method": "create", "params": {
+            "clientId": "background", "schema": { "version": 1, "tables": [{
+                "name": "todo", "primaryKey": "id", "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ], "scopes": [{ "pattern": "todo:{id}" }]
+            }] }
+        } }))
+        .get("error")
+        .is_none());
+        assert_eq!(lifecycle("hidden")["error"]["code"], "sync.invalid_request");
+
+        // Held: local work raises intent, and no round begins (a round
+        // beginning clears syncNeeded on the owner before the next command).
+        assert_eq!(lifecycle("background")["result"], Value::Null);
+        call(json!({ "method": "subscribe", "params": { "scopes": { "id": "one" } } }));
+        call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "one", "title": "v1" }
+        }] } }));
+        assert_eq!(
+            call(json!({ "method": "statusSnapshot" }))["result"]["syncNeeded"],
+            true
+        );
+
+        // `active` runs the held intent.
+        resumed.store(true, Ordering::SeqCst);
+        lifecycle("active");
+        assert_eq!(entered.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
+
+        // Background during that round ends it as cancelled, at once.
+        resumed.store(false, Ordering::SeqCst);
+        lifecycle("background");
+        let diagnostics = call(json!({ "method": "diagnosticsSnapshot" }));
+        assert_eq!(
+            diagnostics["result"]["lastRound"]["errorCode"], "client.round_cancelled",
+            "{diagnostics}"
+        );
+        release.send(()).unwrap();
+
+        // The cancelled round's work waits for `active`; the server records
+        // whether a request arrived while the app was in the background.
+        resumed.store(true, Ordering::SeqCst);
+        lifecycle("active");
+        assert_eq!(entered.recv_timeout(Duration::from_secs(10)).unwrap(), 2);
+        assert_eq!(
+            call(json!({ "method": "syncUntilIdle" }))["result"]["ok"],
+            true
+        );
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(address);
+        let seen = server.join().unwrap();
+        assert!(seen.iter().all(|active| *active), "{seen:?}");
     }
 
     #[cfg(feature = "native-transport")]

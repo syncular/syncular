@@ -116,6 +116,22 @@ client so a later sign-in cannot rotate a closed replica's headers.
 writes continue, and `setOffline(true)` is its alias. The contract is in
 [Platform specifics](/platform-tauri-specifics/#local-activation-with-transport-closed).
 
+## The app in the background
+
+The supervisor reports its lifecycle signal to the plugin with
+`setHostLifecycle`. While the signal reads `background`, the plugin's host
+loop starts no round of its own, and the round in flight ends as
+`client.round_cancelled` instead of failing as `transport.failed` when the
+app returns. iOS suspends the app's network within seconds of a move to the
+background, so a request started then fails on return as a dead connection.
+On `active` the plugin runs the work it held, and the supervisor reconnects
+and drives a round. Rounds the app starts with `sync()` or `syncUntilIdle()`
+run in the background too. A supervisor installed with `sharedTransport`
+reports nothing, because a sibling view may still be in the foreground.
+
+An app without the supervisor calls `client.setHostLifecycle('background')`
+and `client.setHostLifecycle('active')` from its own lifecycle evidence.
+
 ## Sync progress
 
 `client.onProgress(listener)` and `progressSnapshot()` match the browser
