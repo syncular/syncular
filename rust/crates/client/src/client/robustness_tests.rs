@@ -787,7 +787,7 @@ fn activation_reveals_rows_whose_key_the_keyring_now_holds() {
 fn an_added_key_reveals_its_sealed_rows_without_a_lifecycle_change() {
     let mut client = sealed_row_client();
     client
-        .add_encryption_keys(std::collections::HashMap::from([(
+        .add_encryption_keys(std::collections::BTreeMap::from([(
             "k2".to_owned(),
             vec![0x2B; 32],
         )]))
@@ -824,7 +824,7 @@ fn an_added_key_reveals_its_sealed_rows_without_a_lifecycle_change() {
 fn an_identical_added_key_is_a_no_op() {
     let mut client = sealed_row_client();
     client
-        .add_encryption_keys(std::collections::HashMap::from([(
+        .add_encryption_keys(std::collections::BTreeMap::from([(
             "k1".to_owned(),
             vec![0x2A; 32],
         )]))
@@ -864,6 +864,13 @@ fn a_refused_key_addition_leaves_the_keyring_unchanged() {
         conflict,
         "k1",
     );
+    // Two bad keys: the first in key-id order is named, whatever the input order.
+    refused(
+        &mut client,
+        &[("k3", vec![0x2B; 31]), ("k1", vec![0x2C; 32])],
+        conflict,
+        "k1",
+    );
     refused(
         &mut client,
         &[("k2", vec![0x2B; 31])],
@@ -872,7 +879,7 @@ fn a_refused_key_addition_leaves_the_keyring_unchanged() {
     );
     client.begin_security_preflight().unwrap();
     let error = client
-        .add_encryption_keys(std::collections::HashMap::from([(
+        .add_encryption_keys(std::collections::BTreeMap::from([(
             "k2".to_owned(),
             vec![0x2B; 32],
         )]))

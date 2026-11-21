@@ -2420,11 +2420,12 @@ impl SyncClient {
     }
 
     /// §5.11: extend the installed keyring while active. The whole input is
-    /// validated before anything changes; lifecycle, realtime, and the round
+    /// validated in key-id order before anything changes, so a refusal names
+    /// the first bad key id in that order; lifecycle, realtime, and the round
     /// are untouched, and rows sealed under the new keys reveal at once.
     pub fn add_encryption_keys(
         &mut self,
-        mut keys: HashMap<String, Vec<u8>>,
+        mut keys: std::collections::BTreeMap<String, Vec<u8>>,
     ) -> Result<(), ClientError> {
         let refusal = if self.security_preflight {
             Some(ClientError {

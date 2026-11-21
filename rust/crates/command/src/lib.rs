@@ -967,24 +967,17 @@ pub fn dispatch<T: Transport>(
                         "addEncryptionKeys.keys must be an object of {\"$bytes\": hex} values",
                     )
                 })?;
-            let mut keys: std::collections::HashMap<String, Vec<u8>> =
-                std::collections::HashMap::with_capacity(entries.len());
-            for (key_id, value) in entries {
-                let Ok(bytes) = value_bytes(Some(value)) else {
-                    // Zero what was already decoded before the refusal drops it.
-                    for bytes in keys.values_mut() {
-                        bytes.fill(0);
-                    }
-                    return Err(CommandError {
-                        details: Some(json!({ "keyId": key_id })),
-                        ..CommandError::new(
-                            "sync.invalid_request",
-                            "encryption key must be a {\"$bytes\": hex} value",
-                        )
-                    });
-                };
-                keys.insert(key_id.clone(), bytes);
-            }
+            // A malformed key decodes to no bytes, so the core refuses it in
+            // key-id order with the other bad keys and zeroes every buffer.
+            let keys = entries
+                .iter()
+                .map(|(key_id, value)| {
+                    (
+                        key_id.clone(),
+                        value_bytes(Some(value)).unwrap_or_default(),
+                    )
+                })
+                .collect();
             running
                 .add_encryption_keys(keys)
                 .map_err(CommandError::from_client)?;
@@ -3304,6 +3297,13 @@ mod tests {
             .expect_err("malformed hex");
         assert_eq!(malformed.code, "sync.invalid_request");
         assert_eq!(malformed.details, Some(json!({ "keyId": "k3" })));
+        // Two bad keys: the first in key-id order is named, whatever the input order.
+        let first = add(
+            &mut client,
+            json!({ "keys": { "k9": { "$bytes": "2a2a" }, "k4": { "$bytes": "zz" } } }),
+        )
+        .expect_err("two bad keys");
+        assert_eq!(first.details, Some(json!({ "keyId": "k4" })));
         let short = add(
             &mut client,
             json!({ "keys": { "k3": { "$bytes": "2a2a" } } }),

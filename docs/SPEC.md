@@ -4459,8 +4459,10 @@ params `{ keys }` in the `$bytes` form of `activateSecurity`). The call:
 - is strictly additive. The core validates the whole input before it changes
   anything: a key that is not 32 bytes, or a `keyId` the keyring holds with
   different bytes, fails the call with `sync.invalid_request`, a static
-  message and the details `{ keyId }` naming one offending key, and installs
-  none of the keys. A `keyId` held with identical bytes is a no-op.
+  message and the details `{ keyId }`, and installs none of the keys. The core
+  checks the keys in ascending `keyId` order, so `details.keyId` names the first
+  offending key in that order on every core; a malformed `$bytes` key at the
+  command router counts as a key that is not 32 bytes. A `keyId` held with identical bytes is a no-op.
   `keyIdColumns` does not change;
 - runs serialized with the host's other key and lifecycle operations: on the
   TypeScript client's operation chain, on the Worker leader for every tab, on

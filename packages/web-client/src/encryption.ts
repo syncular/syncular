@@ -42,7 +42,8 @@ export interface Keyring {
 
 /**
  * `keyring` (a new one with `config.keyIdColumns` when absent) plus
- * `config.keys` (§5.11). A refused call changes nothing: every key is
+ * `config.keys` (§5.11), validated in key-id order. A refused call changes
+ * nothing: every key is
  * {@link KEY_LENGTH} bytes, and a held key id keeps its bytes (the same bytes
  * again are a no-op). The keyring holds copies, so the app may zero its own
  * buffers after the call.
@@ -52,7 +53,10 @@ export function installKeys(
   keyring: Keyring = { keys: new Map(), keyIdColumns: config.keyIdColumns },
 ): Keyring {
   const keys = new Map(keyring.keys);
-  for (const [keyId, key] of Object.entries(config.keys)) {
+  // Key-id order, so a refusal names the same key id as the Rust core.
+  for (const [keyId, key] of Object.entries(config.keys).sort(([a], [b]) =>
+    a < b ? -1 : 1,
+  )) {
     const held = keys.get(keyId);
     if (!(key instanceof Uint8Array) || key.length !== KEY_LENGTH)
       throw invalidRequest('encryption key must be 32 bytes (AES-256)', false, {

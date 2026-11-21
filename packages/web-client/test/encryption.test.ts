@@ -340,6 +340,13 @@ describe('portable keyring hardening', () => {
       }),
     );
     expect([...keyring.keys.keys()]).toEqual(['secrets']);
+    // Two bad keys: the first in key-id order is named, whatever the input order.
+    expect(() =>
+      installKeys(
+        { keys: { zeta: new Uint8Array(31), secrets: other } },
+        keyring,
+      ),
+    ).toThrow(expect.objectContaining({ details: { keyId: 'secrets' } }));
     // The same bytes again are a no-op; the held copy stays installed.
     const held = keyring.keys.get('secrets');
     const extended = installKeys(
