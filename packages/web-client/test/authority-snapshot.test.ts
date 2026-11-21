@@ -189,7 +189,7 @@ test('authority snapshot merges complete persisted scope rectangles, distinguish
     expect(client.authoritySnapshot().complete).toBe(false);
     const closing = client.close();
     expect(() => client.authoritySnapshot()).toThrow(
-      expect.objectContaining({ code: 'sync.invalid_request' }),
+      expect.objectContaining({ code: 'client.closed' }),
     );
     await closing;
   } finally {

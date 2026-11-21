@@ -17,7 +17,7 @@ import {
   type SparseRowValue,
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
-import type { EncryptionConfig } from './encryption';
+import { encryptRowValues, type Keyring } from './encryption';
 import { ClientSyncError, invalidRequest } from './errors';
 import {
   type CompiledClientSchema,
@@ -275,7 +275,7 @@ function sparseValues(
 export async function encodeOutboxCommit(
   schema: CompiledClientSchema,
   commit: OutboxCommit,
-  encryption?: EncryptionConfig,
+  encryption?: Keyring,
   storedKeyIdFor?: (
     table: CompiledClientTable,
     rowId: string,
@@ -304,12 +304,9 @@ export async function encodeOutboxCommit(
     }
     let values = sparseValues(table, op.values, op.insert === true);
     if (table.hasEncryptedColumns) {
-      // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
-      const { encryptRowValues } = await import('./encryption');
       values = await encryptRowValues(
         encryption,
         table,
-        op.rowId,
         values,
         storedKeyIdFor?.(table, op.rowId),
       );

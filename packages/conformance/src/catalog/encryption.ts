@@ -683,6 +683,138 @@ export const encryptionScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §5.11: addEncryptionKeys extends the active keyring and reveals the
+    // rows sealed under the new key in the same step, without a preflight:
+    // an open write survives it, the revision advances, a conflicting key id
+    // and a preflight refuse it, and a later preflight releases the key.
+    name: 'encryption/add-keys-while-active-reveals',
+    specRefs: ['§5.11'],
+    server: SELECTED_SERVER,
+    async run(ctx: ScenarioContext) {
+      const writer = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-add-writer',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: selectedKeys,
+      });
+      await writer.api.subscribe(U1);
+      await syncIdle(writer);
+      const sealedRow = (id: string, note: string) => ({
+        op: 'upsert' as const,
+        table: 'secrets',
+        values: {
+          id,
+          project_id: 'p1',
+          encryption_key_id: SELECTED_KEY_ID,
+          note,
+        },
+      });
+      await writer.api.mutate([sealedRow('r1', 'confidential')]);
+      await syncIdle(writer);
+
+      const sealing: DriverEncryptionConfig = {
+        keys: {},
+        keyIdColumns: { secrets: 'encryption_key_id' },
+      };
+      const reader = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-add-reader',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: sealing,
+      });
+      await reader.api.subscribe(U1);
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.readRows('secrets'))[0]?.sealedKey,
+        SELECTED_KEY_ID,
+        'r1 lands sealed',
+      );
+
+      // An open write: queued in the outbox while the key arrives.
+      await reader.api.setTransportEnabled(false);
+      await reader.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r2',
+            project_id: 'p1',
+            encryption_key_id: null,
+            note: null,
+          },
+        },
+      ]);
+      const before = BigInt(await reader.api.localRevision!());
+      await reader.api.addEncryptionKeys(selectedKeys.keys);
+      const revealed = (await reader.api.readRows('secrets')).find(
+        (row) => row.rowId === 'r1',
+      );
+      checkEqual(
+        { note: revealed?.values.note, sealedKey: revealed?.sealedKey },
+        { note: 'confidential', sealedKey: undefined },
+        'adding the key reveals the sealed row',
+      );
+      check(
+        BigInt(await reader.api.localRevision!()) > before,
+        'the reveal publishes a revision',
+      );
+      await reader.api.mutate([sealedRow('r1', 'edited')]);
+      await reader.api.setTransportEnabled(true);
+      await syncIdle(reader);
+      checkEqual(
+        (await ctx.server.readRows('secrets')).map((row) => row.rowId).sort(),
+        ['r1', 'r2'],
+        'the open write pushes after the add',
+      );
+      await syncIdle(writer);
+      checkEqual(
+        (await writer.api.readRows('secrets')).find((row) => row.rowId === 'r1')
+          ?.values.note,
+        'edited',
+        'a write to the revealed row encrypts under the added key',
+      );
+
+      const codeOf = (promise: Promise<unknown>) =>
+        promise.then(
+          () => undefined,
+          (error: { code?: string; details?: unknown }) => ({
+            code: error.code,
+            details: error.details,
+          }),
+        );
+      checkEqual(
+        await codeOf(
+          reader.api.addEncryptionKeys({
+            [SELECTED_KEY_ID]: { $bytes: WRONG_KEY_HEX },
+            'practice-key-v2': { $bytes: KEY_HEX },
+          }),
+        ),
+        { code: 'sync.invalid_request', details: { keyId: SELECTED_KEY_ID } },
+        'a held key id with other bytes refuses the whole call',
+      );
+      await reader.api.addEncryptionKeys(selectedKeys.keys);
+
+      await reader.api.beginSecurityPreflight();
+      checkEqual(
+        (await codeOf(reader.api.addEncryptionKeys(selectedKeys.keys)))?.code,
+        'client.security_preflight_required',
+        'preflight refuses the add',
+      );
+      await reader.api.activateSecurity(sealing);
+      await writer.api.mutate([sealedRow('r3', 'later')]);
+      await syncIdle(writer);
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.readRows('secrets')).find((row) => row.rowId === 'r3')
+          ?.sealedKey,
+        SELECTED_KEY_ID,
+        'the preflight released the added key',
+      );
+    },
+  },
+  {
     // §5.11: a sparse patch that omits the key-id selector resolves it from
     // the stored local row; an unresolvable key id is a durable
     // `client.encrypt_failed` rejection instead of a sync() abort.

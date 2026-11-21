@@ -147,46 +147,42 @@ Client-side encryption never sends a key to the server, so the application owns 
 
 ### Supplying keys
 
-`keyProvider` maps a key id to its 32-byte key, and `keyIdFor` picks the key for a write. The default is one key per table (key id equals the table name). A direct TypeScript `SyncClient` takes functions:
+Every client host takes the same keyring: `keys` maps a key id to its 32-byte key, and the optional `keyIdColumns` maps a table to a plaintext string column that holds the active key id for each row. Without `keyIdColumns` a table uses one key, whose id is the table name. A direct `SyncClient`, a worker handle, Tauri and React Native take the same object; the client core validates it when the client is created and fails with `sync.invalid_request` and the details `{ keyId }` when a key is not 32 bytes. The example in step 2 uses it; keep old keys in the ring while old envelopes remain.
 
 ```ts title="src/sync.ts"
 import { SyncClient } from '@syncular/client';
 
-const keys = new Map<string, Uint8Array>([
-  ['patient_notes', myTableKey], // 32 bytes
-]);
-
 const client = new SyncClient({
   // …database, schema, transport…
   encryption: {
-    keyProvider: (keyId) => keys.get(keyId),
-    // optional; the default is per table (keyId === table name):
-    // keyIdFor: (table, rowId) => `${table}:${scopeOf(rowId)}`,
+    keys: {
+      'key-2026-07': activeKey, // 32 bytes
+      'key-2026-06': previousKey, // retained while old envelopes remain
+    },
+    keyIdColumns: { patient_notes: 'encryption_key_id' },
   },
 });
 ```
 
 The key id travels inside the envelope, so rotation and per-scope keys need no schema change. On decrypt, the client reads the key id from the envelope and asks the keyring for it. A row under a key id the keyring does not hold lands sealed ([Rows under a key the device lacks](#rows-under-a-key-the-device-lacks)). A wrong key or a corrupt envelope fails the round with `client.decrypt_failed`, which is local to the client and not retryable. The code reaches the rejected `sync()` call, the failed progress snapshot and `lastRound.errorCode` in diagnostics, on a worker handle as on a direct client. Install the key, or keep the table out of that client's units ([A protected value shares a row with shared data](#a-protected-value-shares-a-row-with-shared-data)).
 
-Functions do not cross a Web Worker or a native command bridge. The browser worker, Tauri, and React Native hosts therefore accept a portable keyring: raw keys plus an optional map from table to a plaintext string column that holds the active key id. The example in step 2 uses it; keep old keys in the ring while old envelopes remain.
+`keyIdColumns.patient_notes` must name a non-encrypted string column. Its value selects the write key for each row; the envelope's own key id still selects the correct key when decrypting older data. A `patch` that omits the key-id column resolves it from the stored local row, and a `patch` that writes no encrypted column needs no key. An encode-time selection failure surfaces as `client.encrypt_failed`, a durable per-commit rejection that never aborts the round. Raw keys install inside the client, worker or native core and never reach the server.
 
-```ts title="src/sync.ts"
-const encryption = {
-  keys: {
-    'key-2026-07': activeKey,
-    'key-2026-06': previousKey, // retained while old envelopes remain
-  },
-  keyIdColumns: { patient_notes: 'encryption_key_id' },
-};
+When authentication or a signed revocation must run first, create the client with `securityPreflight: true` instead of `encryption`, apply the exact [authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap), then install the accepted keyring with `activateSecurity({ encryption })`. Protected work fails with `client.security_preflight_required` until activation. Use `beginSecurityPreflight()` for live key removal.
+
+### Adding a key while the client runs
+
+A key that arrives after activation, such as a grant a member receives while editing, goes through `addEncryptionKeys`. It takes the same `keys` object, extends the active keyring, and reveals the rows sealed under the new keys in the same step, publishing one change per table. Reads, live queries, units, realtime and pending writes keep running; the client stays `active`.
+
+```ts title="src/keys.ts"
+await client.addEncryptionKeys({ 'key-2026-08': grantedKey });
 ```
 
-`keyIdColumns.patient_notes` must name a non-encrypted string column. Its value selects the write key for each row; the envelope's own key id still selects the correct key when decrypting older data. A `patch` that omits the key-id column resolves it from the stored local row, and a `patch` that writes no encrypted column needs no key. An encode-time selection failure surfaces as `client.encrypt_failed`, a durable per-commit rejection that never aborts the round. Raw keys install inside the worker or native core and never reach the server.
-
-When authentication or a signed revocation must run first, create the client with `securityPreflight: true` instead of `encryption`, apply the exact [authorized local purge](/concepts-local-data-purge/#race-free-security-bootstrap), then install the accepted keyring with `activateSecurity({ encryption })`. Protected work fails with `client.security_preflight_required` until activation. Use `beginSecurityPreflight()` for live key rotation or removal.
+The call only adds. A key id the keyring holds with the same bytes is a no-op; one it holds with different bytes, or a key that is not 32 bytes, fails the whole call with `sync.invalid_request` and the details `{ keyId }`, and no key of that call is installed. Replacing or removing a key still goes through `beginSecurityPreflight()` and `activateSecurity({ encryption })`. During preflight the call fails with `client.security_preflight_required`, and on a closed client with `client.closed`. A preflight that begins after the call releases the whole keyring, the added keys included. On a worker handle the leader runs the call for every tab; on Tauri and React Native the native core runs it in order with its other commands.
 
 ### Rows under a key the device lacks
 
-A table that selects its key per row (`keyIdColumns` or `keyIdFor`) can hold rows under keys a device never receives: imported rows, rotated rows, another practice's rows in a shared unit. A delivered row with an envelope under a key the keyring does not hold lands sealed: every encrypted column is NULL, the other columns hold their values, and the round goes on. The reserved column `_sync_sealed_key` holds the missing key id; read it with an alias, because `SELECT *` strips it like `_sync_version`:
+A table that selects its key per row (`keyIdColumns`) can hold rows under keys a device never receives: imported rows, rotated rows, another practice's rows in a shared unit. A delivered row with an envelope under a key the keyring does not hold lands sealed: every encrypted column is NULL, the other columns hold their values, and the round goes on. The reserved column `_sync_sealed_key` holds the missing key id; read it with an alias, because `SELECT *` strips it like `_sync_version`:
 
 ```sql
 SELECT id, name, _sync_sealed_key AS sealed_key FROM patients
@@ -194,7 +190,7 @@ SELECT id, name, _sync_sealed_key AS sealed_key FROM patients
 
 Typegen types `sealedKey` as a nullable string. Filter with `WHERE _sync_sealed_key IS NULL` to list only readable rows. Only a table with an encrypted column has the marker; a query that names it on another table fails with `typegen.sealed_key_unencrypted`, and a result column whose name starts with `_sync_` fails with `typegen.reserved_result_column`. Generated row and query result types make every encrypted column nullable, including one declared `NOT NULL`, because a sealed row holds NULL there. Insert and update shapes keep the declared nullability.
 
-A sealed row is read-only. `mutate`, `patch` and delete of it fail at once with `client.encryption_key_missing`, because a write would send NULL over ciphertext the device cannot see. The client keeps the row's envelopes locally. When `activateSecurity()` installs a keyring that holds the key, or the next sync round starts with the key available, the client decrypts the row, clears `_sync_sealed_key` and publishes the change. A wrong key or a corrupt envelope still fails the round with `client.decrypt_failed`.
+A sealed row is read-only. `mutate`, `patch` and delete of it fail at once with `client.encryption_key_missing`, because a write would send NULL over ciphertext the device cannot see. The client keeps the row's envelopes locally. When `activateSecurity()` installs a keyring that holds the key, or `addEncryptionKeys()` adds it, the client decrypts the row, clears `_sync_sealed_key` and publishes the change. A wrong key or a corrupt envelope still fails the round with `client.decrypt_failed`.
 
 Render a NULL encrypted column of a sealed row as locked, never as empty: NULL there means the value is unknown on this device.
 
@@ -232,7 +228,7 @@ CREATE TABLE key_grants (
 );
 ```
 
-To grant access, one member wraps the table key to the newcomer's public key and writes a `key_grants` row, which syncs like any other row. The newcomer reads the grant, calls `unwrapKey` with their private key, and gives the recovered key to their keyring. The server stores only the wrapped bytes.
+To grant access, one member wraps the table key to the newcomer's public key and writes a `key_grants` row, which syncs like any other row. The newcomer reads the grant, calls `unwrapKey` with their private key, and installs the recovered key with `addEncryptionKeys`. The server stores only the wrapped bytes.
 
 ### Revoking a key on one device
 

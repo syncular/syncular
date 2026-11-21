@@ -1,5 +1,58 @@
 # Syncular release notes
 
+## 0.100.0 release notes
+
+### Add an encryption key while the client runs
+
+A Diego device that received a newly granted, verified key while the user was
+editing could install it only through `beginSecurityPreflight()` and
+`activateSecurity()` with the old and new keys. Worker, Tauri and React Native
+clients took a static `{ keys, keyIdColumns }` keyring that only activation
+installs. During that window writes failed with
+`client.security_preflight_required`, realtime closed and the barrier waited
+on the rounds in flight.
+
+`addEncryptionKeys(keys)` now extends the active keyring on every host: the
+direct `SyncClient`, worker handles (the leader runs it for every tab), Tauri
+and React Native (the native owner runs it in order), and the Rust command
+router. In the same serialized step the client reveals the rows sealed under
+the new keys and publishes one change per table. The lifecycle stays
+`active`; reads, live queries, units, realtime and pending writes keep
+running.
+
+The call only adds. A key id held with the same bytes is a no-op. A key id
+held with different bytes, or a key that is not 32 bytes, fails the whole call
+with `sync.invalid_request` and the details `{ keyId }`, and installs none of
+its keys. In preflight it fails with `client.security_preflight_required`, on
+a closed client with `client.closed`. A call that starts before
+`beginSecurityPreflight()` finishes first, and the preflight then releases
+the whole keyring, the added keys included (SPEC §5.11, "Adding keys while
+active").
+
+The direct TypeScript client now reports `client.closed` for every call after
+`close()`, as the native bridges do; it reported `sync.invalid_request`.
+
+### Upgrading
+
+- The direct `SyncClient` and `SyncRemoteClient` take the keyring every other
+  host takes. `encryption: { keyProvider, keyIdFor }` becomes
+  `encryption: { keys, keyIdColumns }`, and so does the `encryption` option
+  of `activateSecurity`. A `keyIdFor` that read a row column becomes a
+  `keyIdColumns` entry naming that plaintext column. A key that arrived later
+  through a provider function goes through `addEncryptionKeys`.
+- `encryptionConfigFromKeyring`, the `EncryptionConfig` type and the row
+  helpers `encryptRowValues`, `decryptRowValues` and
+  `decryptOrSealRowValues` are no longer exported from `@syncular/client`;
+  `EncryptionKeyringConfig` remains. The client validates the keyring when it is
+  constructed and in `activateSecurity()`.
+- `addEncryptionKeys` joins the forwarded multi-tab surface, so
+  `MULTI_TAB_PROTOCOL_VERSION` moves from 8 to 9. A tab still running an older
+  build reports `leader-incompatible` and must reload. The replica storage, the
+  server and the SSP2 wire do not change.
+- Update `@syncular/client`, `@syncular/tauri`, `tauri-plugin-syncular`,
+  the React Native binding and the Rust crates together. An older native core
+  refuses `addEncryptionKeys` as an unknown method.
+
 ## 0.99.0 release notes
 
 0.99.0 sizes only the commits a far-behind live page delivers

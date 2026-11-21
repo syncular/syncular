@@ -636,6 +636,11 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('activateSecurity', [options]);
   }
 
+  /** §5.11: extend the leader's active keyring; every tab sees the reveal. */
+  addEncryptionKeys(keys: EncryptionKeyringConfig['keys']): Promise<void> {
+    return this.#call('addEncryptionKeys', [keys]);
+  }
+
   unsubscribe(id: string): Promise<void> {
     return this.#call('unsubscribe', [id]);
   }

@@ -113,7 +113,12 @@ import {
   type RealtimePolicy,
   type RealtimeState,
 } from './diagnostics';
-import type { EncryptionConfig } from './encryption';
+import {
+  decryptRowValues,
+  type EncryptionKeyringConfig,
+  installKeys,
+  type Keyring,
+} from './encryption';
 import {
   ClientSyncError,
   invalidRequest,
@@ -520,13 +525,12 @@ export interface SyncClientConfig {
    */
   readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
   /**
-   * §5.11 client-side encryption. Supplies the key material (`keyProvider`)
-   * and key selection (`keyIdFor`) for columns the generated schema marks
-   * `encrypted`. Absent ⇒ no columns are encrypted (a schema with encrypted
-   * columns then fails loud on the first encode/apply — a missing key is
-   * `client.decrypt_failed`, never silent plaintext).
+   * §5.11 client-side encryption: the keyring (`keys`, `keyIdColumns`) for
+   * columns the generated schema marks `encrypted`. The constructor validates and
+   * installs it; `addEncryptionKeys` extends it later. Absent ⇒ a schema with
+   * encrypted columns fails loud on the first encode or apply.
    */
-  readonly encryption?: EncryptionConfig;
+  readonly encryption?: EncryptionKeyringConfig;
   /**
    * Open the local replica in the fail-closed security preflight state.
    *
@@ -575,7 +579,7 @@ export const SECURITY_PREFLIGHT_REQUIRED_CODE =
 
 /** Key material installed atomically when a direct client becomes active. */
 export interface SecurityActivation {
-  readonly encryption?: EncryptionConfig;
+  readonly encryption?: EncryptionKeyringConfig;
 }
 
 /** §8.6 a peer's ephemeral presence document on a scope key. */
@@ -988,7 +992,7 @@ export class SyncClient {
   readonly #db: ClientDatabase;
   readonly #schema: CompiledClientSchema;
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
-  #encryption: EncryptionConfig | undefined;
+  #encryption: Keyring | undefined;
   /** RFC 0005 resolved capture budgets; undefined ⇒ feature off. */
   readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
@@ -1004,6 +1008,7 @@ export class SyncClient {
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
   #started = false;
+  #closed = false;
   #lease: LeaderLease | undefined;
   #clientId = '';
   #devtoolsUnregister: (() => void) | undefined;
@@ -1143,7 +1148,7 @@ export class SyncClient {
     }
     if (config.securityPreflight === true && config.encryption !== undefined) {
       throw invalidRequest(
-        'securityPreflight and encryption are mutually exclusive; activateSecurity installs keys',
+        'securityPreflight and encryption are mutually exclusive',
       );
     }
     this.#retainFailedCommits = config.retainFailedCommits === true;
@@ -1186,7 +1191,7 @@ export class SyncClient {
     this.#config = config;
     this.#realtimePolicy = realtimePolicy;
     this.#realtimeState = this.#idleRealtimeState;
-    this.#encryption = config.encryption;
+    this.#encryption = config.encryption && installKeys(config.encryption);
     this.#securityLifecycle = config.securityPreflight ? 'preflight' : 'active';
     this.#now = config.now ?? Date.now;
     const outcomeRetentionMaxEntries =
@@ -1603,6 +1608,7 @@ export class SyncClient {
 
   async close(): Promise<void> {
     this.#started = false;
+    this.#closed = true;
     this.#emitSyncIntent({ kind: 'none' });
     this.#devtoolsUnregister?.();
     this.#devtoolsUnregister = undefined;
@@ -1715,10 +1721,11 @@ export class SyncClient {
         'activateSecurity requires the client to be in security preflight',
       );
     }
+    const encryption = options.encryption && installKeys(options.encryption);
     await (this.#preflightBarrier ?? this.#opChain);
     // §4.8: an interrupted eviction finishes before protected reads open.
     await this.#serialize(() => this.#drainPendingEvictions());
-    this.#encryption = options.encryption;
+    this.#encryption = encryption;
     this.#applyBatch((batch) => {
       this.#securityLifecycle = 'active';
       batch.status();
@@ -1727,6 +1734,24 @@ export class SyncClient {
     if (this.#hasStartupWork()) {
       this.#emitSyncNeeded('startup');
     }
+  }
+
+  /**
+   * §5.11: add `keys` to the active keyring and reveal the rows sealed under
+   * them, in one step serialized behind every started operation and any
+   * preflight barrier. Strictly additive; the lifecycle, the gate and
+   * realtime stay as they are.
+   */
+  async addEncryptionKeys(
+    keys: EncryptionKeyringConfig['keys'],
+  ): Promise<void> {
+    this.#requireActive();
+    // Queued now: a preflight that begins later waits for this step, then
+    // releases the whole keyring.
+    await this.#serialize(async () => {
+      this.#encryption = installKeys({ keys }, this.#encryption);
+      await this.#revealSealed();
+    });
   }
 
   /** Persisted work an opened or activated replica owes one round (§8.4). */
@@ -4442,7 +4467,6 @@ export class SyncClient {
    */
   async #revealSealed(): Promise<void> {
     if (this.#encryption === undefined) return;
-    const { decryptRowValues } = await import('./encryption');
     for (const table of this.#schema.tables.values()) {
       if (!table.hasEncryptedColumns) continue;
       const encrypted = table.columns.filter((column) => column.encrypted);
@@ -7224,6 +7248,8 @@ export class SyncClient {
   }
 
   #requireStarted(): void {
+    if (this.#closed)
+      throw new ClientSyncError('client.closed', 'the sync client is closed');
     if (!this.#started) {
       throw invalidRequest('call start() first');
     }

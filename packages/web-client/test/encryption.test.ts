@@ -8,11 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
   compileClientSchema,
-  decryptRowValues,
-  decryptOrSealRowValues,
   ensureLocalSchema,
-  encryptionConfigFromKeyring,
-  encryptRowValues,
 } from '@syncular/client';
 import {
   DecryptError,
@@ -23,6 +19,12 @@ import {
 import type { ServerSchema } from '@syncular/server';
 import { applyRowsSegment, applySqliteSegment } from '../src/apply';
 import { BunClientDatabase } from '../src/bun-database';
+import {
+  decryptOrSealRowValues,
+  decryptRowValues,
+  encryptRowValues,
+  installKeys,
+} from '../src/encryption';
 import {
   drive,
   makeClient,
@@ -63,9 +65,8 @@ const SERVER_SCHEMA: ServerSchema = { version: 1, tables: [SECRETS_TABLE] };
 const CLIENT_SCHEMA: ClientSchema = { version: 1, tables: [SECRETS_TABLE] };
 
 const KEY = new Uint8Array(32).fill(0x2a);
-const goodProvider = (id: string) => (id === 'secrets' ? KEY : undefined);
-const wrongProvider = (id: string) =>
-  id === 'secrets' ? new Uint8Array(32).fill(0x99) : undefined;
+const GOOD = { keys: { secrets: KEY } };
+const WRONG = { keys: { secrets: new Uint8Array(32).fill(0x99) } };
 
 function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
   outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
@@ -84,12 +85,12 @@ describe('§5.11 encrypted round-trip', () => {
     const a = await makeClient(server, {
       clientId: 'client-a',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     const b = await makeClient(server, {
       clientId: 'client-b',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     a.client.subscribe({ project_id: 'p1' });
     b.client.subscribe({ project_id: 'p1' });
@@ -134,7 +135,7 @@ describe('§5.11 encrypted round-trip', () => {
     const a = await makeClient(server, {
       clientId: 'client-a',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
@@ -149,7 +150,7 @@ describe('§5.11 encrypted round-trip', () => {
     const b = await makeClient(server, {
       clientId: 'client-b',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     b.client.subscribe({ project_id: 'p1' });
     await b.client.syncUntilIdle();
@@ -164,7 +165,7 @@ describe('§5.11 encrypted round-trip', () => {
     const a = await makeClient(server, {
       clientId: 'client-a',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     a.client.subscribe({ project_id: 'p1' });
     await a.client.syncUntilIdle();
@@ -185,7 +186,7 @@ describe('§5.11 encrypted round-trip', () => {
     const bad = await makeClient(server, {
       clientId: 'client-bad',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: wrongProvider },
+      encryption: WRONG,
     });
     bad.client.subscribe({ project_id: 'p1' });
     let caught: unknown;
@@ -225,7 +226,7 @@ describe('§5.11 encrypted round-trip', () => {
     const writer = await makeClient(server, {
       clientId: 'client-writer',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     writer.client.mutate([
       {
@@ -243,7 +244,7 @@ describe('§5.11 encrypted round-trip', () => {
 
     const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets')!;
     await expect(
-      encryptRowValues(undefined, table, 's6', ['s6', 'p1', 'x', null]),
+      encryptRowValues(undefined, table, ['s6', 'p1', 'x', null]),
     ).rejects.toMatchObject({ code: 'client.encrypt_failed' });
     await expect(
       decryptRowValues(undefined, table, ['s6', 'p1', new Uint8Array(1), null]),
@@ -284,12 +285,11 @@ describe('§5.11 encrypted round-trip', () => {
 
 describe('portable keyring hardening', () => {
   test('a wire keyId naming a prototype member reads as a missing key', async () => {
-    const config = encryptionConfigFromKeyring({ keys: { secrets: KEY } });
-    // Own-property lookups only: inherited names resolve to no key at all.
-    expect(config.keyProvider('constructor')).toBeUndefined();
-    expect(config.keyProvider('toString')).toBeUndefined();
-    expect(config.keyProvider('hasOwnProperty')).toBeUndefined();
-    expect(config.keyProvider('secrets')).toBe(KEY);
+    const config = installKeys(GOOD);
+    // Inherited names resolve to no key at all.
+    expect(config.keys.get('constructor')).toBeUndefined();
+    expect(config.keys.get('toString')).toBeUndefined();
+    expect(config.keys.get('secrets')).toEqual(KEY);
 
     // End to end through the apply seam: an envelope carrying such a keyId
     // surfaces the missing-key error naming the table and key id.
@@ -312,23 +312,57 @@ describe('portable keyring hardening', () => {
 
   test('a wrong-length key fails loud at install time', () => {
     for (const length of [0, 16, 31, 33, 64]) {
-      let caught: unknown;
-      try {
-        encryptionConfigFromKeyring({
-          keys: { secrets: new Uint8Array(length) },
-        });
-      } catch (error) {
-        caught = error;
-      }
-      expect((caught as { code?: string })?.code).toBe('sync.invalid_request');
-      expect(String((caught as Error).message)).toContain(
-        `must be 32 bytes (AES-256), got ${length}`,
+      expect(() =>
+        installKeys({ keys: { secrets: new Uint8Array(length) } }),
+      ).toThrow(
+        expect.objectContaining({
+          code: 'sync.invalid_request',
+          message: 'encryption key must be 32 bytes (AES-256)',
+          details: { keyId: 'secrets' },
+        }),
       );
     }
     // A correct-length keyring installs cleanly.
+    expect(() => installKeys(GOOD)).not.toThrow();
+  });
+
+  test('adding keys is strictly additive and all or nothing', () => {
+    const keyring = installKeys(GOOD);
+    const other = new Uint8Array(32).fill(0x07);
+    // A held key id with other bytes refuses the whole call, new ids included.
     expect(() =>
-      encryptionConfigFromKeyring({ keys: { secrets: KEY } }),
-    ).not.toThrow();
+      installKeys({ keys: { fresh: other, secrets: other } }, keyring),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'sync.invalid_request',
+        message: 'encryption key id is already held with different key bytes',
+        details: { keyId: 'secrets' },
+      }),
+    );
+    expect([...keyring.keys.keys()]).toEqual(['secrets']);
+    // The same bytes again are a no-op; the held copy stays installed.
+    const held = keyring.keys.get('secrets');
+    const extended = installKeys(
+      { keys: { secrets: new Uint8Array(KEY), fresh: other } },
+      keyring,
+    );
+    expect(extended.keys.get('secrets')).toBe(held!);
+    expect(extended.keys.get('fresh')).toEqual(new Uint8Array(32).fill(0x07));
+  });
+
+  test('the keyring holds copies: the app may zero its buffers after install', async () => {
+    const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets')!;
+    const envelope = await encryptValue('string', 'kept', 'secrets', KEY);
+    const appKey = new Uint8Array(KEY);
+    const keyring = installKeys({ keys: { secrets: appKey } });
+    appKey.fill(0);
+    const added = new Uint8Array(KEY);
+    const extended = installKeys({ keys: { added } }, keyring);
+    added.fill(0);
+    expect(
+      await decryptRowValues(extended, table, ['s1', 'p1', envelope, null]),
+    ).toEqual(['s1', 'p1', 'kept', null]);
+    expect(extended.keys.get('added')).toEqual(KEY);
   });
 });
 
@@ -356,7 +390,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
   const CLIENT_SCHEMA: ClientSchema = { version: 1, tables: [TABLE] };
   const KEY_ID = 'practice-key-v1';
   const encryption = {
-    keyProvider: (id: string) => (id === KEY_ID ? KEY : undefined),
+    keys: { [KEY_ID]: KEY },
     keyIdColumns: { secrets: 'encryption_key_id' },
   };
 
@@ -423,7 +457,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       clientId: 'sparse-keyless',
       schema: CLIENT_SCHEMA,
       encryption: {
-        keyProvider: () => undefined,
+        keys: {},
         keyIdColumns: { secrets: 'encryption_key_id' },
       },
     });
@@ -467,7 +501,7 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       'updated',
     ];
     await expect(
-      encryptRowValues(encryption, table, 'r4', values, KEY_ID),
+      encryptRowValues(installKeys(encryption), table, values, KEY_ID),
     ).rejects.toMatchObject({ code: 'client.encrypt_failed' });
 
     // The same patch with an ABSENT selector does read the stored key id.
@@ -479,9 +513,8 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       'updated',
     ];
     const encrypted = await encryptRowValues(
-      encryption,
+      installKeys(encryption),
       table,
-      'r4',
       absent,
       KEY_ID,
     );
@@ -599,13 +632,10 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
   const schema: ClientSchema = { version: 1, tables: [table] };
   const server = makeServer(schema);
   server.allowed['actor-1'] = { project_id: ['p1'] };
-  let locked = false;
   const a = await makeClient(server, {
     clientId: 'locked-batch',
     schema,
-    encryption: {
-      keyProvider: (id) => (locked ? undefined : goodProvider(id)),
-    },
+    encryption: GOOD,
   });
   try {
     const unit = a.client.subscribe({ project_id: 'p1' });
@@ -623,8 +653,10 @@ test('atomic plain-column patches apply locally with locked keys and omit encryp
       })),
     );
     await a.client.syncUntilIdle();
+    // Lock the keys: a preflight releases the keyring, activation installs none.
+    await a.client.beginSecurityPreflight();
+    await a.client.activateSecurity({ encryption: { keys: {} } });
     a.client.unsubscribe(unit);
-    locked = true;
     const id = a.client.mutate(
       ['s1', 's2'].map((id, index) => ({
         op: 'patch' as const,
@@ -656,7 +688,7 @@ describe('§5.11 sealed apply', () => {
     const writer = await makeClient(server, {
       clientId: 'client-writer',
       schema: CLIENT_SCHEMA,
-      encryption: { keyProvider: goodProvider },
+      encryption: GOOD,
     });
     writer.client.subscribe({ project_id: 'p1' });
     await writer.client.syncUntilIdle();
@@ -669,13 +701,10 @@ describe('§5.11 sealed apply', () => {
     ]);
     await writer.client.sync();
 
-    let key: Uint8Array | undefined;
     const reader = await makeClient(server, {
       clientId: 'client-reader',
       schema: CLIENT_SCHEMA,
-      encryption: {
-        keyProvider: (id) => (id === 'secrets' ? key : undefined),
-      },
+      encryption: { keys: {} },
     });
     reader.client.subscribe({ project_id: 'p1' });
     // The bootstrap segment carries the row.
@@ -740,9 +769,10 @@ describe('§5.11 sealed apply', () => {
     ).toThrow(expect.objectContaining(sealed));
     expect(reader.client.pendingCommits()).toHaveLength(0);
 
-    // The next round reveals the row once the key is there.
-    key = KEY;
-    await reader.client.syncUntilIdle();
+    // Adding the key reveals the row at once, one revision for the table.
+    const revision = reader.client.localRevision;
+    await reader.client.addEncryptionKeys(GOOD.keys);
+    expect(reader.client.localRevision).toBeGreaterThan(revision);
     expect(sealedRead()).toEqual([
       {
         id: 's1',
@@ -754,12 +784,89 @@ describe('§5.11 sealed apply', () => {
     ]);
   });
 
+  test('addEncryptionKeys is serialized against the security preflight in both orders', async () => {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const writer = await makeClient(server, {
+      clientId: 'race-writer',
+      schema: CLIENT_SCHEMA,
+      encryption: GOOD,
+    });
+    const reader = await makeClient(server, {
+      clientId: 'race-reader',
+      schema: CLIENT_SCHEMA,
+      encryption: { keys: {} },
+    });
+    const write = async (id: string) => {
+      writer.client.mutate([
+        {
+          table: 'secrets',
+          op: 'upsert',
+          values: { id, project_id: 'p1', note: id, amount: null },
+        },
+      ]);
+      await writer.client.syncUntilIdle();
+      await reader.client.syncUntilIdle();
+    };
+    const sealedKeys = () =>
+      reader.client
+        .query('SELECT id, _sync_sealed_key AS k FROM secrets ORDER BY id')
+        .map((row) => [row.id, row.k]);
+    try {
+      writer.client.subscribe({ project_id: 'p1' });
+      reader.client.subscribe({ project_id: 'p1' });
+      await write('s1');
+      expect(sealedKeys()).toEqual([['s1', 'secrets']]);
+
+      // Preflight first: the add is refused and installs nothing.
+      const barrier = reader.client.beginSecurityPreflight();
+      await expect(
+        reader.client.addEncryptionKeys(GOOD.keys),
+      ).rejects.toMatchObject({ code: 'client.security_preflight_required' });
+      await barrier;
+      await reader.client.activateSecurity({ encryption: { keys: {} } });
+      expect(sealedKeys()).toEqual([['s1', 'secrets']]);
+
+      // Add first, preflight in the same tick: the barrier waits for the
+      // started add, which reveals, and then releases the whole keyring.
+      const adding = reader.client.addEncryptionKeys(GOOD.keys);
+      const second = reader.client.beginSecurityPreflight();
+      await adding;
+      await second;
+      await reader.client.activateSecurity({ encryption: { keys: {} } });
+      expect(sealedKeys()).toEqual([['s1', null]]);
+      await write('s2');
+      expect(sealedKeys()).toEqual([
+        ['s1', null],
+        ['s2', 'secrets'],
+      ]);
+
+      // A refused add changes nothing; a closed client refuses with its code.
+      await expect(
+        reader.client.addEncryptionKeys({ secrets: new Uint8Array(31) }),
+      ).rejects.toMatchObject({
+        code: 'sync.invalid_request',
+        details: { keyId: 'secrets' },
+      });
+      expect(sealedKeys()[1]).toEqual(['s2', 'secrets']);
+      await reader.client.close();
+      await expect(
+        reader.client.addEncryptionKeys(GOOD.keys),
+      ).rejects.toMatchObject({ code: 'client.closed' });
+    } finally {
+      await writer.client.close();
+      await reader.client.close();
+      writer.db.close();
+      reader.db.close();
+    }
+  });
+
   test('a wrong key is never sealed', async () => {
     const schema = compileClientSchema(CLIENT_SCHEMA);
     const table = schema.tables.get('secrets')!;
     const envelope = await encryptValue('string', 'x', 'secrets', KEY);
     await expect(
-      decryptOrSealRowValues({ keyProvider: wrongProvider }, table, [
+      decryptOrSealRowValues(installKeys(WRONG), table, [
         's1',
         'p1',
         envelope,
@@ -845,7 +952,7 @@ describe('§5.11 rows-segment decrypt', () => {
               ['s2', 'p1', 'not an envelope', null],
             ]),
             options,
-            { keyProvider: goodProvider },
+            installKeys(GOOD),
           ),
         ),
       ).rejects.toThrow('GCM authentication failed');
@@ -866,7 +973,7 @@ describe('§5.11 rows-segment decrypt', () => {
             ),
           ),
           options,
-          { keyProvider: goodProvider },
+          installKeys(GOOD),
         ),
       );
       expect(

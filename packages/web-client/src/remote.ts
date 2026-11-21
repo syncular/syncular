@@ -21,8 +21,12 @@ import {
   registrationDigest,
 } from '@syncular/core';
 import type { MutationInput } from './client';
-import type { EncryptionConfig } from './encryption';
-import { encryptRowValues } from './encryption';
+import {
+  type EncryptionKeyringConfig,
+  encryptRowValues,
+  installKeys,
+  type Keyring,
+} from './encryption';
 import { ClientSyncError, invalidRequest } from './errors';
 import {
   compileClientSchema,
@@ -46,7 +50,7 @@ export interface SyncRemoteClientConfig {
   readonly transport?: SyncTransport;
   readonly operations?: RemoteOperationTransport;
   readonly operationRealtime?: RemoteOperationRealtimeConnector;
-  readonly encryption?: EncryptionConfig;
+  readonly encryption?: EncryptionKeyringConfig;
   /** Acquired partition log epoch for restore-safe ordinary commits (§2.1). */
   readonly logEpoch?: string;
 }
@@ -231,7 +235,7 @@ export class SyncRemoteClient {
       readonly handlers: RemoteQueryWatchHandlers<unknown>;
     }
   >();
-  readonly #encryption: EncryptionConfig | undefined;
+  readonly #encryption: Keyring | undefined;
   /** Pinned by config, or acquired on the first prepared commit (§2.1). */
   #logEpoch: string | undefined;
 
@@ -250,7 +254,7 @@ export class SyncRemoteClient {
     this.#transport = config.transport;
     this.#operations = config.operations;
     this.#operationRealtime = config.operationRealtime;
-    this.#encryption = config.encryption;
+    this.#encryption = config.encryption && installKeys(config.encryption);
     this.#logEpoch = config.logEpoch;
   }
 
@@ -361,7 +365,7 @@ export class SyncRemoteClient {
         throw invalidRequest('remote upsert requires a non-empty primary key');
       }
       if (table.hasEncryptedColumns) {
-        values = await encryptRowValues(this.#encryption, table, rowId, values);
+        values = await encryptRowValues(this.#encryption, table, values);
       }
       operations.push({
         table: mutation.table,

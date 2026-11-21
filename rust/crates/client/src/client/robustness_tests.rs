@@ -784,6 +784,106 @@ fn activation_reveals_rows_whose_key_the_keyring_now_holds() {
 
 #[cfg(feature = "e2ee")]
 #[test]
+fn an_added_key_reveals_its_sealed_rows_without_a_lifecycle_change() {
+    let mut client = sealed_row_client();
+    client
+        .add_encryption_keys(std::collections::HashMap::from([(
+            "k2".to_owned(),
+            vec![0x2B; 32],
+        )]))
+        .unwrap();
+    assert_eq!(client.security_lifecycle(), "active");
+    assert_eq!(
+        patients(&client),
+        vec![("5".to_owned(), json!("hidden"), None)]
+    );
+    let batches = client.drain_change_batches();
+    assert_eq!(batches.len(), 1, "one change batch for the revealed table");
+    assert_eq!(batches[0].tables[0].table, "patients");
+    assert!(batches[0].status.is_none(), "no status batch");
+    // The gate is unchanged: a write under the new key encrypts and queues.
+    client
+        .mutate(vec![Mutation::Upsert {
+            table: "patients".into(),
+            values: Map::from_iter([
+                ("id".into(), json!(7)),
+                ("encryption_key_id".into(), json!("k2")),
+                ("note".into(), json!("fresh")),
+            ]),
+            base_version: None,
+        }])
+        .expect("a write succeeds after adding a key");
+    assert_eq!(client.pending_commit_ids().len(), 1);
+    // Preflight releases the whole keyring, the added key included.
+    client.begin_security_preflight().unwrap();
+    assert!(client.encryption.keys.is_empty());
+}
+
+#[cfg(feature = "e2ee")]
+#[test]
+fn an_identical_added_key_is_a_no_op() {
+    let mut client = sealed_row_client();
+    client
+        .add_encryption_keys(std::collections::HashMap::from([(
+            "k1".to_owned(),
+            vec![0x2A; 32],
+        )]))
+        .unwrap();
+    assert_eq!(client.encryption.keys.len(), 1);
+    assert_eq!(client.encryption.keys["k1"], vec![0x2A; 32]);
+    assert_eq!(patients(&client)[0].2.as_deref(), Some("k2"));
+    assert!(client.drain_change_batches().is_empty());
+}
+
+#[cfg(feature = "e2ee")]
+#[test]
+fn a_refused_key_addition_leaves_the_keyring_unchanged() {
+    let mut client = sealed_row_client();
+    let refused =
+        |client: &mut SyncClient, keys: &[(&str, Vec<u8>)], message: &str, key_id: &str| {
+            let error = client
+                .add_encryption_keys(
+                    keys.iter()
+                        .map(|(id, bytes)| ((*id).to_owned(), bytes.clone()))
+                        .collect(),
+                )
+                .expect_err("the addition is refused");
+            assert_eq!(error.code, "sync.invalid_request");
+            assert_eq!(error.message, message);
+            assert_eq!(error.details, Some(json!({ "keyId": key_id })));
+            assert_eq!(client.encryption.keys.len(), 1);
+            assert_eq!(client.encryption.keys["k1"], vec![0x2A; 32]);
+            assert_eq!(patients(client)[0].2.as_deref(), Some("k2"));
+        };
+    let conflict = "encryption key id is already held with different key bytes";
+    refused(&mut client, &[("k1", vec![0x2C; 32])], conflict, "k1");
+    // A valid new key in the same call is not installed either.
+    refused(
+        &mut client,
+        &[("k1", vec![0x2C; 32]), ("k2", vec![0x2B; 32])],
+        conflict,
+        "k1",
+    );
+    refused(
+        &mut client,
+        &[("k2", vec![0x2B; 31])],
+        "encryption key must be 32 bytes (AES-256)",
+        "k2",
+    );
+    client.begin_security_preflight().unwrap();
+    let error = client
+        .add_encryption_keys(std::collections::HashMap::from([(
+            "k2".to_owned(),
+            vec![0x2B; 32],
+        )]))
+        .expect_err("preflight refuses the addition");
+    assert_eq!(error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    assert!(client.encryption.keys.is_empty());
+    assert_eq!(client.security_lifecycle(), "preflight");
+}
+
+#[cfg(feature = "e2ee")]
+#[test]
 fn a_round_start_reveals_rows_whose_key_the_keyring_now_holds() {
     let mut client = sealed_row_client();
     client.set_encryption(sealing_keyring(&[("k1", 0x2A), ("k2", 0x2B)]));

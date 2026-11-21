@@ -129,9 +129,9 @@ const clientResource = createSyncClientResource(async () => {
 
 The normalized client exposes `securityLifecycle()`,
 `beginSecurityPreflight()`, and keyless `activateSecurity()` for host-agnostic
-coordination. Key-bearing activation stays on each concrete client type because
-direct TypeScript uses an `EncryptionConfig`, while Worker/Tauri/React Native
-use the portable keyring.
+coordination. Key-bearing activation and `addEncryptionKeys` stay on the
+concrete client, which every host builds from the same `{ keys, keyIdColumns }`
+keyring.
 
 Use `renderBoundary` as the canonical application guard across browser and
 native hosts. It covers resource startup/errors, migration, client upgrade,

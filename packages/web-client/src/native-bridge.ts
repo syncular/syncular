@@ -681,6 +681,16 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     this.#securityLifecycle = 'active';
   }
 
+  /**
+   * §5.11: extend the active native keyring and reveal the rows sealed under
+   * the new keys, on the native owner after every earlier command.
+   */
+  async addEncryptionKeys(
+    keys: EncryptionKeyringConfig['keys'],
+  ): Promise<void> {
+    await this.command('addEncryptionKeys', { keys: encodeValue(keys) });
+  }
+
   onInvalidate(listener: InvalidationListener): () => void {
     this.requireOpen();
     this.#invalidationListeners.add(listener);

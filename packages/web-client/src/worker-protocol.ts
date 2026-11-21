@@ -184,6 +184,8 @@ export interface WorkerApi extends Omit<
   securityLifecycle(): SecurityLifecycle;
   beginSecurityPreflight(): Promise<void>;
   activateSecurity(options?: WorkerSecurityActivation): Promise<void>;
+  /** §5.11: extend the active keyring on the leader for every tab. */
+  addEncryptionKeys(keys: EncryptionKeyringConfig['keys']): Promise<void>;
   subscribe(scopes: UnitScopes): string;
   subscribeMany(units: readonly UnitScopes[]): string[];
   unsubscribe(id: string): void;

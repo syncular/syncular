@@ -286,10 +286,7 @@ export async function runClientApply(
     schema: clientSchema,
     ...(encrypted > 0
       ? {
-          encryption: {
-            keyProvider: (keyId: string) =>
-              key && keyId === 'k1' ? keyBytes : undefined,
-          },
+          encryption: { keys: key ? { k1: keyBytes } : {} },
         }
       : {}),
     segments: async (request) => payloads.get(request.segmentId)!.bytes,

@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-21',
+    title: 'Add an encryption key while the client runs',
+    body: '`addEncryptionKeys(keys)` installs a key that arrives after activation, on the direct client, worker handles, Tauri and React Native. It extends the active keyring and reveals the rows sealed under the new keys in the same step; reads, writes, units and realtime keep running. A key id held with other bytes, or a key that is not 32 bytes, fails the whole call with `sync.invalid_request`. Every host now takes one keyring shape, `{ keys, keyIdColumns }`: the direct `SyncClient` no longer accepts `keyProvider` or `keyIdFor`.',
+    links: [
+      {
+        href: '/concepts-encryption/#adding-a-key-while-the-client-runs',
+        label: 'Encryption: adding a key while the client runs',
+      },
+    ],
+  },
+  {
     date: '2026-11-20',
     title: 'The Tauri host loop starts no round in the background',
     body: "On iOS every move to the background started an HTTP round: the realtime supervisor released the socket, the release ended the round it carried, and the plugin's host loop ran the pending intent at once. iOS suspended that request, and on return it failed as `transport.failed` with cause `io` or `connect`. The supervisor now reports its lifecycle signal to the plugin with `setHostLifecycle` before it releases the socket. In `background` the plugin starts no round of its own and ends the round in flight as `client.round_cancelled`; on `active` it runs the work it held.",

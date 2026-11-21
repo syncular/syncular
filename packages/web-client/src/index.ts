@@ -22,7 +22,7 @@ export * from './content-type';
 export * from './database';
 export * from './devtools';
 export * from './diagnostics';
-export * from './encryption';
+export type { EncryptionKeyringConfig } from './encryption';
 export * from './errors';
 export * from './http';
 export * from './invalidation';

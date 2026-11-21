@@ -23,7 +23,11 @@ import {
   type SegmentRow,
 } from '@syncular/core';
 import type { ClientDatabase, SqlValue } from './database';
-import type { EncryptionConfig, SealedRow } from './encryption';
+import {
+  decryptOrSealRowValues,
+  type Keyring,
+  type SealedRow,
+} from './encryption';
 import { ClientSyncError, invalidRequest } from './errors';
 import {
   type CompiledClientSchema,
@@ -144,7 +148,7 @@ export async function applyCommitFrame(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   frame: CommitFrame,
-  encryption?: EncryptionConfig,
+  encryption?: Keyring,
   transaction: (fn: () => OverlayScope) => unknown = (fn) => db.transaction(fn),
 ): Promise<void> {
   type Resolved =
@@ -179,7 +183,6 @@ export async function applyCommitFrame(
     }
     const values = decodeRow(table.columns, change.row);
     if (table.hasEncryptedColumns) {
-      const { decryptOrSealRowValues } = await import('./encryption');
       resolved.push({
         op: 'upsert',
         table,
@@ -775,7 +778,7 @@ export function* applyRowsSegment(
     readonly onProgress?: (rowsProcessed: number) => void;
     readonly isCurrent?: () => boolean;
   },
-  encryption?: EncryptionConfig,
+  encryption?: Keyring,
 ): Generator<ApplyStep, number, unknown> {
   validateSegmentColumns(schema, table, segment);
   let applied = 0;
@@ -788,7 +791,6 @@ export function* applyRowsSegment(
   // failing row in segment order decides the error, before any block writes.
   if (table.hasEncryptedColumns)
     blocks = (yield async () => {
-      const { decryptOrSealRowValues } = await import('./encryption');
       return (
         await Promise.all(
           blocks.map((block) =>

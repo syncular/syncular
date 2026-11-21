@@ -549,8 +549,10 @@ await client.activateSecurity({ encryption: acceptedKeyring });
 Use `beginSecurityPreflight()` before a live key rotation/revocation. It gates
 new calls immediately, disconnects realtime, waits for in-flight core/blob work,
 and releases the old keyring before resolving. In multi-tab mode the gate
-belongs to the single shared leader replica. Direct clients expose the same
-lifecycle with an `EncryptionConfig`; Worker handles use the portable keyring.
+belongs to the single shared leader replica. Direct clients take the same
+`{ keys, keyIdColumns }` keyring as Worker handles. A key that arrives while the
+client is active goes through `addEncryptionKeys(keys)`, which extends the
+keyring and reveals the rows sealed under it without a preflight.
 
 Within one local SQLite transaction the engine deletes exactly the matching
 synced rows, lets generated FTS triggers remove their projections, drops every

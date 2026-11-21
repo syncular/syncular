@@ -2419,6 +2419,66 @@ impl SyncClient {
         self.emit_status_batch()
     }
 
+    /// §5.11: extend the installed keyring while active. The whole input is
+    /// validated before anything changes; lifecycle, realtime, and the round
+    /// are untouched, and rows sealed under the new keys reveal at once.
+    pub fn add_encryption_keys(
+        &mut self,
+        mut keys: HashMap<String, Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        let refusal = if self.security_preflight {
+            Some(ClientError {
+                code: SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
+                message: "the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data".to_owned(),
+                details: None,
+                retryable: false,
+            })
+        } else {
+            keys.iter().find_map(|(key_id, bytes)| {
+                if bytes.len() != 32 {
+                    Some(invalid_authoring(
+                        "encryption key must be 32 bytes (AES-256)",
+                        json!({ "keyId": key_id }),
+                    ))
+                } else if self
+                    .encryption
+                    .keys
+                    .get(key_id)
+                    .is_some_and(|held| held != bytes)
+                {
+                    Some(invalid_authoring(
+                        "encryption key id is already held with different key bytes",
+                        json!({ "keyId": key_id }),
+                    ))
+                } else {
+                    None
+                }
+            })
+        };
+        // Native key hygiene: every buffer that is not installed is zeroed
+        // before drop.
+        if let Some(error) = refusal {
+            for bytes in keys.values_mut() {
+                bytes.fill(0);
+            }
+            return Err(error);
+        }
+        for (key_id, mut bytes) in keys {
+            match self.encryption.keys.entry(key_id) {
+                std::collections::hash_map::Entry::Occupied(_) => bytes.fill(0),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(bytes);
+                }
+            }
+        }
+        self.reveal_sealed_rows().map_err(|error| ClientError {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            retryable: false,
+        })
+    }
+
     fn clock_now_ms(&self) -> i64 {
         self.now_ms
             .as_ref()

@@ -15,110 +15,60 @@ import {
   EncryptError,
   encryptValue,
   KEY_LENGTH,
-  type NonceSource,
   type PlainValue,
   type RowColumn,
   type RowValue,
-  definedObject,
 } from '@syncular/core';
 import { invalidRequest } from './errors';
 import type { CompiledClientTable } from './schema';
 
 /**
- * App-supplied key material and selection. `keyProvider` maps a key-id to its
- * 32-byte key; `keyIdFor` names the key for a given write (default:
- * per-table, `keyId = table`). Keys travel as raw bytes — the app owns key
- * storage, rotation, and distribution (§5.11; the docs give the synced
- * wrapped-keys recipe).
+ * The keyring every host accepts (§5.11): `keys` maps a key id to its
+ * 32-byte key; `keyIdColumns` names, per table, the plaintext string column
+ * whose row value selects the key for a write (default: `keyId = table`).
+ * The app owns key storage, rotation and distribution; a key that arrives
+ * after activation goes through `addEncryptionKeys`.
  */
-export interface EncryptionConfig {
-  /** `keyId → 32-byte key`, or `undefined` if unknown (decrypt fails loud). */
-  readonly keyProvider: (keyId: string) => Uint8Array | undefined;
-  /**
-   * Choose the key-id for an encrypt. The plaintext positional row is supplied
-   * so direct clients can select a Facility/workspace/key-grant key without
-   * deriving privacy-sensitive state from an opaque row id. Default: the
-   * configured `keyIdColumns[table]`, then the table name.
-   */
-  readonly keyIdFor?: (
-    table: string,
-    rowId: string,
-    values: readonly RowValue[],
-  ) => string;
-  /**
-   * Portable declarative selector used by Worker/Tauri hosts. Each value names
-   * a non-encrypted string column whose row value is the active key id.
-   */
-  readonly keyIdColumns?: Readonly<Record<string, string>>;
-  /**
-   * Nonce source (§5.11). Production omits this (secure RNG). ONLY the crypto
-   * golden-vector generator injects a fixed nonce — never a production path.
-   */
-  readonly nonceSource?: NonceSource;
-}
-
-/** Structured-clone/JSON-safe keyring accepted by Worker and Tauri hosts. */
 export interface EncryptionKeyringConfig {
   readonly keys: Readonly<Record<string, Uint8Array>>;
   readonly keyIdColumns?: Readonly<Record<string, string>>;
 }
 
-/**
- * Convert a portable keyring into the direct-client encryption contract.
- * Key lengths are validated here, at install time: every side of the wire
- * enforces {@link KEY_LENGTH}-byte keys, so a wrong-length key fails loud
- * with a clear config error before any sync round runs.
- */
-export function encryptionConfigFromKeyring(
-  keyring: EncryptionKeyringConfig,
-): EncryptionConfig {
-  for (const [keyId, key] of Object.entries(keyring.keys)) {
-    if (key.length !== KEY_LENGTH) {
-      throw invalidRequest(
-        `encryption key ${JSON.stringify(keyId)} must be ${KEY_LENGTH} bytes (AES-256), got ${key.length}`,
-      );
-    }
-  }
-  return {
-    // Own-property lookup only: the keyId arrives from the wire envelope, so
-    // a prototype-chain name like "constructor" must read as a missing key
-    // and take the clean DecryptError path.
-    keyProvider: (keyId) =>
-      Object.hasOwn(keyring.keys, keyId) ? keyring.keys[keyId] : undefined,
-    ...definedObject({ keyIdColumns: keyring.keyIdColumns }),
-  };
+/** The core-owned installed keyring. */
+export interface Keyring {
+  readonly keys: ReadonlyMap<string, Uint8Array>;
+  readonly keyIdColumns?: Readonly<Record<string, string>> | undefined;
 }
 
-function encryptionKeyId(
-  config: EncryptionConfig,
-  table: CompiledClientTable,
-  rowId: string,
-  values: readonly RowValue[],
-): string {
-  if (config.keyIdFor !== undefined) {
-    const selected = config.keyIdFor(table.name, rowId, values);
-    if (selected.length === 0) {
-      throw new EncryptError(
-        `empty encryption key id selected for table ${JSON.stringify(table.name)}`,
+/**
+ * `keyring` (a new one with `config.keyIdColumns` when absent) plus
+ * `config.keys` (§5.11). A refused call changes nothing: every key is
+ * {@link KEY_LENGTH} bytes, and a held key id keeps its bytes (the same bytes
+ * again are a no-op). The keyring holds copies, so the app may zero its own
+ * buffers after the call.
+ */
+export function installKeys(
+  config: EncryptionKeyringConfig,
+  keyring: Keyring = { keys: new Map(), keyIdColumns: config.keyIdColumns },
+): Keyring {
+  const keys = new Map(keyring.keys);
+  for (const [keyId, key] of Object.entries(config.keys)) {
+    const held = keys.get(keyId);
+    if (!(key instanceof Uint8Array) || key.length !== KEY_LENGTH)
+      throw invalidRequest('encryption key must be 32 bytes (AES-256)', false, {
+        keyId,
+      });
+    if (held?.some((byte, i) => byte !== key[i]))
+      throw invalidRequest(
+        'encryption key id is already held with different key bytes',
+        false,
+        {
+          keyId,
+        },
       );
-    }
-    return selected;
+    keys.set(keyId, held ?? key.slice());
   }
-  const selectorColumn = config.keyIdColumns?.[table.name];
-  if (selectorColumn === undefined) return table.name;
-  // The column must exist, stay plaintext, and hold a non-empty string.
-  const selected =
-    values[
-      table.columns.findIndex(
-        (column) => column.name === selectorColumn && column.encrypted !== true,
-      )
-    ];
-  if (typeof selected !== 'string' || selected.length === 0) {
-    throw new EncryptError(
-      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must be a plaintext column holding a non-empty string`,
-    );
-  }
-  return selected;
+  return { ...keyring, keys };
 }
 
 function declaredTypeOf(column: RowColumn): DeclaredType {
@@ -135,9 +85,8 @@ function declaredTypeOf(column: RowColumn): DeclaredType {
  * unencrypted (§5.11).
  */
 export async function encryptRowValues<T extends RowValue | undefined>(
-  config: EncryptionConfig | undefined,
+  config: Keyring | undefined,
   table: CompiledClientTable,
-  rowId: string,
   values: readonly T[],
   storedKeyId?: string,
 ): Promise<T[]> {
@@ -149,30 +98,36 @@ export async function encryptRowValues<T extends RowValue | undefined>(
   if (config === undefined) {
     throw new EncryptError('encrypted columns need an encryption config');
   }
-  // Key selection reads the presence set first, then the stored local row.
-  // Absent slots densify to null for selection only; the loop below still
-  // leaves them untouched. Absent ≠ NULL (§6.1): only an ABSENT selector
-  // slot is filled from the stored row, never a present NULL.
-  const selected: RowValue[] = values.map((value) => value ?? null);
+  // Key selection: the configured `keyIdColumns[table]`, then the table name.
+  // The selector reads the presence set first, then the stored local row:
+  // only an ABSENT selector slot is filled from the stored row, never a
+  // present NULL (§6.1). The column must stay plaintext and hold a non-empty
+  // string.
   const selectorColumn = config.keyIdColumns?.[table.name];
-  if (
-    selectorColumn !== undefined &&
-    config.keyIdFor === undefined &&
-    storedKeyId !== undefined
-  ) {
+  let keyId = table.name;
+  if (selectorColumn !== undefined) {
     const index = table.columns.findIndex(
-      (column) => column.name === selectorColumn,
+      (column) => column.name === selectorColumn && column.encrypted !== true,
     );
-    if (index >= 0 && values[index] === undefined)
-      selected[index] = storedKeyId;
+    const selected =
+      index < 0
+        ? null
+        : values[index] === undefined
+          ? storedKeyId
+          : values[index];
+    if (typeof selected !== 'string' || selected.length === 0) {
+      throw new EncryptError(
+        `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must be a plaintext column holding a non-empty string`,
+      );
+    }
+    keyId = selected;
   }
-  const keyId = encryptionKeyId(config, table, rowId, selected);
+  const key = config.keys.get(keyId);
   for (let i = 0; i < table.columns.length; i++) {
     const column = table.columns[i];
     if (column === undefined || !column.encrypted) continue;
     const value = out[i];
     if (value === null || value === undefined) continue; // NULL stays NULL
-    const key = config.keyProvider(keyId);
     if (key === undefined) {
       throw new EncryptError(
         `no encryption key for keyId ${JSON.stringify(keyId)} (table ${table.name})`,
@@ -183,7 +138,6 @@ export async function encryptRowValues<T extends RowValue | undefined>(
       value as PlainValue,
       keyId,
       key,
-      config.nonceSource,
     )) as T;
   }
   return out;
@@ -202,7 +156,7 @@ export interface SealedRow {
  * the envelopes (§5.11).
  */
 export async function decryptOrSealRowValues(
-  config: EncryptionConfig | undefined,
+  config: Keyring | undefined,
   table: CompiledClientTable,
   values: readonly RowValue[],
 ): Promise<{ values: RowValue[]; sealed?: SealedRow }> {
@@ -247,7 +201,7 @@ export async function decryptOrSealRowValues(
  * wrong key or malformed envelope throws `client.decrypt_failed` (§5.11).
  */
 export async function decryptRowValues(
-  config: EncryptionConfig | undefined,
+  config: Keyring | undefined,
   table: CompiledClientTable,
   values: readonly RowValue[],
 ): Promise<RowValue[]> {
@@ -268,7 +222,7 @@ export async function decryptRowValues(
     out[i] = await decryptValue(
       declaredTypeOf(column),
       value,
-      config.keyProvider,
+      (keyId) => config.keys.get(keyId),
       table.name,
     );
   }

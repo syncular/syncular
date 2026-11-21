@@ -1811,6 +1811,70 @@ mod tests {
     }
 
     #[test]
+    fn add_encryption_keys_runs_in_owner_order_with_preflight_and_shutdown() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let command = |value: Value| run_command(app.handle(), value).expect("command reply");
+        let state = app.state::<SyncularState>();
+        // Both requests sit in the owner mailbox before either runs.
+        let queue = |method: &str, params: Value| {
+            let (reply, receiver) = std::sync::mpsc::channel();
+            state
+                .send(Request::Command {
+                    command: json!({ "method": method, "params": params }),
+                    reply,
+                })
+                .expect("owner mailbox");
+            receiver
+        };
+        let key = |byte: &str| json!({ "keys": { "k2": { "$bytes": byte.repeat(32) } } });
+        let created = command(json!({ "method": "create", "params": {
+            "clientId": "native-add-keys", "schema": { "version": 1, "tables": [] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+
+        // An addition queued before beginSecurityPreflight installs, and the
+        // preflight then releases it: after activation the same id takes
+        // different bytes without a conflict.
+        let added = queue("addEncryptionKeys", key("2b"));
+        let locked = queue("beginSecurityPreflight", json!({}));
+        assert_eq!(added.recv().unwrap(), json!({ "result": {} }));
+        assert_eq!(locked.recv().unwrap(), json!({ "result": {} }));
+        let activated = command(json!({ "method": "activateSecurity", "params": {} }));
+        assert!(activated.get("error").is_none(), "{activated}");
+        let readded = command(json!({ "method": "addEncryptionKeys", "params": key("2c") }));
+        assert_eq!(readded, json!({ "result": {} }));
+        let conflict = command(json!({ "method": "addEncryptionKeys", "params": key("2b") }));
+        assert_eq!(conflict["error"]["details"], json!({ "keyId": "k2" }));
+
+        // beginSecurityPreflight queued first refuses the addition.
+        let locked = queue("beginSecurityPreflight", json!({}));
+        let added = queue("addEncryptionKeys", key("2d"));
+        assert_eq!(locked.recv().unwrap(), json!({ "result": {} }));
+        assert_eq!(
+            added.recv().unwrap()["error"]["code"],
+            "client.security_preflight_required"
+        );
+
+        command(json!({ "method": "activateSecurity", "params": {} }));
+        assert_eq!(
+            command(json!({ "method": "shutdown" }))["result"],
+            json!({})
+        );
+        assert_eq!(
+            command(json!({ "method": "addEncryptionKeys", "params": key("2b") }))["error"]["code"],
+            "client.closed"
+        );
+    }
+
+    #[test]
     fn authority_snapshot_raw_ipc_obeys_native_columns_and_never_opens_protected_reads() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
         let path =

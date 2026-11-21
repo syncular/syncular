@@ -627,6 +627,28 @@ fn diagnostics_command_reports_unit_counts_without_private_payloads() {
 }
 
 #[test]
+fn add_encryption_keys_extends_an_active_client_until_shutdown() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    let created = command(
+        handle,
+        "create",
+        json!({ "clientId": "ffi-add-keys", "schema": simple_schema() }),
+    );
+    assert_eq!(created["result"], json!({}), "create: {created}");
+    let keys = json!({ "keys": { "k2": { "$bytes": "2b".repeat(32) } } });
+    let added = command(handle, "addEncryptionKeys", keys.clone());
+    assert_eq!(added["result"], json!({}), "add while active: {added}");
+    let lifecycle = command(handle, "securityLifecycle", Value::Null);
+    assert_eq!(lifecycle["result"]["state"], "active");
+    let shutdown = command(handle, "shutdown", Value::Null);
+    assert_eq!(shutdown["result"], json!({}), "shutdown: {shutdown}");
+    let closed = command(handle, "addEncryptionKeys", keys);
+    assert_eq!(closed["error"]["code"], "client.closed", "{closed}");
+    syncular_client_close(handle);
+}
+
+#[test]
 fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());

@@ -4350,8 +4350,8 @@ variable, keyed by the primary row id. The sidecar declares none of the
 variables of the units that cover the primary: a unit covers every table that
 declares all of its variables (§4.1), so a shared variable would put the
 sidecar under the primary's units. The sidecar resolves its key by
-the normal selection order (custom `keyIdFor`, configured `keyIdColumns`, then
-the per-table default `keyId = table`); the default is sufficient, and
+the normal selection order (configured `keyIdColumns`, then the per-table
+default `keyId = table`); the default is sufficient, and
 `keyIdColumns` is optional. A client without the sidecar key registers units
 that cover the primary and reads every primary column. It **MUST NOT**
 register a unit that covers a sidecar it cannot decrypt: decrypt-on-apply runs at the whole-row boundary (§4.5,
@@ -4412,15 +4412,14 @@ declared.
 back per `declaredType` (a `json`/`blob_ref` value is re-validated exactly as
 the row codec would, §2.4); a parse failure is `client.decrypt_failed`.
 
-**Key selection — `keyId` and the `keyProvider`.** The client is configured
-with a **key provider**: `keyId → 32-byte key`, plus a **`keyIdFor(table,
-rowId, plaintextRow) → keyId`** hook that names the key for a given write.
-Portable Worker and native/Tauri hosts additionally accept `keyIdColumns`, a
-map from table name to one non-encrypted string column whose row value is the
-active `keyId`. This supports per-Practice/per-Facility keys and rotation via an
-explicit plaintext key-grant identifier without deriving it from an opaque row
-id. The selection order is custom `keyIdFor`, configured `keyIdColumns`, then
-the default **per-table** `keyId = table`. Key resolution runs only when the
+**Key selection — `keyId` and the keyring.** Every client host takes one
+keyring shape, `{ keys, keyIdColumns }`: `keys` maps a `keyId` to its
+32-byte key, and `keyIdColumns` maps a table name to one non-encrypted string
+column whose row value is the active `keyId`. This supports
+per-Practice/per-Facility keys and rotation via an explicit plaintext
+key-grant identifier without deriving it from an opaque row id. The selection
+order is configured `keyIdColumns`, then the default **per-table**
+`keyId = table`. Key resolution runs only when the
 sparse presence set holds an encrypted column with a non-NULL value: a patch
 that presents no encrypted value encrypts nothing and needs no key. For a
 sparse upsert the selector reads the present columns first, then the stored
@@ -4430,19 +4429,52 @@ empty, or non-string selector with no usable stored value fails locally with
 `client.encrypt_failed`; it never falls back to another key. An encode-time
 selection or unknown-key failure is a durable client-local rejection for that
 commit and never aborts the round.
-On encode the client resolves `keyId`, embeds it in the envelope, and encrypts with
-`keyProvider(keyId)`. On apply the client reads `keyId` **from the
-envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
-per-scope keys work without a schema change: the envelope is
-self-describing. On apply, a `keyId` the provider does not know seals the
+On encode the client resolves `keyId`, embeds it in the envelope, and encrypts
+with the keyring's key for that `keyId`. On apply the client reads `keyId`
+**from the envelope** and decrypts with the keyring's key for it, so key
+rotation and per-scope keys work without a schema change: the envelope is
+self-describing. On apply, a `keyId` the keyring does not hold seals the
 row (below); a wrong key (GCM tag mismatch) is `client.decrypt_failed`.
 
-Worker-hosted clients accept a structured-clone-safe `{ keys, keyIdColumns }`
-keyring and install the provider inside the leader worker. Tauri and React
-Native clients accept the same public shape; their JavaScript bridges encode
-raw keys into local IPC/FFI commands and the Rust core installs them before
-encrypted rows are accessed. Keys are client-local configuration and MUST NOT
-enter SSP2 requests, server logs, or application telemetry.
+The direct TypeScript client, the remote client and Worker-hosted clients
+install the keyring in the client core (inside the leader worker for a Worker
+host). Tauri and React Native bridges encode raw keys into local IPC/FFI
+commands and the Rust core installs them before encrypted rows are accessed.
+The core validates the keyring whole when it installs it: a key that is not 32
+bytes fails with `sync.invalid_request` and the details `{ keyId }`. Keys are
+client-local configuration and MUST NOT enter SSP2 requests, server logs, or
+application telemetry.
+
+**Adding keys while active.** `addEncryptionKeys(keys)` installs keys that
+arrive after activation, such as a key a member is granted while editing,
+with the same `keys` shape. Every host offers it: the direct, Worker, Tauri
+and React Native clients and the Rust command router (`addEncryptionKeys`,
+params `{ keys }` in the `$bytes` form of `activateSecurity`). The call:
+
+- is valid only while `securityLifecycle` is `active`. In preflight it fails
+  with `client.security_preflight_required`; on a closed client with
+  `client.closed`. It never activates the client or changes its lifecycle,
+  and it leaves the gate, realtime, the round in flight, reads, units and
+  writes as they are;
+- is strictly additive. The core validates the whole input before it changes
+  anything: a key that is not 32 bytes, or a `keyId` the keyring holds with
+  different bytes, fails the call with `sync.invalid_request`, a static
+  message and the details `{ keyId }` naming one offending key, and installs
+  none of the keys. A `keyId` held with identical bytes is a no-op.
+  `keyIdColumns` does not change;
+- runs serialized with the host's other key and lifecycle operations: on the
+  TypeScript client's operation chain, on the Worker leader for every tab, on
+  the native owner thread. A call that starts before `beginSecurityPreflight()`
+  completes before the preflight barrier resolves, and the barrier then
+  releases the whole keyring, added keys included. A call that starts after it
+  fails with `client.security_preflight_required`;
+- reveals in the same serialized step every sealed row whose envelope keys the
+  keyring now holds (**Sealed apply** below), one change batch per table. A
+  reveal that hits `client.decrypt_failed` fails the call with that code; the
+  added keys stay installed.
+
+Native key buffers the call does not install (a refused call, an identical
+duplicate) are overwritten before they are dropped.
 
 **Security preflight and key lifecycle.** A host that must authenticate the
 device, evaluate a signed quarantine/revocation directive, or recover an
@@ -4547,8 +4579,9 @@ lock, purge, replacement and shutdown ordering. A closed native command returns
 `client.closed`; a bridge MUST discard a reply racing its local close. Ordinary
 query and write gates remain engaged during preflight.
 
-The host installs the accepted keyring and releases the gate only through
-`activateSecurity({ encryption? })`.
+The host replaces the keyring and releases the gate only through
+`activateSecurity({ encryption? })`; while active, `addEncryptionKeys` (above)
+extends the installed keyring without a lifecycle change.
 
 `beginSecurityPreflight()` closes the gate synchronously for new calls, closes
 realtime, waits for already-started serialized/network/read-sidecar work to
@@ -4592,8 +4625,7 @@ encrypted table receives that table's rows sealed with every unit on its
 scope variable; an encrypted table that such a reader must not hold at all
 takes its own variable (the sidecar shape above).
 
-**Sealed apply.** A table that selects its key per row (`keyIdColumns`,
-`keyIdFor`) can hold rows under keys a device never receives, and a reader
+**Sealed apply.** A table that selects its key per row (`keyIdColumns`) can hold rows under keys a device never receives, and a reader
 cannot list them before it registers the unit. A delivered upsert (§4.5 `COMMIT`, §5.6 rows
 segment) with at least one encrypted envelope whose `keyId` the keyring does
 not hold lands **sealed** and the round continues:
@@ -4611,10 +4643,12 @@ not hold lands **sealed** and the round continues:
   envelope is never sealed.
 
 The client **reveals** sealed rows when `activateSecurity()` installs a
-keyring and at the start of every sync round: each sealed row whose envelope
+keyring, when `addEncryptionKeys()` extends it, and at the start of every sync
+round: each sealed row whose envelope
 keys the keyring now holds is decrypted from `_sync_sealed` into its columns,
 both reserved columns are cleared, and the change publishes one revision per
-table. A reveal that hits `client.decrypt_failed` fails the round. A later
+table. A reveal that hits `client.decrypt_failed` fails the round (or the
+`addEncryptionKeys` call). A later
 delivery of the row replaces its sealed state like any other upsert.
 
 A sealed row is read-only on the device: `mutate`, `patch` and delete of a
@@ -4629,10 +4663,11 @@ nullability (SYQL.md §14.1, §14.6).
 
 **Nonce discipline.** The 12-byte nonce **MUST** be from a cryptographically
 secure RNG on every production encrypt (never reused with the same key —
-GCM's one hard requirement). The nonce source is **injectable** so golden
+GCM's one hard requirement). The nonce source of the `@syncular/core`
+envelope primitive is **injectable** so golden
 crypto vectors can pin a fixed nonce (Appendix A `crypto/*`); the fixed
 nonce is a test-only injection and **MUST NOT** be reachable from a
-production encode path.
+production encode path; no client configuration carries a nonce source.
 
 **Server consequences — honest about what the server sees.**
 
@@ -4681,7 +4716,7 @@ wrapped keys** (the recommended pattern): a table whose rows are
 an ordinary `bytes` column (it is already ciphertext; it does **not** need
 the §5.11 per-column encryption, and MUST NOT since it carries no plaintext
 the server could see anyway). A member with the matching private key
-unwraps to recover `K`, then feeds it to their `keyProvider`. The docs page
+unwraps to recover `K`, then installs it with `addEncryptionKeys({ [keyId]: K })`. The docs page
 gives the full recipe.
 
 **Conformance (§Appendix B, cross-core).** New scenarios prove both cores
@@ -6130,8 +6165,8 @@ surface MUST bump it. The TypeScript client enforces this with a test that pins
 a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
-0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0, and
-protocol 8 starts with 0.98.0.
+0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0,
+protocol 8 covers 0.98.0 and 0.99.0, and protocol 9 starts with 0.100.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening

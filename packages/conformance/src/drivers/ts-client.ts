@@ -18,7 +18,7 @@ import {
   type ClientSchema,
   type CommitOutcome,
   type ConflictRecord,
-  type EncryptionConfig,
+  type EncryptionKeyringConfig,
   type MutationInput,
   type RejectionRecord,
   RealtimeUnavailableError,
@@ -66,17 +66,22 @@ import type {
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
 
-/** §5.11: driver `{ keyId, $bytes }` → a client key provider + selector. */
+/** §5.11: driver `{ $bytes }` keys → the client keyring's raw keys. */
+function driverKeys(
+  keys: DriverEncryptionConfig['keys'],
+): EncryptionKeyringConfig['keys'] {
+  return Object.fromEntries(
+    Object.entries(keys).map(([keyId, val]) => [keyId, hexToBytes(val.$bytes)]),
+  );
+}
+
+/** §5.11: a driver keyring → the client keyring. */
 function buildEncryption(
   config: DriverEncryptionConfig | undefined,
-): EncryptionConfig | undefined {
+): EncryptionKeyringConfig | undefined {
   if (config === undefined) return undefined;
-  const keys = new Map<string, Uint8Array>();
-  for (const [keyId, val] of Object.entries(config.keys)) {
-    keys.set(keyId, hexToBytes(val.$bytes));
-  }
   return {
-    keyProvider: (keyId) => keys.get(keyId),
+    keys: driverKeys(config.keys),
     ...(config.keyIdColumns !== undefined
       ? { keyIdColumns: config.keyIdColumns }
       : {}),
@@ -919,6 +924,9 @@ class TsClientInstance implements ClientInstance {
     await this.#client.activateSecurity(
       keyring !== undefined ? { encryption: keyring } : {},
     );
+  }
+  async addEncryptionKeys(keys: DriverEncryptionConfig['keys']): Promise<void> {
+    await this.#client.addEncryptionKeys(driverKeys(keys));
   }
 
   async readRows(table: string): Promise<ClientRowState[]> {

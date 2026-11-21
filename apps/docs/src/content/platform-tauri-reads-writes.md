@@ -133,5 +133,8 @@ const client = await createTauriSyncClient({
 });
 ```
 
-Raw keys cross only into the native command core and never reach the server. See
-[Encryption keys](/concepts-encryption/#encryption-keys).
+Raw keys cross only into the native command core and never reach the server.
+`client.addEncryptionKeys(keys)` adds a key while the client is active; the
+plugin's owner thread runs it in order with `beginSecurityPreflight()` and
+`close()`. See [Encryption keys](/concepts-encryption/#encryption-keys) and
+[Adding a key while the client runs](/concepts-encryption/#adding-a-key-while-the-client-runs).

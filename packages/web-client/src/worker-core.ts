@@ -22,7 +22,6 @@ import {
   type ClientDiagnosticsSnapshot,
   withClientDiagnosticsHost,
 } from './diagnostics';
-import { encryptionConfigFromKeyring } from './encryption';
 import {
   ClientSyncError,
   invalidRequest,
@@ -446,8 +445,7 @@ export function startSyncWorkerCore(
         retainFailedCommits: config.retainFailedCommits,
         realtimePolicy: config.realtimePolicy,
         realtimeHeartbeatMs: config.realtimeHeartbeatMs,
-        encryption:
-          config.encryption && encryptionConfigFromKeyring(config.encryption),
+        encryption: config.encryption,
         authorityReads:
           config.authorityReads &&
           overrides.createAuthorityReads!(config.authorityReads),
@@ -511,6 +509,8 @@ export function startSyncWorkerCore(
   // Forward every argument to core methods, including authority's zero-argument check.
   const coreMethods = [
     'securityLifecycle',
+    'activateSecurity',
+    'addEncryptionKeys',
     'subscribe',
     'subscribeMany',
     'unsubscribe',
@@ -555,13 +555,6 @@ export function startSyncWorkerCore(
       stopBackground();
       autoSyncScheduled = false;
       await requireClient().beginSecurityPreflight();
-    },
-    activateSecurity: async (options = {}) => {
-      await requireClient().activateSecurity(
-        options.encryption === undefined
-          ? {}
-          : { encryption: encryptionConfigFromKeyring(options.encryption) },
-      );
     },
     setWindow: async (base, units) => {
       await requireClient().setWindowCommand(base, units);

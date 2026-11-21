@@ -954,6 +954,42 @@ pub fn dispatch<T: Transport>(
             effects.security_preflight_pending = false;
             Ok(json!({}))
         }
+        "addEncryptionKeys" => {
+            let running = client
+                .as_mut()
+                .ok_or_else(|| CommandError::new("client.closed", "no client is open"))?;
+            let entries = params
+                .get("keys")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    CommandError::new(
+                        "sync.invalid_request",
+                        "addEncryptionKeys.keys must be an object of {\"$bytes\": hex} values",
+                    )
+                })?;
+            let mut keys: std::collections::HashMap<String, Vec<u8>> =
+                std::collections::HashMap::with_capacity(entries.len());
+            for (key_id, value) in entries {
+                let Ok(bytes) = value_bytes(Some(value)) else {
+                    // Zero what was already decoded before the refusal drops it.
+                    for bytes in keys.values_mut() {
+                        bytes.fill(0);
+                    }
+                    return Err(CommandError {
+                        details: Some(json!({ "keyId": key_id })),
+                        ..CommandError::new(
+                            "sync.invalid_request",
+                            "encryption key must be a {\"$bytes\": hex} value",
+                        )
+                    });
+                };
+                keys.insert(key_id.clone(), bytes);
+            }
+            running
+                .add_encryption_keys(keys)
+                .map_err(CommandError::from_client)?;
+            Ok(json!({}))
+        }
         "setTransportEnabled" => {
             let enabled = params
                 .get("enabled")
@@ -3213,6 +3249,92 @@ mod tests {
         )
         .expect("lifecycle");
         assert_eq!(lifecycle, json!({ "state": "active" }));
+    }
+
+    #[test]
+    fn add_encryption_keys_extends_an_active_keyring() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let key = |byte: &str| json!({ "$bytes": byte.repeat(32) });
+        let closed = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "addEncryptionKeys",
+            &json!({ "keys": { "k2": key("2b") } }),
+        )
+        .expect_err("no client is open");
+        assert_eq!(closed.code, "client.closed");
+        assert_eq!(closed.message, "no client is open");
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "encryption": { "keys": { "k1": key("2a") } } }),
+        )
+        .expect("create");
+        let mut add = |client: &mut Option<SyncClient>, params: Value| {
+            dispatch(
+                &mut transport,
+                client,
+                &mut effects,
+                "addEncryptionKeys",
+                &params,
+            )
+        };
+        assert_eq!(
+            add(&mut client, json!({ "keys": { "k2": key("2b") } })).expect("add while active"),
+            json!({})
+        );
+        // The installed key answers a conflicting re-add with its id.
+        let conflict = add(&mut client, json!({ "keys": { "k2": key("2c") } }))
+            .expect_err("conflicting bytes");
+        assert_eq!(conflict.code, "sync.invalid_request");
+        assert_eq!(
+            conflict.message,
+            "encryption key id is already held with different key bytes"
+        );
+        assert_eq!(conflict.details, Some(json!({ "keyId": "k2" })));
+        add(&mut client, json!({ "keys": { "k2": key("2b") } })).expect("identical re-add");
+
+        let malformed = add(&mut client, json!({ "keys": { "k3": { "$bytes": "zz" } } }))
+            .expect_err("malformed hex");
+        assert_eq!(malformed.code, "sync.invalid_request");
+        assert_eq!(malformed.details, Some(json!({ "keyId": "k3" })));
+        let short = add(
+            &mut client,
+            json!({ "keys": { "k3": { "$bytes": "2a2a" } } }),
+        )
+        .expect_err("wrong length");
+        assert_eq!(short.message, "encryption key must be 32 bytes (AES-256)");
+        assert_eq!(short.details, Some(json!({ "keyId": "k3" })));
+        for params in [json!({}), json!({ "keys": [] })] {
+            assert_eq!(
+                add(&mut client, params).expect_err("keys object").code,
+                "sync.invalid_request"
+            );
+        }
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "beginSecurityPreflight",
+            &json!({}),
+        )
+        .expect("preflight");
+        let gated = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "addEncryptionKeys",
+            &json!({ "keys": { "k3": key("2d") } }),
+        )
+        .expect_err("preflight refuses the addition");
+        assert_eq!(gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
     }
 
     #[test]

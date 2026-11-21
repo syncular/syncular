@@ -164,7 +164,8 @@ For authentication/quarantine-before-data, construct with
 the same portable `{ keys, keyIdColumns }` keyring as Worker and Tauri. Before
 activation, protected operations and automatic sync intents fail closed with
 `client.security_preflight_required`; lifecycle, status, local revision, and
-the bounded purge remain available. `beginSecurityPreflight()` provides the
+the bounded purge remain available. `addEncryptionKeys(keys)` adds a key while
+the client is active and reveals the rows sealed under it. `beginSecurityPreflight()` provides the
 live rotation/revocation barrier, while `close()` releases the entire FFI core.
 
 `diagnosticsSnapshot()`, `onDiagnostics`, and the shared React

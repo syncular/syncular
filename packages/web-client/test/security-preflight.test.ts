@@ -107,7 +107,7 @@ test('active clients can enter a synchronous fail-closed barrier and rotate keys
   await barrier;
 
   await client.activateSecurity({
-    encryption: { keyProvider: () => new Uint8Array(32).fill(7) },
+    encryption: { keys: { tasks: new Uint8Array(32).fill(7) } },
   });
   expect(client.securityLifecycle()).toBe('active');
   expect(client.query('SELECT id FROM tasks')).toEqual([]);
@@ -177,7 +177,7 @@ test('preflight never accepts key material before activation', () => {
         schema: CLIENT_SCHEMA,
         transport: async () => new Uint8Array(),
         securityPreflight: true,
-        encryption: { keyProvider: () => new Uint8Array(32) },
+        encryption: { keys: { tasks: new Uint8Array(32) } },
       }),
   ).toThrow('securityPreflight and encryption are mutually exclusive');
   db.close();

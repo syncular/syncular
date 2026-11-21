@@ -1262,6 +1262,8 @@ export interface ClientInstance {
   beginSecurityPreflight(): Promise<void>;
   /** §5.11: `encryption` installs that keyring on activation. */
   activateSecurity(encryption?: DriverEncryptionConfig): Promise<void>;
+  /** §5.11: extend the active keyring; reveals the rows sealed under the new keys. */
+  addEncryptionKeys(keys: DriverEncryptionConfig['keys']): Promise<void>;
   /** §4.1: register one unit; returns its derived id. */
   subscribe(scopes: DriverUnitScopes): Promise<string>;
   /** Register several units in one local transaction; returns their ids. */

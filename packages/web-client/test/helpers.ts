@@ -12,7 +12,7 @@ import {
   type ClientSchema,
   type CommitDelivery,
   type CommitOutcome,
-  type EncryptionConfig,
+  type EncryptionKeyringConfig,
   type RealtimeConnector,
   type SegmentFetchRequest,
   SyncClient,
@@ -346,7 +346,7 @@ export interface MakeClientOptions {
   readonly actorId?: string;
   readonly schema?: ClientSchema;
   readonly limits?: SyncClientLimits;
-  readonly encryption?: EncryptionConfig;
+  readonly encryption?: EncryptionKeyringConfig;
   readonly securityPreflight?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly blobs?: BlobTransport;

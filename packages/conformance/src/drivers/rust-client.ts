@@ -1560,6 +1560,13 @@ class RustClientInstance implements ClientInstance {
           },
     );
   }
+  async addEncryptionKeys(keys: DriverEncryptionConfig['keys']): Promise<void> {
+    await this.#shim.call('addEncryptionKeys', {
+      keys: Object.fromEntries(
+        Object.entries(keys).map(([id, key]) => [id, { $bytes: key.$bytes }]),
+      ),
+    });
+  }
 
   async readRows(table: string): Promise<ClientRowState[]> {
     const result = asObject(
