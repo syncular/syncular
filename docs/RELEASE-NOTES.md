@@ -2,6 +2,11 @@
 
 ## 0.99.0 release notes
 
+0.99.0 sizes only the commits a far-behind live page delivers
+(SYNCULAR-LIVE-WINDOW-SIZING-001) and holds the Tauri host loop's rounds while
+the app is in the background (SYNCULAR-NATIVE-BACKGROUND-ROUND-001). SSP2, the
+wire version and the multi-tab protocol are unchanged.
+
 ### A far-behind live page sizes the commits it delivers
 
 A production pull on PostgreSQL (Neon) from a replica cursor 1,816 commits
