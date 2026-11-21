@@ -11,6 +11,7 @@ import type { ClientDatabase } from './database';
 import { ClientSyncError, localStateCorrupt } from './errors';
 import type { CompiledClientSchema } from './schema';
 import { bytesToHex, quoteIdent, tableExists } from './schema';
+import type { TransportContext } from './transport';
 
 /**
  * A blob download result (§5.9.5). The authorized endpoint either serves the
@@ -54,6 +55,7 @@ export interface BlobTransport {
     bytes: Uint8Array,
     mediaType?: string,
     signal?: AbortSignal,
+    context?: TransportContext,
   ): Promise<void>;
   /**
    * `GET <mount>/blobs/{blobId}` — re-authorized (§5.9.5). Returns inline
@@ -61,7 +63,11 @@ export interface BlobTransport {
    * `byteLength` is the BlobRef's declared size when the caller passed one;
    * reading inline bytes stops once the body exceeds it.
    */
-  download(blobId: string, byteLength?: number): Promise<BlobDownloadResponse>;
+  download(
+    blobId: string,
+    byteLength?: number,
+    context?: TransportContext,
+  ): Promise<BlobDownloadResponse>;
   /**
    * §5.9.5 presigned-download fetch: a bare GET of the signed `url`. Present
    * iff the transport can consume URLs. MUST attach NO host authentication —
@@ -80,6 +86,7 @@ export interface BlobTransport {
     byteLength: number,
     mediaType?: string,
     signal?: AbortSignal,
+    context?: TransportContext,
   ): Promise<BlobUploadGrant>;
   /**
    * §5.9.3 direct-to-storage PUT of the granted `url`. MUST attach NO host

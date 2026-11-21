@@ -3,6 +3,9 @@
 //! This is test infrastructure, not a shipped binding. It lets the TypeScript
 //! bridge and reactive store consume the exact command replies/events produced
 //! by `tauri-plugin-syncular::core::SyncularCore` without requiring a display.
+//!
+//! Arguments: `[baseUrl [headersJson]]`. `headersJson` is an object of
+//! string headers the harness's header source answers every request with.
 
 use std::io::{self, BufRead, Write};
 
@@ -26,6 +29,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => json!({}),
     };
     let mut core = SyncularCore::new(&config)?;
+    // The host app's Rust header source, here a fixed header object (the
+    // second argument) answering every request.
+    if let Some(headers) = std::env::args().nth(2) {
+        let headers: Vec<(String, String)> =
+            serde_json::from_str::<std::collections::BTreeMap<String, String>>(&headers)?
+                .into_iter()
+                .collect();
+        core.set_header_source(tauri_plugin_syncular::transport::HeaderSource::new(
+            move |_, _| Some(headers.clone()),
+        ));
+    }
     let db_path = std::env::temp_dir().join(format!(
         "syncular-tauri-bridge-harness-{}.db",
         std::process::id()

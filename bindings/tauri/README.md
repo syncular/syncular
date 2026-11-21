@@ -118,6 +118,7 @@ tauri-plugin-syncular = { version = "0.0.0", features = ["native-transport"] }
 
 ```rust
 use tauri::Manager;
+use tauri_plugin_syncular::transport::HeaderSource;
 use tauri_plugin_syncular::SyncularConfig;
 
 tauri::Builder::default()
@@ -128,6 +129,12 @@ tauri::Builder::default()
         });
         let config = SyncularConfig {
             base_url: Some("https://your.server".into()),
+            header_source: Some(HeaderSource::new(|context, rejected| {
+                // `rejected` is the header set the server just answered 401
+                // to: refresh the session before answering.
+                let token = current_bearer(rejected.is_some())?;
+                Some(vec![("authorization".into(), format!("Bearer {token}"))])
+            })),
             db_path,
             auto_sync: true,
             ..Default::default()
@@ -137,6 +144,19 @@ tauri::Builder::default()
     })
     // …
 ```
+
+`header_source` runs in the host process. The native transport calls it
+before every host-authenticated request and realtime handshake, so a hidden or
+throttled webview never leaves a request with an expired bearer. A 401 calls it
+once more with the refused headers and resends that request once; a second 401
+surfaces `sync.auth_required`. `context` carries the `client_id`, the
+`round` (the progress `attempt` of the sync round in flight, `None` outside
+one) and the `target` (`Sync`, `Segment`, `Blob`, `Realtime`), so per-round
+trace headers such as `sentry-trace` stay with their round. Concurrent
+requests of one client and round share one call. Returning
+`None` fails the request with the retryable `sync.auth_required`
+(`causeKind: "header_source"`) before it is sent. `current_bearer` stands for
+the app's own session code.
 
 `db_path` is the database a `create` opens when it names none. For one
 replica per signed-in actor, set `database_dir` as well and pass
@@ -245,8 +265,8 @@ const client = await createTauriSyncClient({
 await client.activateSecurity({ encryption: acceptedKeyring });
 // Authorized local queries and mutations now work; commits queue durably.
 
-// After online authentication returns a fresh bearer:
-await client.setHeaders({ authorization: `Bearer ${freshBearer}` });
+// After online authentication succeeds, the app's header source answers with
+// the fresh bearer:
 await client.setTransportEnabled(true);
 ```
 
@@ -255,7 +275,7 @@ presence sends and uncached blob downloads with `sync.offline`. Cached blob
 reads and staged uploads remain local. `setOffline(true)` is the bridge's
 browser-parity alias. Automatic sync and retry intents stay suspended; reopening
 emits one interactive wake and queued commits flush in FIFO order with own pull.
-Header replacement and security activation never reopen the gate.
+Security activation never reopens the gate.
 
 An already-started round finishes its captured network exchange and atomic apply,
 including acknowledgement and revocation checks. Closure does not cancel its

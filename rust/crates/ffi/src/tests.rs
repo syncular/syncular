@@ -1,5 +1,5 @@
 //! End-to-end exercise of the C-ABI surface from Rust (default build:
-//! client-local, no native transport). Proves the 5 functions marshal JSON,
+//! client-local, no native transport). Proves the 7 functions marshal JSON,
 //! run the shared command router, forward exact core events, and free cleanly.
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use crate::{
     syncular_client_close, syncular_client_command, syncular_client_new,
-    syncular_client_poll_event, syncular_free_string,
+    syncular_client_poll_event, syncular_client_poll_headers, syncular_client_provide_headers,
+    syncular_free_string,
 };
 
 thread_local! {
@@ -404,6 +405,7 @@ fn ffi_progress_and_diagnostics_distinguish_connection_and_http_failure() {
     let config = CString::new(json!({"baseUrl": format!("http://{address}")}).to_string()).unwrap();
     let handle = syncular_client_new(config.as_ptr());
     assert!(!handle.is_null());
+    answer_headers(handle);
     let created = command(
         handle,
         "create",
@@ -649,7 +651,7 @@ fn add_encryption_keys_extends_an_active_client_until_shutdown() {
 }
 
 #[test]
-fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
+fn preflight_refuses_plain_replacement_creates_and_activation_headers() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());
     let created = command(
@@ -681,11 +683,12 @@ fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
     );
     assert_eq!(gated["error"]["code"], "client.security_preflight_required");
 
-    // Invalid activation headers fail loudly and keep the gate closed.
+    // Activation headers fail loudly and keep the gate closed: the
+    // transport asks for headers through headers-needed events.
     let invalid = command(
         handle,
         "activateSecurity",
-        json!({ "headers": { "authorization": 7 } }),
+        json!({ "headers": { "authorization": "Bearer post-preflight" } }),
     );
     assert_eq!(
         invalid["error"]["code"], "sync.invalid_request",
@@ -694,13 +697,7 @@ fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
     let lifecycle = command(handle, "securityLifecycle", Value::Null);
     assert_eq!(lifecycle["result"]["state"], "preflight");
 
-    // A valid header set rides the activation atomically (applied to the
-    // owned transport before any startup sync round) and releases the gate.
-    let activated = command(
-        handle,
-        "activateSecurity",
-        json!({ "headers": { "authorization": "Bearer post-preflight" } }),
-    );
+    let activated = command(handle, "activateSecurity", json!({}));
     assert_eq!(activated["result"], json!({}), "{activated}");
     let rows = command(
         handle,
@@ -721,29 +718,135 @@ fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
     syncular_client_close(handle);
 }
 
+fn provide(handle: *mut crate::Handle, id: u64, headers: Option<&str>) -> Value {
+    let headers = headers.map(|headers| CString::new(headers).unwrap());
+    let raw = syncular_client_provide_headers(
+        handle,
+        id,
+        headers
+            .as_ref()
+            .map_or(std::ptr::null(), |headers| headers.as_ptr()),
+    );
+    assert!(!raw.is_null());
+    // SAFETY: the library returned a NUL-terminated string it owns until freed.
+    let reply = serde_json::from_str(unsafe { CStr::from_ptr(raw) }.to_str().unwrap()).unwrap();
+    syncular_free_string(raw);
+    reply
+}
+
+fn poll_headers(handle: *mut crate::Handle, timeout_ms: i64) -> Option<Value> {
+    let raw = syncular_client_poll_headers(handle, timeout_ms);
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: the library returned a NUL-terminated string it owns until freed.
+    let question = serde_json::from_str(unsafe { CStr::from_ptr(raw) }.to_str().unwrap()).unwrap();
+    syncular_free_string(raw);
+    Some(question)
+}
+
+#[cfg(feature = "native-transport")]
+/// A header thread that answers every question with no headers until close
+/// releases its poll, as a host without authentication runs.
+pub(crate) fn answer_headers(handle: *mut crate::Handle) {
+    let address = handle as usize;
+    std::thread::spawn(move || {
+        let handle = address as *mut crate::Handle;
+        while let Some(question) = poll_headers(handle, -1) {
+            provide(handle, question["requestId"].as_u64().unwrap(), Some("{}"));
+        }
+    });
+}
+
+fn bearer(token: &str) -> Vec<(String, String)> {
+    vec![("authorization".to_owned(), format!("Bearer {token}"))]
+}
+
+fn context() -> syncular_client::native_transport::HeaderContext {
+    syncular_client::native_transport::HeaderContext {
+        client_id: "ffi-headers".into(),
+        round: Some(3),
+        target: syncular_client::native_transport::HeaderTarget::Segment,
+    }
+}
+
 #[test]
-fn set_headers_is_a_validated_runtime_command() {
+fn a_header_read_is_polled_once_and_waits_for_its_answer() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());
-    let created = command(
-        handle,
-        "create",
-        json!({ "clientId": "ffi-header-rotation", "schema": simple_schema() }),
+    assert_eq!(poll_headers(handle, 0), None);
+    // SAFETY: a live handle; the source keeps the questions alive on its own.
+    let source = unsafe { &*handle }.questions.source();
+    let refresh = std::thread::spawn(move || source.read(&context(), Some(&bearer("stale"))));
+    assert_eq!(
+        poll_headers(handle, -1),
+        Some(json!({
+            "requestId": 1,
+            "rejected": { "authorization": "Bearer stale" },
+            "clientId": "ffi-headers",
+            "round": 3,
+            "target": "segment"
+        }))
     );
-    assert_eq!(created["result"], json!({}));
-    let rotated = command(
-        handle,
-        "setHeaders",
-        json!({ "headers": { "authorization": "Bearer fresh" } }),
+    // The question goes out once, and never through poll_event.
+    assert_eq!(poll_headers(handle, 0), None);
+    assert!(syncular_client_poll_event(handle, 0).is_null());
+    for malformed in ["not json", r#"{"authorization":7}"#, "[]"] {
+        let reply = provide(handle, 1, Some(malformed));
+        assert_eq!(
+            reply["error"]["code"], "sync.invalid_request",
+            "{malformed}"
+        );
+    }
+    // An unknown id is ignored.
+    assert_eq!(provide(handle, 99, Some("{}")), json!({ "result": {} }));
+    assert_eq!(
+        provide(handle, 1, Some(r#"{"authorization":"Bearer fresh"}"#)),
+        json!({ "result": {} })
     );
-    assert_eq!(rotated["result"], json!({}), "{rotated}");
-    let invalid = command(
-        handle,
-        "setHeaders",
-        json!({ "headers": { "authorization": 7 } }),
-    );
-    assert_eq!(invalid["error"]["code"], "sync.invalid_request");
+    assert_eq!(refresh.join().unwrap().unwrap(), bearer("fresh"));
+    // A late answer for the settled id is ignored.
+    assert_eq!(provide(handle, 1, Some("{}")), json!({ "result": {} }));
+
+    // Null (the JSON literal or a NULL pointer) fails the request with the
+    // retryable auth code.
+    for headers in [Some("null"), None] {
+        let source = unsafe { &*handle }.questions.source();
+        let read = std::thread::spawn(move || source.read(&context(), None));
+        let question = poll_headers(handle, -1).unwrap();
+        assert_eq!(question["rejected"], Value::Null);
+        let id = question["requestId"].as_u64().unwrap();
+        assert_eq!(provide(handle, id, headers), json!({ "result": {} }));
+        let error = read.join().unwrap().unwrap_err();
+        assert_eq!(error.code, "sync.auth_required");
+        assert_eq!(error.details, Some(json!({ "causeKind": "header_source" })));
+    }
     syncular_client_close(handle);
+}
+
+#[test]
+fn close_fails_a_waiting_read_and_releases_a_blocked_poll() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    // SAFETY: a live handle; the source keeps the questions alive past close.
+    let source = unsafe { &*handle }.questions.source();
+    let waiting = source.clone();
+    let read = std::thread::spawn(move || waiting.read(&context(), None));
+    assert_eq!(poll_headers(handle, -1).unwrap()["requestId"], 1);
+    // Close waits for the blocked poll, so the address stays valid for it.
+    let address = handle as usize;
+    let poll = std::thread::spawn(move || poll_headers(address as *mut crate::Handle, -1));
+    // SAFETY: the handle is live until the close below.
+    while unsafe { &*handle }.asked.state.lock().unwrap().pollers == 0 {
+        std::thread::yield_now();
+    }
+    syncular_client_close(handle);
+    assert_eq!(poll.join().unwrap(), None);
+    assert_eq!(read.join().unwrap().unwrap_err().code, "client.closed");
+    assert_eq!(
+        source.read(&context(), None).unwrap_err().code,
+        "client.closed"
+    );
 }
 
 #[test]
@@ -751,24 +854,29 @@ fn malformed_config_returns_null_handle() {
     let bad = CString::new("not json").unwrap();
     let handle = syncular_client_new(bad.as_ptr());
     assert!(handle.is_null());
+    // Static transport headers are refused; the header source replaced them.
+    let headers = CString::new(r#"{"headers":{"authorization":"Bearer static"}}"#).unwrap();
+    assert!(syncular_client_new(headers.as_ptr()).is_null());
 }
 
-/// The five exported symbols and the five header declarations must be the
+/// The seven exported symbols and the seven header declarations must be the
 /// same set. Cheap `nm` inspection of the built staticlib; skipped (not
 /// failed) if the artifact or `nm` is absent so the test stays hermetic.
 #[test]
 fn header_matches_symbols() {
     use std::process::Command;
 
-    const EXPECTED: [&str; 5] = [
+    const EXPECTED: [&str; 7] = [
         "syncular_client_new",
         "syncular_client_command",
         "syncular_client_poll_event",
+        "syncular_client_poll_headers",
+        "syncular_client_provide_headers",
         "syncular_client_close",
         "syncular_free_string",
     ];
 
-    // 1) The header declares exactly the five functions.
+    // 1) The header declares exactly the seven functions.
     let header = include_str!("../../../ffi.h");
     for name in EXPECTED {
         assert!(
@@ -777,7 +885,7 @@ fn header_matches_symbols() {
         );
     }
 
-    // 2) The built staticlib exports exactly those five (nm inspection).
+    // 2) The built staticlib exports exactly those seven (nm inspection).
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut candidates = Vec::new();
     for profile in ["debug", "release"] {

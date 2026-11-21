@@ -7,7 +7,7 @@ const html = `<h1 id="authentication">Authentication</h1>
 <p>A <code>null</code> result answers HTTP 401 &amp; <code>sync.auth_required</code>.</p>
 <h3 id="empty">Empty</h3>
 <h2 id="browser-send-and-rotate-the-header">Browser: send and rotate the header</h2>
-<pre><code><span>handle.setHeaders</span>(&#123; Authorization &#125;)</code></pre>`;
+<pre><code><span>handle.setPresence</span>(&#123; Authorization &#125;)</code></pre>`;
 
 describe('searchSections', () => {
   test('splits a page at h1-h3 into anchored plain-text sections', () => {
@@ -28,7 +28,7 @@ describe('searchSections', () => {
         page: 'Authentication',
         heading: 'Browser: send and rotate the header',
         href: '/guide-auth/#browser-send-and-rotate-the-header',
-        text: 'handle.setHeaders ({ Authorization })',
+        text: 'handle.setPresence ({ Authorization })',
       },
     ]);
   });
@@ -56,11 +56,11 @@ describe('searchIndex', () => {
   });
 
   test('matches identifiers inside code and excerpts around the hit', () => {
-    const [hit] = searchIndex(sections, 'setheaders');
+    const [hit] = searchIndex(sections, 'setpresence');
     expect(hit?.section.href).toBe(
       '/guide-auth/#browser-send-and-rotate-the-header',
     );
-    expect(hit?.excerpt).toContain('setHeaders');
+    expect(hit?.excerpt).toContain('setPresence');
   });
 });
 

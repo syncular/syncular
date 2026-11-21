@@ -67,4 +67,4 @@ await connectivity.close();
 The boolean stream must report network availability, not the selected interface name. If `AppLifecycleState` also calls `pause()` and `resume()`, one owner can resume a client the other wants paused. Close the adapter while the app is paused, or feed it a combined foreground-and-online stream.
 :::
 
-Rotate a credential with `setHeaders`; the next HTTP request uses it. An open socket keeps its handshake headers, so call `pause()` then `resume()` to reconnect with the new token.
+The `headers` source in the config supplies the credential: the transport asks it before every HTTP request and every socket handshake, and asks again with the refused headers after a 401. An open socket keeps its handshake headers; a reconnect asks the source again, so call `pause()` then `resume()` to reconnect now. See [Authentication](/guide-auth/#native-and-headless-give-the-client-a-header-source).

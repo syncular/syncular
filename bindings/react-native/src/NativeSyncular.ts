@@ -7,7 +7,8 @@
  * whole command set: one `command` dispatch (the entire method surface rides in
  * the JSON envelope), the `query` fast path, lifecycle (`create`/`close`), and
  * an event bridge (`pollEvent` + `addListener`/`removeListeners` for the
- * NativeEventEmitter). Everything speaks JSON strings so the bridge marshals no
+ * NativeEventEmitter), and the header channel (`syncular::headers` requests,
+ * `provideHeaders` answers). Everything speaks JSON strings so the bridge marshals no
  * custom types.
  *
  * All payloads are JSON STRINGS on the wire (not objects), matching the C ABI's
@@ -42,6 +43,15 @@ export interface Spec extends TurboModule {
 
   /** Close the native core, releasing db/transport/socket. */
   close(): Promise<void>;
+
+  /**
+   * Answer header request `requestId` from the `syncular::headers` topic.
+   * `headersJson` is a JSON object of string headers, or `null` when the app
+   * has none. The native side calls `syncular_client_provide_headers` outside
+   * the command queue, because the command waiting for these headers
+   * occupies it.
+   */
+  provideHeaders(requestId: number, headersJson: string): void;
 
   /**
    * Start the native side pumping `poll_event` and emitting each event JSON on

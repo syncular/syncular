@@ -77,12 +77,18 @@ diagnostics.
 
 ::::step{title="Rotate credentials" time="1 min"}
 ```ts title="src/auth.ts"
-await client.setHeaders({ Authorization: `Bearer ${freshToken}` });
+const client = await createNativeSyncClient({
+  // ...
+  headers: async (rejected) => ({
+    Authorization: `Bearer ${await auth.token({ refresh: rejected !== undefined })}`,
+  }),
+});
 ```
 
-The next HTTP request uses the new headers. An open WebSocket keeps the headers
-from its handshake; call `pause()` and `resume()` when the new credential must
-apply to the live socket immediately.
+The transport asks the source before every HTTP request and WebSocket
+handshake. After a 401 it asks once more with the refused headers and resends
+once. An open WebSocket keeps the headers from its handshake; call `pause()`
+and `resume()` to reconnect, which asks the source again.
 
 ::checkpoint[The next sync request carries the new `Authorization` header.]
 ::::

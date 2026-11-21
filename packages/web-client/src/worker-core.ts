@@ -29,7 +29,9 @@ import {
   toErrorShape,
 } from './errors';
 import {
+  type HeaderSource,
   httpBlobTransport,
+  type HttpTransportOptions,
   httpSegmentDownloader,
   httpSyncTransport,
   webSocketRealtimeConnector,
@@ -58,6 +60,12 @@ import {
 } from './worker-protocol';
 
 export interface SyncWorkerOverrides {
+  /**
+   * The app's header source (§1.1): the worker's transports ask it before
+   * every host-authenticated request and once more after a 401. It runs in
+   * the worker, so a hidden tab's throttled page never stalls a renewal.
+   */
+  readonly headers?: HeaderSource;
   /** Explicit authority reader factory. Required when init declares authorityReads. */
   readonly createAuthorityReads?: typeof defineAuthorityReads;
   /** Database factory indirection: tests inject bun:sqlite here. */
@@ -74,22 +82,22 @@ export interface SyncWorkerOverrides {
     callback: () => void,
     delayMs: number,
   ) => () => void;
-  /** `http` reads the current host auth set, as the default transport does. */
+  /** `http` carries the header source, as the default transport takes it. */
   readonly createTransport?: (
     config: WorkerInitConfig,
-    http: { readonly headers: () => Readonly<Record<string, string>> },
+    http: HttpTransportOptions,
   ) => SyncTransport;
   readonly createSegments?: (
     config: WorkerInitConfig,
   ) => SegmentDownloader | undefined;
   /**
    * Custom realtime connector, e.g. one that mints a fresh ticket per
-   * connection attempt. `headers` reads the current host auth set.
+   * connection attempt. `headers` is the worker's header source.
    */
   readonly createRealtime?: (
     config: WorkerInitConfig,
     clientId: string,
-    headers: () => Readonly<Record<string, string>>,
+    headers: HeaderSource,
   ) => RealtimeConnector | undefined;
   /**
    * SPEC §12 local authority, required by init's `localAuthority: true`:
@@ -196,7 +204,6 @@ export function startSyncWorkerCore(
   let client: SyncClient | undefined;
   let database: ClientDatabase | undefined;
   let offline = false;
-  let headers: Readonly<Record<string, string>> = {};
   let closed = false;
   // Every worker event goes through here; a closed worker posts none.
   const emit = (event: SyncWorkerEvent): void => {
@@ -384,8 +391,7 @@ export function startSyncWorkerCore(
       );
     }
     autoSync = config.autoSync ?? true;
-    headers = config.headers ?? {};
-    const http = { headers: () => headers };
+    const http = definedObject({ headers: overrides.headers });
 
     for (let attempt = 0; ; attempt++) {
       try {
@@ -493,7 +499,11 @@ export function startSyncWorkerCore(
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
-        ? overrides.createRealtime(config, started.clientId, http.headers)
+        ? overrides.createRealtime(
+            config,
+            started.clientId,
+            overrides.headers ?? (() => ({})),
+          )
         : config.endpoints.realtimeUrl !== undefined
           ? webSocketRealtimeConnector(config.endpoints.realtimeUrl)
           : undefined;
@@ -601,9 +611,6 @@ export function startSyncWorkerCore(
         running.onDiagnostics(postDiagnostics);
       }
       return workerDiagnostics(running.diagnosticsSnapshot());
-    },
-    setHeaders: (next) => {
-      headers = next;
     },
     setOffline: (value) => {
       offline = value;

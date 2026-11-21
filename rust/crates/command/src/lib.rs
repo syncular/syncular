@@ -447,24 +447,6 @@ fn parse_encryption(value: &Value) -> Result<syncular_client::values::Encryption
     Ok(config)
 }
 
-/// Parse an `activateSecurity` (or rotation) `headers` param: an object of
-/// string values, replacing the transport's FULL header set.
-/// The router validates the shape at the shared chokepoint; each host applies
-/// the parsed set to its own transport (the router stays transport-agnostic).
-pub fn parse_headers(value: &Value) -> Result<Vec<(String, String)>, String> {
-    let object = value.as_object().ok_or_else(|| {
-        "sync.invalid_request: headers must be an object of string values".to_owned()
-    })?;
-    let mut headers = Vec::with_capacity(object.len());
-    for (name, value) in object {
-        let value = value
-            .as_str()
-            .ok_or_else(|| format!("sync.invalid_request: header {name:?} must be a string"))?;
-        headers.push((name.clone(), value.to_owned()));
-    }
-    Ok(headers)
-}
-
 pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
     let list = value
         .and_then(Value::as_array)
@@ -909,6 +891,7 @@ pub fn dispatch<T: Transport>(
                 instance.set_transport_enabled(transport, enabled);
             }
             effects.security_preflight_pending = security_preflight;
+            transport.set_client_id(instance.client_id());
             *client = Some(instance);
             Ok(json!({}))
         }
@@ -940,13 +923,14 @@ pub fn dispatch<T: Transport>(
                 Some(value) => parse_encryption(value).map_err(client_err)?,
                 None => syncular_client::values::EncryptionConfig::default(),
             };
-            // Optional fresh transport headers ride the activation atomically,
-            // so a preflight that outlives the boot token starts its first
-            // sync round with valid credentials. Validated here at the shared
-            // chokepoint (invalid input keeps the gate closed); the host
-            // applies the parsed set to its own transport.
-            if let Some(headers) = params.get("headers") {
-                parse_headers(headers).map_err(client_err)?;
+            // The transport reads headers from the host's header source at
+            // each request, so an activation carries none; a host still
+            // passing them is refused and the gate stays closed.
+            if params.get("headers").is_some() {
+                return Err(CommandError::new(
+                    "sync.invalid_request",
+                    "activateSecurity takes no headers; the transport asks the host's header source",
+                ));
             }
             need_client(client)?
                 .activate_security(encryption)
@@ -972,10 +956,7 @@ pub fn dispatch<T: Transport>(
             let keys = entries
                 .iter()
                 .map(|(key_id, value)| {
-                    (
-                        key_id.clone(),
-                        value_bytes(Some(value)).unwrap_or_default(),
-                    )
+                    (key_id.clone(), value_bytes(Some(value)).unwrap_or_default())
                 })
                 .collect();
             running
@@ -994,13 +975,6 @@ pub fn dispatch<T: Transport>(
                     )
                 })?;
             need_client(client)?.set_transport_enabled(transport, enabled);
-            Ok(json!({}))
-        }
-        "setHeaders" => {
-            let headers = params
-                .get("headers")
-                .ok_or_else(|| client_err("setHeaders missing headers".to_owned()))?;
-            parse_headers(headers).map_err(client_err)?;
             Ok(json!({}))
         }
         "shutdown" => {
@@ -1738,7 +1712,7 @@ mod tests {
     };
 
     use super::{
-        client_err, dispatch, parse_encryption, parse_headers, parse_previous_version_context,
+        client_err, dispatch, parse_encryption, parse_previous_version_context,
         parse_window_coverage, CreateEffects, UnitScopes,
     };
 
@@ -3191,7 +3165,7 @@ mod tests {
     }
 
     #[test]
-    fn activate_security_validates_optional_headers_atomically() {
+    fn activate_security_refuses_headers_and_keeps_the_gate_closed() {
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
         let mut effects = CreateEffects::default();
@@ -3204,7 +3178,7 @@ mod tests {
         )
         .expect("preflight create");
 
-        // Invalid header shapes fail loudly and keep the gate closed.
+        // Activation headers fail loudly and keep the gate closed.
         let invalid = dispatch(
             &mut transport,
             &mut client,
@@ -3224,15 +3198,25 @@ mod tests {
         .expect("lifecycle");
         assert_eq!(lifecycle, json!({ "state": "preflight" }));
 
-        // A valid header set activates in one atomic step.
-        dispatch(
+        // Well-formed headers are refused too: the header source replaced
+        // them. Activation without them opens the gate.
+        let refused = dispatch(
             &mut transport,
             &mut client,
             &mut effects,
             "activateSecurity",
             &json!({ "headers": { "authorization": "Bearer fresh" } }),
         )
-        .expect("activation with fresh headers");
+        .expect_err("activation headers are refused");
+        assert_eq!(refused.code, "sync.invalid_request");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({}),
+        )
+        .expect("activation");
         let lifecycle = dispatch(
             &mut transport,
             &mut client,
@@ -3334,74 +3318,6 @@ mod tests {
             &json!({ "keys": { "k3": key("2d") } }),
         )
         .expect_err("preflight refuses the addition");
-        assert_eq!(gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
-    }
-
-    #[test]
-    fn parse_headers_reads_the_full_replacement_set() {
-        let parsed = parse_headers(&json!({
-            "authorization": "Bearer fresh",
-            "x-tenant": "t1"
-        }))
-        .expect("valid headers parse");
-        assert_eq!(
-            parsed,
-            vec![
-                ("authorization".to_owned(), "Bearer fresh".to_owned()),
-                ("x-tenant".to_owned(), "t1".to_owned())
-            ]
-        );
-        assert!(parse_headers(&json!(["authorization"])).is_err());
-        assert!(parse_headers(&json!({ "authorization": null })).is_err());
-    }
-
-    #[test]
-    fn set_headers_validates_replacement_and_respects_preflight() {
-        let mut transport = NoNetwork::default();
-        let mut client: Option<SyncClient> = None;
-        let mut effects = CreateEffects::default();
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "create",
-            &json!({ "schema": schema() }),
-        )
-        .expect("create");
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "setHeaders",
-            &json!({ "headers": { "authorization": "Bearer fresh" } }),
-        )
-        .expect("valid replacement");
-        let invalid = dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "setHeaders",
-            &json!({ "headers": { "authorization": 7 } }),
-        )
-        .expect_err("invalid replacement");
-        assert_eq!(invalid.code, "sync.invalid_request");
-
-        dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "beginSecurityPreflight",
-            &json!({}),
-        )
-        .expect("preflight");
-        let gated = dispatch(
-            &mut transport,
-            &mut client,
-            &mut effects,
-            "setHeaders",
-            &json!({ "headers": {} }),
-        )
-        .expect_err("direct rotation must respect preflight");
         assert_eq!(gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
     }
 

@@ -32,8 +32,69 @@ active").
 The direct TypeScript client now reports `client.closed` for every call after
 `close()`, as the native bridges do; it reported `sync.invalid_request`.
 
+### The transport asks for headers, the host answers
+
+In a Diego production trace a Mac app that was hidden in the background sent
+native `/sync` requests with an expired bearer for 4 minutes. The page pushed
+headers into the native client with `setHeaders`, and the hidden webview ran
+that code throttled, so the renewal arrived late.
+
+The transport now asks a header source at the moment it needs headers: before
+every host-authenticated HTTP request (sync, remote operation, direct segment
+download, blob upload, download and upload grant) and every WebSocket
+handshake that sends headers. Signed URLs never ask. Concurrent requests share
+one question. An HTTP 401 or a 401 upgrade asks once more with the refused headers and resends that
+one request; a second refusal surfaces the retryable `sync.auth_required`, and
+the next attempt asks again. A source that fails or gives no headers fails the
+request with `sync.auth_required` and `causeKind` `header_source` (SPEC §1.1,
+"The transport asks, the host answers").
+
+Each question carries `{ clientId, round, target }`. `round` is the round's
+`attempt` as progress snapshots and `lastRound` diagnostics report it, or
+`null` outside a round; `target` is `sync`, `segment`, `blob` or
+`realtime`. Requests of one `(clientId, round)` share a question, and
+concurrent replicas never do. This lets a host propagate a trace per round:
+its source creates or looks up the round's trace parent on the first
+question for that `(clientId, round)` and returns the same `sentry-trace` and
+`baggage` headers for the round's later requests, segments and WebSocket
+handshake included. The app's UI correlates through `lastRound.attempt` and
+asks its host for that round's parent; it sets no headers from JavaScript.
+Signed URLs carry no headers, so trace propagation stops at the app's own
+server.
+
+- Browser and direct TypeScript: the `headers` option of the HTTP transports
+  takes a function `(rejected?) => headers | Promise<headers>`, called per
+  request and with the refused headers after a 401. A fixed record still works
+  and is not retried.
+- Worker-hosted clients: the source runs in the worker. Pass it to
+  `startSyncWorker({ headers })` in your worker entry.
+- Tauri: the host app's Rust code passes the source in `SyncularConfig`; no
+  JavaScript runs on that path.
+- FFI hosts (Swift, Kotlin, Flutter, React Native): the core asks through a
+  header channel, `syncular_client_poll_headers` and
+  `syncular_client_provide_headers`, and waits up to 30 s for the answer.
+  Each binding answers from the source the app passes at construction.
+
 ### Upgrading
 
+- `setHeaders` is gone on every host: the worker handle, Tauri, React Native,
+  Swift, Kotlin, Flutter, the Rust command router (`setHeaders` command) and
+  the native transport. So are the `headers` option of
+  `createSyncClientHandle` and of the native `activateSecurity`, and the
+  `headers` field of the native create config. Pass a header source instead:
+  `startSyncWorker({ headers })` in the worker entry, the Rust source in the
+  Tauri `SyncularConfig`, or the source argument of the Swift, Kotlin, Flutter
+  and React Native clients. A worker source that needs per-tab values reads
+  them from the worker URL (`self.location`) or asks the page itself.
+- `createTransport` and `createRealtime` in `SyncWorkerOverrides` receive the
+  worker's header source instead of a header reader.
+- FFI hosts that drive `libsyncular` directly poll
+  `syncular_client_poll_headers(handle, timeout_ms)` and answer with
+  `syncular_client_provide_headers(handle, request_id, headers_json)`.
+- Flutter: the header source is a sendable top-level or static function. The
+  client runs it in an auth isolate it spawns, so the source keeps its token
+  state there (secure storage, its own refresh call) and cannot read
+  main-isolate state. The command and query surface stays synchronous.
 - The direct `SyncClient` and `SyncRemoteClient` take the keyring every other
   host takes. `encryption: { keyProvider, keyIdFor }` becomes
   `encryption: { keys, keyIdColumns }`, and so does the `encryption` option

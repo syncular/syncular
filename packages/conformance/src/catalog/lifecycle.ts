@@ -13,7 +13,7 @@ import {
   responseLive,
   responseSection,
 } from '../raw';
-import type { Scenario } from '../scenario';
+import { DEFAULT_NOW_MS, type Scenario, ScenarioSkip } from '../scenario';
 import {
   expectConverged,
   seedTasks,
@@ -26,6 +26,161 @@ const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
 
 export const lifecycleScenarios: readonly Scenario[] = [
+  {
+    // §1.1 FFI hosts: a header question the host never answers fails the
+    // request after the fixed 30 s bound with the retryable
+    // sync.auth_required instead of hanging; a late answer is ignored and
+    // the next request asks again. The pinned client clock runs the bound.
+    name: 'auth/native-header-wait-is-bounded',
+    specRefs: ['§1.1'],
+    async run(ctx) {
+      const asked = Promise.withResolvers<void>();
+      let late: ((headers: Record<string, string>) => void) | undefined;
+      let questions = 0;
+      let answering = false;
+      const a = await ctx.newClient({
+        actorId: 'auth',
+        clientId: 'auth-bound',
+        allowed: P1,
+        nowMs: DEFAULT_NOW_MS,
+        auth: {
+          headers: () => {
+            questions += 1;
+            if (answering)
+              return Promise.resolve({ authorization: 'Bearer ok' });
+            asked.resolve();
+            return new Promise((resolve) => {
+              late = resolve;
+            });
+          },
+          accepts: () => true,
+        },
+      });
+      if (a.api.setClock === undefined)
+        throw new ScenarioSkip('the client host has no bounded header wait');
+      await a.api.subscribe(U1);
+      const pending = a.api.sync();
+      await asked.promise;
+      await a.api.setClock(DEFAULT_NOW_MS + 30_001);
+      const timedOut = await pending;
+      checkEqual(
+        timedOut.ok ? 'ok' : [timedOut.errorCode, timedOut.details?.causeKind],
+        ['sync.auth_required', 'header_source'],
+        'an unanswered question fails after the bound',
+      );
+      // The late answer is ignored; the next request asks again.
+      late?.({ authorization: 'Bearer late' });
+      answering = true;
+      await syncIdle(a);
+      check(questions >= 2, 'the next request asks the source again');
+    },
+  },
+  {
+    // §1.1: the transport asks the header source before each request; a 401
+    // asks again with the refused headers and resends once; a source that
+    // renews to a refused token gives exactly two requests and then the
+    // retryable sync.auth_required, and the next attempt asks fresh.
+    name: 'auth/header-source-renews-once-after-401',
+    specRefs: ['§1.1', '§10.2'],
+    async run(ctx) {
+      let valid = 'one';
+      let renewal = 'one';
+      const asked: (string | null)[] = [];
+      const presented: string[] = [];
+      const contexts: {
+        clientId: string;
+        round: number | null;
+        target: string;
+      }[] = [];
+      const a = await ctx.newClient({
+        actorId: 'auth',
+        clientId: 'auth-renewal',
+        allowed: P1,
+        // The header-source bound reads the pinned client clock (§1.1).
+        nowMs: DEFAULT_NOW_MS,
+        auth: {
+          headers: async (rejected, context) => {
+            asked.push(rejected?.authorization ?? null);
+            contexts.push(context);
+            return {
+              authorization: `Bearer ${rejected === undefined ? 'one' : renewal}`,
+            };
+          },
+          accepts: (headers) => {
+            presented.push(headers.authorization ?? '');
+            return headers.authorization === `Bearer ${valid}`;
+          },
+        },
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      check(asked.length > 0, 'every request asks the source');
+      check(
+        contexts.every(
+          (context) =>
+            context.clientId === 'auth-renewal' &&
+            context.target === 'sync' &&
+            context.round !== null,
+        ),
+        'each question names the replica, its round and the sync target',
+      );
+      checkEqual(
+        asked.filter((value) => value !== null),
+        [],
+        'an accepted bearer is never renewed',
+      );
+
+      // The token expires: the first request is refused, the renewal passes.
+      valid = 'two';
+      renewal = 'two';
+      asked.length = 0;
+      presented.length = 0;
+      await seedTasks(ctx, [task('t1', 'p1', 'after renewal')]);
+      await syncIdle(a);
+      checkEqual(
+        presented.slice(0, 2),
+        ['Bearer one', 'Bearer two'],
+        'the refused request is resent once with the renewed bearer',
+      );
+      checkEqual(
+        asked.slice(0, 2),
+        [null, 'Bearer one'],
+        'the renewal question carries the refused headers',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the renewed round applies',
+      );
+
+      // A source that renews to a refused token: two requests, then the error.
+      valid = 'three';
+      asked.length = 0;
+      presented.length = 0;
+      const refused = await a.api.sync();
+      checkEqual(
+        refused.ok ? 'ok' : refused.errorCode,
+        'sync.auth_required',
+        'the second refusal surfaces',
+      );
+      checkEqual(
+        presented,
+        ['Bearer one', 'Bearer two'],
+        'exactly two requests, no loop',
+      );
+      checkEqual(asked, [null, 'Bearer one'], 'one renewal per attempt');
+
+      // The next attempt asks the source fresh.
+      renewal = 'three';
+      asked.length = 0;
+      await syncIdle(a);
+      checkEqual(
+        asked.slice(0, 2),
+        [null, 'Bearer one'],
+        'the next attempt asks again',
+      );
+    },
+  },
   {
     name: 'security/authority-snapshot-preflight-base-intent-and-scope-loss',
     specRefs: ['§5.11', '§7.5'],

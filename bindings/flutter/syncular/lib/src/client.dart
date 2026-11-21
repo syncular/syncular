@@ -10,11 +10,16 @@
 // run on the same isolate (the one that created the handle). The poll loop is a
 // Timer.periodic doing NON-BLOCKING polls (timeout_ms = 0), so it never blocks
 // the isolate and never races the command path — the honest simple choice over
-// a background isolate (which the callback-free FFI would not need and which
-// cannot share the non-Sendable handle without a second core). See README's
+// a background isolate, which the callback-free FFI does not need. See README's
 // "Event delivery" note.
+//
+// The one exception is the header channel: a command blocks this isolate
+// while the native transport waits for headers, so a client with a header
+// source answers `poll_headers` from a small auth isolate of its own, which
+// calls only the two lock-free header functions.
 import 'dart:async';
 import 'dart:ffi';
+import 'dart:isolate';
 
 import 'ffi.dart';
 
@@ -72,6 +77,18 @@ class WindowState {
 /// transport (only in a `native-transport` core build); omit it for the
 /// dependency-lean, offline-first local core. [dbPath] installs a file-backed
 /// SQLite database so state persists across launches; omit for in-memory.
+/// The request a header source answers for: the client, the sync round's
+/// sequence number (the `attempt` progress reports; null outside a round),
+/// and what the request reaches: `'sync'`, `'segment'`, `'blob'` or
+/// `'realtime'`. A plain final class, so the auth isolate receives it.
+final class SyncularHeaderContext {
+  final String clientId;
+  final int? round;
+  final String target;
+  const SyncularHeaderContext(
+      {required this.clientId, required this.round, required this.target});
+}
+
 class SyncularConfig {
   /// Base URL of the sync server mount, e.g. `https://host/sync`. Requires a
   /// core built with `native-transport`; ignored by the lean core (network
@@ -87,8 +104,20 @@ class SyncularConfig {
   /// Optional explicit realtime socket URL. Derived from [baseUrl] if null.
   final String? wsUrl;
 
-  /// Extra request headers (auth, tenant, …) for the native transport.
-  final Map<String, String> headers;
+  /// The header source of the native transport (auth, tenant, …); required
+  /// with [baseUrl]. The core asks before a host-authenticated request and
+  /// once more after the server refuses them (401 or a realtime auth close),
+  /// passing the refused headers as `rejected` and the request's
+  /// [SyncularHeaderContext] as `context`; otherwise `rejected` is
+  /// null. A throw, or no answer within 30 s, fails that request with
+  /// retryable `sync.auth_required`.
+  ///
+  /// It runs in the client's auth isolate while the command that needs the
+  /// headers blocks the owning isolate, so it must be a top-level or static
+  /// function, and its token state (secure storage, its own refresh) lives in
+  /// that isolate, never in the owning isolate's memory.
+  final Future<Map<String, String>> Function(
+      Map<String, String>? rejected, SyncularHeaderContext context)? headers;
 
   /// Path to the on-disk SQLite database. Null → in-memory (no persistence).
   final String? dbPath;
@@ -123,7 +152,7 @@ class SyncularConfig {
     this.baseUrl,
     this.localAuthorityPath,
     this.wsUrl,
-    this.headers = const {},
+    this.headers,
     this.dbPath,
     this.requestTimeoutMs,
     this.roundDeadlineMs,
@@ -142,7 +171,6 @@ class SyncularConfig {
       object['localAuthorityPath'] = localAuthorityPath;
     }
     if (wsUrl != null) object['wsUrl'] = wsUrl;
-    if (headers.isNotEmpty) object['headers'] = headers;
     if (requestTimeoutMs != null) object['requestTimeoutMs'] = requestTimeoutMs;
     if (roundDeadlineMs != null) object['roundDeadlineMs'] = roundDeadlineMs;
     if (maxRequestBytes != null) object['maxRequestBytes'] = maxRequestBytes;
@@ -166,6 +194,11 @@ class SyncularClient {
   Timer? _pollTimer;
   bool _closed = false;
 
+  /// The auth isolate answering `poll_headers` (null once its spawn failed),
+  /// and the port its exit arrives on; both null without a header source.
+  Future<Isolate?>? _auth;
+  ReceivePort? _authExit;
+
   final StreamController<SyncularEvent> _eventController =
       StreamController<SyncularEvent>.broadcast();
 
@@ -176,7 +209,8 @@ class SyncularClient {
   Stream<SyncularEvent> get events => _eventController.stream;
 
   /// Create the native core and issue `create` with the given schema,
-  /// then start the event poll loop.
+  /// then start the event poll loop and, with [SyncularConfig.headers], the
+  /// auth isolate.
   ///
   /// - [clientId]: optional explicit stable id. When omitted, the core creates
   ///   and persists one in the database.
@@ -194,6 +228,10 @@ class SyncularClient {
     String? libraryPath,
     Duration pollInterval = const Duration(milliseconds: 40),
   }) {
+    if (config.baseUrl != null && config.headers == null) {
+      throw const SyncularError('client.headers_required',
+          'a client with baseUrl needs a headers source');
+    }
     final ffi = SyncularFfi(libraryPath: libraryPath);
     final handle = ffi.clientNew(encodeJson(config._newConfigJson()));
     if (handle == nullptr) {
@@ -209,7 +247,85 @@ class SyncularClient {
     if (limits != null) createParams['limits'] = limits;
     client.command('create', createParams);
     client._startPollLoop();
+    final headers = config.headers;
+    if (headers != null) {
+      final exit = ReceivePort();
+      client._authExit = exit;
+      // A source that cannot be sent to the auth isolate fails the spawn; the
+      // error goes to [events] and [close] still frees the core.
+      client._auth = Future.sync(() => Isolate.spawn(
+              _answerHeaderRequests, (handle.address, libraryPath, headers),
+              onExit: exit.sendPort, debugName: 'syncular-auth'))
+          .then<Isolate?>((isolate) => isolate, onError: (Object error) {
+        if (!client._eventController.isClosed) {
+          client._eventController.addError(error);
+        }
+        return null;
+      });
+    }
     return client;
+  }
+
+  /// The auth isolate: polls the header channel, runs the source for each
+  /// request and provides its answer, until [close] kills it. Both header
+  /// functions skip the core lock, so they proceed while a command holds it.
+  static Future<void> _answerHeaderRequests(
+      (
+        int,
+        String?,
+        Future<Map<String, String>> Function(
+            Map<String, String>?, SyncularHeaderContext)
+      ) setup) async {
+    final (address, libraryPath, source) = setup;
+    final ffi = SyncularFfi(libraryPath: libraryPath);
+    final handle = Pointer<Void>.fromAddress(address);
+    while (true) {
+      final request = ffi.clientPollHeaders(handle, 25);
+      if (request == null) {
+        // One event-loop turn between polls, so [close]'s kill lands here
+        // and never inside a header function.
+        await Future<void>.delayed(Duration.zero);
+        continue;
+      }
+      final (requestId, headersJson) = await answerHeaders(request, source);
+      ffi.clientProvideHeaders(handle, requestId, headersJson);
+    }
+  }
+
+  /// Package-internal: run [source] for one
+  /// `{"requestId":n,"rejected":...,"clientId":...,"round":...,"target":...}`
+  /// header request. Completes with the request id and the headers JSON to
+  /// provide, `null` when the source throws or the request lacks
+  /// `clientId` or `target`.
+  static Future<(int, String)> answerHeaders(String request,
+      Future<Map<String, String>> Function(
+            Map<String, String>?, SyncularHeaderContext) source) async {
+    final decoded = decodeJson(request);
+    if (decoded is! Map || decoded['requestId'] is! int) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid header request');
+    }
+    final requestId = decoded['requestId'] as int;
+    final clientId = decoded['clientId'];
+    final target = decoded['target'];
+    final round = decoded['round'];
+    if (clientId is! String || target is! String || (round != null && round is! int)) {
+      return (requestId, 'null');
+    }
+    final rejected = decoded['rejected'];
+    Map<String, String>? headers;
+    try {
+      headers = await source(
+          rejected is Map
+              ? rejected.map((name, value) => MapEntry('$name', '$value'))
+              : null,
+          SyncularHeaderContext(
+              clientId: clientId, round: round as int?, target: target));
+    } on Object {
+      // A failed source provides null; the core fails the request with
+      // retryable sync.auth_required.
+    }
+    return (requestId, encodeJson(headers));
   }
 
   // -- Raw command ------------------------------------------------------------
@@ -315,18 +431,20 @@ class SyncularClient {
 
   /// Escape hatch: apply an arbitrary Yjs [update] onto a `crdt` column.
   String crdtApplyUpdate(
-      String table, String rowId, String column, List<int> update) {
-    final hex = StringBuffer();
-    for (final b in update) {
-      hex.write((b & 0xff).toRadixString(16).padLeft(2, '0'));
-    }
-    return _crdtCommitId('crdtApplyUpdate', {
-      'table': table,
-      'rowId': rowId,
-      'column': column,
-      'update': {r'$bytes': hex.toString()},
-    });
-  }
+          String table, String rowId, String column, List<int> update) =>
+      _crdtCommitId('crdtApplyUpdate', {
+        'table': table,
+        'rowId': rowId,
+        'column': column,
+        'update': _bytes(update),
+      });
+
+  /// The `{"$bytes":"<hex>"}` driver form of raw bytes.
+  static Map<String, String> _bytes(List<int> value) => {
+        r'$bytes': value
+            .map((b) => (b & 0xff).toRadixString(16).padLeft(2, '0'))
+            .join(),
+      };
 
   String _crdtCommitId(String method, Map<String, Object?> params) {
     final result = command(method, params);
@@ -395,10 +513,13 @@ class SyncularClient {
     return units[0] as Map<String, Object?>;
   }
 
-  /// Replace the full native transport header set. Subsequent HTTP requests
-  /// use it immediately; reconnect realtime to apply it to the handshake.
-  void setHeaders(Map<String, String> headers) =>
-      command('setHeaders', {'headers': headers});
+  /// Add [keys] (raw key bytes by key id) to the active encryption keyring.
+  /// Rows encrypted under an added key decrypt from then on; the keys already
+  /// in the keyring stay.
+  void addEncryptionKeys(Map<String, List<int>> keys) =>
+      command('addEncryptionKeys', {
+        'keys': keys.map((keyId, bytes) => MapEntry(keyId, _bytes(bytes))),
+      });
 
   /// SPEC §12.3 local-authority state: `local`, `attaching` or `attached`, or
   /// null when the client has no [SyncularConfig.localAuthorityPath].
@@ -406,7 +527,8 @@ class SyncularClient {
       command('localAuthorityState', const {})['state'] as String?;
 
   /// SPEC §12.3: upload the local authority's rows to [SyncularConfig.baseUrl]
-  /// with the headers set through [setHeaders], then sync with that server.
+  /// with the headers from [SyncularConfig.headers], then sync with that
+  /// server.
   /// Throws [SyncularError] `sync.attach_rejected` (`details['reason']`) when
   /// the server refuses an upload commit, and
   /// `client.local_authority_unconfigured` without a `localAuthorityPath` or
@@ -630,13 +752,29 @@ class SyncularClient {
   /// commands throw `client.closed` after. Stops the poll loop first, so the
   /// handle is never freed under an in-flight poll (the poll runs on THIS
   /// isolate, so stopping the Timer synchronously guarantees no overlap).
+  ///
+  /// With a header source, close kills the auth isolate and frees the core
+  /// once that isolate has exited, a few event-loop turns after close
+  /// returns: the kill lands between header calls, so no thread is inside the
+  /// core when it is freed. When the auth isolate never started, the core is
+  /// freed as soon as that spawn failure is known.
   void close() {
     _stopPollLoop();
     if (_closed) return;
     _closed = true;
-    _ffi.clientClose(_handle);
+    final handle = _handle;
     _handle = nullptr;
     _eventController.close();
+    final auth = _auth;
+    final authExit = _authExit;
+    if (auth == null || authExit == null) {
+      _ffi.clientClose(handle);
+      return;
+    }
+    authExit.first.then((_) => _ffi.clientClose(handle));
+    auth.then((isolate) => isolate == null
+        ? authExit.sendPort.send(null)
+        : isolate.kill(priority: Isolate.beforeNextEvent));
   }
 
   // -- Event poll loop --------------------------------------------------------

@@ -7,7 +7,6 @@ const COMMANDS: &[&str] = &[
     "syncular_command",
     "syncular_query",
     "syncular_query_snapshot",
-    "syncular_set_headers",
 ];
 
 fn main() {

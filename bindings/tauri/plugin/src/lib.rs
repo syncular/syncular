@@ -69,8 +69,14 @@ pub struct SyncularConfig {
     pub local_authority_path: Option<String>,
     /// Optional realtime WS URL; derived from `base_url` when absent.
     pub ws_url: Option<String>,
-    /// Extra request headers (auth, actor/project ids) as (name, value).
-    pub headers: Vec<(String, String)>,
+    /// The app's Rust header source (auth, actor/project ids, per-round trace
+    /// headers). The native transport reads it before every
+    /// host-authenticated request and realtime handshake with the request's
+    /// `HeaderContext` (client id, round attempt, target), and again after a
+    /// 401 with the refused headers.
+    /// It runs in the host process, so a throttled or hidden webview never
+    /// holds a request back. `None` sends no host headers.
+    pub header_source: Option<transport::HeaderSource>,
     /// Per-request network deadline in milliseconds. `None` (the default)
     /// leaves requests unbounded, matching the reference HTTP binding.
     pub request_timeout_ms: Option<u64>,
@@ -116,7 +122,7 @@ impl Default for SyncularConfig {
             base_url: None,
             local_authority_path: None,
             ws_url: None,
-            headers: Vec::new(),
+            header_source: None,
             request_timeout_ms: None,
             round_deadline_ms: None,
             max_request_bytes: None,
@@ -143,14 +149,6 @@ impl SyncularConfig {
         }
         if let Some(ws) = &self.ws_url {
             map.insert("wsUrl".to_owned(), Value::from(ws.clone()));
-        }
-        if !self.headers.is_empty() {
-            let headers: serde_json::Map<String, Value> = self
-                .headers
-                .iter()
-                .map(|(k, v)| (k.clone(), Value::from(v.clone())))
-                .collect();
-            map.insert("headers".to_owned(), Value::Object(headers));
         }
         if let Some(ms) = self.request_timeout_ms {
             map.insert("requestTimeoutMs".to_owned(), Value::from(ms));
@@ -184,13 +182,6 @@ enum Request {
     Query {
         sql: String,
         params: Value,
-        reply: Sender<Value>,
-    },
-    /// Replace the transport's request headers. Header state
-    /// lives on the core-owned transport, so mutation rides the same mailbox
-    /// as every other access — the one-owning-thread invariant holds.
-    SetHeaders {
-        headers: Vec<(String, String)>,
         reply: Sender<Value>,
     },
     /// Native realtime reader wake; contains no data (the transport buffer does).
@@ -580,9 +571,7 @@ where
             } });
             while let Ok(request) = rx.recv() {
                 match request {
-                    Request::Command { reply: tx, .. }
-                    | Request::Query { reply: tx, .. }
-                    | Request::SetHeaders { reply: tx, .. } => {
+                    Request::Command { reply: tx, .. } | Request::Query { reply: tx, .. } => {
                         let _ = tx.send(reply.clone());
                     }
                     Request::Shutdown => return,
@@ -592,6 +581,9 @@ where
             return;
         }
     };
+    if let Some(source) = &config.header_source {
+        core.set_header_source(source.clone());
+    }
     let progress_emit = emit.clone();
     core.progress_listener = Some(std::sync::Arc::new(move |progress| {
         progress_emit(&json!({ "type": "progress", "progress": progress }));
@@ -951,10 +943,6 @@ where
                 let _ = reply.send(core.query(&sql, params));
                 pump_events(&mut core, &*emit);
             }
-            Request::SetHeaders { headers, reply } => {
-                core.set_headers(headers);
-                let _ = reply.send(json!({ "result": null }));
-            }
             Request::TransportWake => {
                 core.poll_transport();
                 pump_events(&mut core, &*emit);
@@ -1258,37 +1246,6 @@ async fn syncular_command<R: Runtime>(
     Ok(reply)
 }
 
-/// Replace the native transport's request headers at runtime — the auth
-/// Header rotation path: a fresh JWT reaches the transport without
-/// re-registering the plugin. HTTP requests use the new set from the next
-/// call; the realtime socket applies it on its next (re)connect.
-#[tauri::command]
-async fn syncular_set_headers<R: Runtime>(
-    app: tauri::AppHandle<R>,
-    webview: tauri::Webview<R>,
-    headers: std::collections::BTreeMap<String, String>,
-) -> Result<Value, String> {
-    let state = app.state::<SyncularState>();
-    if let Err(reply) = state.require_owner(webview.label()) {
-        return Ok(reply);
-    }
-    // Runtime bearer replacement is an active-session operation. Hold the
-    // same gate as fast reads so beginSecurityPreflight both rejects new
-    // replacements and waits for an already-started mailbox update.
-    let _active_guard = match state.security_gate.enter_read() {
-        Ok(guard) => guard,
-        Err(reply) => return Ok(reply),
-    };
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    state.send(Request::SetHeaders {
-        headers: headers.into_iter().collect(),
-        reply: reply_tx,
-    })?;
-    reply_rx
-        .recv()
-        .map_err(|_| "the syncular core dropped the reply".to_owned())
-}
-
 #[tauri::command]
 async fn syncular_query<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -1461,8 +1418,7 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             syncular_command,
             syncular_query,
-            syncular_query_snapshot,
-            syncular_set_headers
+            syncular_query_snapshot
         ])
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
@@ -1552,7 +1508,7 @@ mod tests {
         let config = SyncularConfig {
             base_url: Some("https://api.example.com".to_owned()),
             local_authority_path: Some("/data/authority.db".to_owned()),
-            headers: vec![("authorization".to_owned(), "Bearer x".to_owned())],
+            header_source: Some(transport::HeaderSource::new(|_, _| None)),
             request_timeout_ms: Some(1000),
             round_deadline_ms: Some(2000),
             max_request_bytes: Some(1024),
@@ -1564,7 +1520,8 @@ mod tests {
         let json = config.to_transport_json();
         assert_eq!(json["baseUrl"], "https://api.example.com");
         assert_eq!(json["localAuthorityPath"], "/data/authority.db");
-        assert_eq!(json["headers"]["authorization"], "Bearer x");
+        // The header source never crosses into the transport JSON.
+        assert!(json.get("headers").is_none());
         assert_eq!(json["requestTimeoutMs"], 1000);
         assert_eq!(json["roundDeadlineMs"], 2000);
         assert_eq!(json["maxRequestBytes"], 1024);
@@ -1649,52 +1606,6 @@ mod tests {
             .expect("barrier drains after the read");
         barrier.join().expect("barrier thread");
         assert!(gate.enter_read().is_err());
-    }
-
-    #[test]
-    fn direct_set_headers_command_respects_the_native_preflight_gate() {
-        use std::collections::BTreeMap;
-        use tauri::test::{mock_builder, mock_context, noop_assets};
-
-        let app = mock_builder()
-            .plugin(init(SyncularConfig {
-                auto_sync: false,
-                ..Default::default()
-            }))
-            .build(mock_context(noop_assets()))
-            .expect("build mock app");
-
-        let blocked = tauri::async_runtime::block_on(syncular_set_headers(
-            app.handle().clone(),
-            webview(app.handle(), "main"),
-            BTreeMap::from([("authorization".to_owned(), "Bearer blocked".to_owned())]),
-        ))
-        .expect("preflight reply");
-        assert_eq!(
-            blocked["error"]["code"],
-            Value::from("client.security_preflight_required")
-        );
-
-        let created = run_command(
-            app.handle(),
-            json!({
-                "method": "create",
-                "params": {
-                    "clientId": "native-header-gate",
-                    "schema": { "version": 1, "tables": [] }
-                }
-            }),
-        )
-        .expect("create reply");
-        assert!(created.get("error").is_none(), "{created}");
-
-        let active = tauri::async_runtime::block_on(syncular_set_headers(
-            app.handle().clone(),
-            webview(app.handle(), "main"),
-            BTreeMap::from([("authorization".to_owned(), "Bearer active".to_owned())]),
-        ))
-        .expect("active reply");
-        assert_eq!(active["result"], Value::Null);
     }
 
     #[test]
@@ -1786,11 +1697,8 @@ mod tests {
             Value::from("client.security_preflight_required")
         );
 
-        // Activation (with a fresh header set) releases both gates.
-        let activated = command(json!({
-            "method": "activateSecurity",
-            "params": { "headers": { "authorization": "Bearer fresh" } }
-        }));
+        // Activation releases both gates.
+        let activated = command(json!({ "method": "activateSecurity", "params": {} }));
         assert!(activated.get("error").is_none(), "{activated}");
         let read = tauri::async_runtime::block_on(syncular_query(
             app.handle().clone(),
@@ -1949,14 +1857,7 @@ mod tests {
                 "client.authority_read_forbidden"
             );
         }
-        for method in [
-            "query",
-            "querySnapshot",
-            "mutate",
-            "setHeaders",
-            "subscribe",
-            "sync",
-        ] {
+        for method in ["query", "querySnapshot", "mutate", "subscribe", "sync"] {
             assert_eq!(
                 command(json!({"method": method, "params": {"sql": "SELECT id FROM authority"}}))
                     ["error"]["code"],
@@ -2304,15 +2205,6 @@ mod tests {
         );
         assert_eq!(count("second"), refusal);
         assert_eq!(
-            tauri::async_runtime::block_on(syncular_set_headers(
-                app.handle().clone(),
-                webview(app.handle(), "second"),
-                std::collections::BTreeMap::new(),
-            ))
-            .unwrap(),
-            refusal
-        );
-        assert_eq!(
             count("main")["result"]["rows"][0]["n"],
             0,
             "the refused mutate reached the client"
@@ -2411,16 +2303,6 @@ mod tests {
         let rows = qrx.recv().unwrap();
         assert_eq!(rows["result"]["rows"][0]["title"], "hi");
 
-        // Header rotation rides the same mailbox; a
-        // client-local (Null-transport) core accepts and ignores the set.
-        let (htx, hrx) = channel();
-        tx.send(Request::SetHeaders {
-            headers: vec![("authorization".to_owned(), "Bearer fresh".to_owned())],
-            reply: htx,
-        })
-        .unwrap();
-        assert_eq!(hrx.recv().unwrap()["result"], Value::Null);
-
         tx.send(Request::Shutdown).unwrap();
         handle.join().unwrap();
 
@@ -2487,6 +2369,123 @@ mod tests {
             echo_digest: Some([7; 32]),
         });
         frames
+    }
+
+    /// The app's header source reaches the native transport: each request
+    /// reads it, a 401 reads it again with the refused headers, and a
+    /// second 401 surfaces `sync.auth_required` after exactly two requests.
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn the_configured_header_source_authenticates_and_refreshes_after_a_401() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::mpsc::channel;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            (0..2)
+                .map(|_| {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    let (mut head, mut length) = (String::new(), 0);
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        let line = line.to_ascii_lowercase();
+                        if let Some(value) = line.strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        head.push_str(&line);
+                    }
+                    reader.read_exact(&mut vec![0; length]).unwrap();
+                    let body = r#"{"code":"sync.auth_required","message":"host authentication required"}"#;
+                    write!(
+                        socket,
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                    head
+                })
+                .collect::<Vec<_>>()
+        });
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let seen = reads.clone();
+        let (tx, rx) = channel();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    header_source: Some(transport::HeaderSource::new(move |context, rejected| {
+                        seen.lock()
+                            .unwrap()
+                            .push((context.clone(), rejected.map(<[_]>::to_vec)));
+                        let token = if rejected.is_none() { "stale" } else { "fresh" };
+                        Some(vec![("authorization".into(), format!("Bearer {token}"))])
+                    })),
+                    auto_sync: false,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                |_| {},
+            )
+        });
+        let call = |command: Value| {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "header-source", "schema": { "version": 1, "tables": [{
+                "name": "todo", "primaryKey": "id", "columns": [
+                    { "name": "id", "type": "string", "nullable": false }
+                ], "scopes": [{ "pattern": "todo:{id}" }]
+            }] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        let subscribed =
+            call(json!({ "method": "subscribe", "params": { "scopes": { "id": "one" } } }));
+        assert!(subscribed.get("error").is_none(), "{subscribed}");
+        let synced = call(json!({ "method": "sync" }));
+        assert_eq!(
+            synced["result"]["errorCode"], "sync.auth_required",
+            "{synced}"
+        );
+        let heads = server.join().unwrap();
+        assert!(
+            heads[0].contains("authorization: bearer stale"),
+            "{}",
+            heads[0]
+        );
+        assert!(
+            heads[1].contains("authorization: bearer fresh"),
+            "{}",
+            heads[1]
+        );
+        let stale = vec![("authorization".to_owned(), "Bearer stale".to_owned())];
+        let reads = reads.lock().unwrap();
+        assert_eq!(
+            reads
+                .iter()
+                .map(|(_, rejected)| rejected.clone())
+                .collect::<Vec<_>>(),
+            vec![None, Some(stale)]
+        );
+        // Both reads name the created client and the one round, as a sync.
+        for (context, _) in reads.iter() {
+            assert_eq!(context.client_id, "header-source");
+            assert_eq!(context.target, transport::HeaderTarget::Sync);
+            assert!(context.round.is_some());
+            assert_eq!(context.round, reads[0].0.round);
+        }
+        drop(reads);
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
     }
 
     #[cfg(feature = "native-transport")]
@@ -2654,6 +2653,9 @@ mod tests {
             run_owner_thread(
                 SyncularConfig {
                     base_url: Some(format!("http://{address}")),
+                    header_source: Some(transport::HeaderSource::new(|_, _| {
+                        Some(vec![("authorization".into(), "Bearer fresh".into())])
+                    })),
                     auto_sync: true,
                     ..Default::default()
                 },
@@ -2714,13 +2716,6 @@ mod tests {
             "sync.offline"
         );
         assert_eq!(requests.load(Ordering::SeqCst), 0);
-        let (reply, result) = channel();
-        tx.send(Request::SetHeaders {
-            headers: vec![("authorization".into(), "Bearer fresh".into())],
-            reply,
-        })
-        .unwrap();
-        assert_eq!(result.recv().unwrap()["result"], Value::Null);
         assert!(
             call(json!({ "method": "setTransportEnabled", "params": { "enabled": true } }))
                 .recv()

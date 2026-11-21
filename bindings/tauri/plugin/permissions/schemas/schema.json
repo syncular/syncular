@@ -331,22 +331,10 @@
           "markdownDescription": "Denies the syncular_query_snapshot command without any pre-configured scope."
         },
         {
-          "description": "Enables the syncular_set_headers command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-syncular-set-headers",
-          "markdownDescription": "Enables the syncular_set_headers command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the syncular_set_headers command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-syncular-set-headers",
-          "markdownDescription": "Denies the syncular_set_headers command without any pre-configured scope."
-        },
-        {
-          "description": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command), the query paths (syncular_query and the atomic\nsyncular_query_snapshot sidecar), and the auth-rotation path\n(syncular_set_headers). Grant this to the window(s)\nthat host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-query-snapshot`\n- `allow-syncular-set-headers`",
+          "description": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command) and the query paths (syncular_query and the atomic\nsyncular_query_snapshot sidecar). Grant this to the window(s) that host\nyour syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-query-snapshot`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command), the query paths (syncular_query and the atomic\nsyncular_query_snapshot sidecar), and the auth-rotation path\n(syncular_set_headers). Grant this to the window(s)\nthat host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-query-snapshot`\n- `allow-syncular-set-headers`"
+          "markdownDescription": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command) and the query paths (syncular_query and the atomic\nsyncular_query_snapshot sidecar). Grant this to the window(s) that host\nyour syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-query-snapshot`"
         }
       ]
     }

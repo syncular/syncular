@@ -81,7 +81,7 @@ startSyncWorker({
 });
 ```
 
-`createTransport` receives `http`, the reader of the host's current headers, so a token set with `setHeaders` reaches the next request. On the page, create a profiler on the same channel name and wrap the handle:
+`createTransport` receives `http`, which carries the worker's header source, so the wrapped transport asks it per request like the default one. On the page, create a profiler on the same channel name and wrap the handle:
 
 ```ts title="src/sync.dev.ts"
 const profiler = createSyncProfiler({

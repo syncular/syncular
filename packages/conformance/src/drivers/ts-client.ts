@@ -19,6 +19,7 @@ import {
   type CommitOutcome,
   type ConflictRecord,
   type EncryptionKeyringConfig,
+  httpSyncTransport,
   type MutationInput,
   type RejectionRecord,
   RealtimeUnavailableError,
@@ -27,6 +28,7 @@ import {
   type SyncIntent,
   type SyncSummary,
   type SyncProgress,
+  type SyncTransport,
   type UnitRecord,
   last,
 } from '@syncular/client';
@@ -390,6 +392,36 @@ async function constructClient(
       }
     | undefined;
   let pending: Promise<ClientSyncResult> | undefined;
+  // §1.1: with `auth`, sync requests go through the HTTP transport's header
+  // source and 401 rule; the harness answers a refused bearer with 401.
+  const auth = options.auth;
+  const sync: SyncTransport =
+    auth === undefined
+      ? (bytes) => endpoints.sync(bytes)
+      : httpSyncTransport('https://conformance.invalid/sync', {
+          headers: (rejected, context) => {
+            if (context === undefined)
+              throw new Error('the client core passes a header context');
+            return auth.headers(rejected, context);
+          },
+          fetch: (async (_url: unknown, init?: RequestInit) =>
+            auth.accepts(Object.fromEntries(new Headers(init?.headers)))
+              ? new Response(
+                  (
+                    await endpoints.sync(
+                      new Uint8Array(init?.body as ArrayBuffer),
+                    )
+                  ).slice().buffer,
+                )
+              : Response.json(
+                  {
+                    code: 'sync.auth_required',
+                    message: 'authentication required',
+                    retryable: true,
+                  },
+                  { status: 401 },
+                )) as typeof fetch,
+        });
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
@@ -413,9 +445,9 @@ async function constructClient(
     ...(nowMs !== undefined ? { now: () => clockMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
     ...(previousVersionContext !== undefined ? { previousVersionContext } : {}),
-    transport: async (bytes) => {
+    transport: async (bytes, signal, context) => {
       clockMs += options.syncClockStepMs ?? 0;
-      const response = await endpoints.sync(bytes);
+      const response = await sync(bytes, signal, context);
       const barrier = held;
       if (barrier !== undefined) {
         held = undefined;

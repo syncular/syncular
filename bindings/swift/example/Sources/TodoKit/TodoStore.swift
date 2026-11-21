@@ -41,6 +41,8 @@ public final class TodoStore {
             schema: SyncularSchema.schema,
             config: SyncularConfig(
                 baseUrl: baseUrl,
+                // The quickstart server authenticates every request without headers.
+                headers: { _, _ in [:] },
                 dbPath: dbPath
             )
         )

@@ -88,7 +88,7 @@ On desktop, the plugin owns the database path and the transport — see
    but no custom headers, so authenticate the upgrade from a cookie or a
    [short-lived ticket](https://syncular.dev/guide-auth/#realtime-tickets).
 3. **`src-tauri/src/lib.rs` → `base_url`** — point the native core at your
-   deployed sync endpoint (rotating auth goes through `client.setHeaders`).
+   deployed sync endpoint (set `header_source` there: the transport asks it for the bearer on every request).
    Replace `localhost:8787` in the `connect-src` of the window's CSP
    (`src-tauri/tauri.conf.json`) with the same origin.
 4. **`src/frontend/main.tsx`** — the UI. Everything under `<SyncProvider>` is

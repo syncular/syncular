@@ -94,7 +94,7 @@ a persistent database path.
 | `clientId` | Optional explicit id. Otherwise the core creates and persists one in the database. A different id for an existing database fails loudly. |
 | `baseUrl` | Sync server mount. Engages the native transport. |
 | `dbPath` | On-disk SQLite path, usually a file under the app-data directory. |
-| `headers` | Extra transport headers (auth, tenant). |
+| `headers` | The header source: `async (rejected) => headers`. The transport asks it before every request and socket handshake; a config with `baseUrl` and no source throws `client.headers_required`. See [Authentication](/guide-auth/#native-and-headless-give-the-client-a-header-source). |
 | `limits` | §4.2 client limits, forwarded to the native `create`. |
 | `realtimePolicy` | `optional` (default) or `required`; see [Realtime & lifecycle](/platform-react-native-realtime/). |
 | `encryption` | Portable E2EE keyring installed in the Rust core. |

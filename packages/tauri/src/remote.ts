@@ -172,12 +172,6 @@ export class TauriSyncClient extends NativeBridgeClient {
     return this.#tauri.invoke(`${PLUGIN}syncular_query_snapshot`, params);
   }
 
-  protected override sendHeaders(
-    headers: Readonly<Record<string, string>>,
-  ): Promise<NativeReply> {
-    return this.#tauri.invoke(`${PLUGIN}syncular_set_headers`, { headers });
-  }
-
   /** The host lifecycle report passes the preflight gate. */
   protected override allowPreflightCommand(method: string): boolean {
     return method === 'setHostLifecycle';

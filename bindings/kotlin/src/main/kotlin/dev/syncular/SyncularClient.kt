@@ -25,6 +25,29 @@ fun interface SyncularEventListener {
  */
 class SyncularException(val code: String, message: String, val details: JsonValue? = null) : RuntimeException(message)
 
+/**
+ * The request a header source answers for: the client, the sync round's
+ * sequence number (the `attempt` progress reports; null outside a round), and
+ * what the request reaches: `"sync"`, `"segment"`, `"blob"` or `"realtime"`.
+ */
+data class SyncularHeaderContext(val clientId: String, val round: Long?, val target: String)
+
+/**
+ * Produces the native transport's request headers (auth, tenant, …). The core
+ * asks before a host-authenticated request and once more after the server
+ * refuses them (401 or a realtime auth close), passing the refused headers as
+ * [rejected]; otherwise [rejected] is null. [context] names the client, round
+ * and target of the request. The client polls the core's header
+ * channel on its own thread and calls the source on a further thread while the
+ * command that needs the headers blocks, so the source may block, but it must
+ * not wait for the thread that issued that command. A thrown exception
+ * fails that request with retryable `sync.auth_required`, as does an answer
+ * later than 30 s.
+ */
+fun interface SyncularHeaderSource {
+    fun headers(rejected: Map<String, String>?, context: SyncularHeaderContext): Map<String, String>
+}
+
 /** A window base's units and the subset whose bootstrap is still pending (SPEC §4.8). */
 data class WindowState(val units: List<String>, val pending: List<String>)
 
@@ -40,7 +63,8 @@ data class WindowState(val units: List<String>, val pending: List<String>)
 data class SyncularConfig(
     val baseUrl: String? = null,
     val wsUrl: String? = null,
-    val headers: Map<String, String> = emptyMap(),
+    /** The header source of the native transport; required with [baseUrl]. */
+    val headers: SyncularHeaderSource? = null,
     val dbPath: String? = null,
     /** Silence bound for one HTTP request, in milliseconds: no step or wait between body bytes may exceed it. */
     val requestTimeoutMs: Long? = null,
@@ -62,9 +86,6 @@ data class SyncularConfig(
         val fields = LinkedHashMap<String, JsonValue>()
         baseUrl?.let { fields["baseUrl"] = JsonValue.of(it) }
         wsUrl?.let { fields["wsUrl"] = JsonValue.of(it) }
-        if (headers.isNotEmpty()) {
-            fields["headers"] = JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) })
-        }
         requestTimeoutMs?.let { fields["requestTimeoutMs"] = exactPolicyBound("requestTimeoutMs", it) }
         roundDeadlineMs?.let { fields["roundDeadlineMs"] = exactPolicyBound("roundDeadlineMs", it) }
         maxRequestBytes?.let { fields["maxRequestBytes"] = exactPolicyBound("maxRequestBytes", it) }
@@ -104,10 +125,19 @@ data class SyncularConfig(
  */
 class SyncularClient private constructor(
     private var handle: MemorySegment,
+    private val headerSource: SyncularHeaderSource?,
 ) : AutoCloseable {
     private val commandLock = Any()
+    /** Held while a header answer uses the handle and while [close]
+     *  frees it. The answer cannot take [commandLock]: the command waiting for
+     *  the headers holds it. */
+    private val handleLock = Any()
     private val pollRunning = AtomicBoolean(false)
     private var pollThread: Thread? = null
+    /** The `poll_headers` loop; it runs from create to [close], [pause] included,
+     *  because a command may need headers at any time. */
+    private val headersRunning = AtomicBoolean(false)
+    private var headerThread: Thread? = null
     @Volatile private var closed = false
 
     /** The event listener (invoked on the poll thread). Set before/after init. */
@@ -132,6 +162,9 @@ class SyncularClient private constructor(
             config: SyncularConfig = SyncularConfig(),
             limits: JsonValue? = null,
         ): SyncularClient {
+            if (config.baseUrl != null && config.headers == null) {
+                throw SyncularException("client.headers_required", "a client with baseUrl needs a headers source")
+            }
             val handle = SyncularFfi.clientNew(config.newConfigJson().encode())
             if (handle.address() == 0L) {
                 throw SyncularException(
@@ -139,7 +172,7 @@ class SyncularClient private constructor(
                     "syncular_client_new returned null (malformed config or unsupported transport)",
                 )
             }
-            val client = SyncularClient(handle)
+            val client = SyncularClient(handle, config.headers)
             val createParams = LinkedHashMap<String, JsonValue>()
             clientId?.let { createParams["clientId"] = JsonValue.of(it) }
             createParams["schema"] = schema
@@ -147,6 +180,13 @@ class SyncularClient private constructor(
             limits?.let { createParams["limits"] = it }
             client.command("create", JsonValue.Obj(createParams))
             client.startPollLoop()
+            if (config.headers != null) {
+                client.headersRunning.set(true)
+                client.headerThread = Thread({ client.runHeaderLoop() }, "syncular-headers").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
             return client
         }
     }
@@ -241,16 +281,21 @@ class SyncularClient private constructor(
 
     /** Escape hatch: apply an arbitrary Yjs update onto a `crdt` column. */
     fun crdtApplyUpdate(table: String, rowId: String, column: String, update: ByteArray): String {
-        val hex = StringBuilder(update.size * 2)
-        for (b in update) hex.append("%02x".format(b.toInt() and 0xff))
         return crdtCommitId(
             "crdtApplyUpdate",
             JsonValue.obj(
                 "table" to JsonValue.of(table), "rowId" to JsonValue.of(rowId),
                 "column" to JsonValue.of(column),
-                "update" to JsonValue.obj("\$bytes" to JsonValue.of(hex.toString())),
+                "update" to bytes(update),
             ),
         )
+    }
+
+    /** The `{"$bytes":"<hex>"}` driver form of raw bytes. */
+    private fun bytes(value: ByteArray): JsonValue {
+        val hex = StringBuilder(value.size * 2)
+        for (b in value) hex.append("%02x".format(b.toInt() and 0xff))
+        return JsonValue.obj("\$bytes" to JsonValue.of(hex.toString()))
     }
 
     private fun crdtCommitId(method: String, params: JsonValue): String {
@@ -322,15 +367,11 @@ class SyncularClient private constructor(
             it.string ?: throw SyncularException("client.invalid_host_response", "$field entry is not a string")
         }
 
-    /** Replace the full native transport header set. Subsequent HTTP requests
-     * use it immediately; reconnect realtime to apply it to the handshake. */
-    fun setHeaders(headers: Map<String, String>) {
-        command(
-            "setHeaders",
-            JsonValue.obj(
-                "headers" to JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) }),
-            ),
-        )
+    /** Add keys to the active encryption keyring, keyed by key id. Rows
+     *  encrypted under an added key decrypt from then on; the keys already in
+     *  the keyring stay. */
+    fun addEncryptionKeys(keys: Map<String, ByteArray>) {
+        command("addEncryptionKeys", JsonValue.obj("keys" to JsonValue.Obj(keys.mapValues { bytes(it.value) })))
     }
 
     // -- Local authority (SPEC.md §12; needs localAuthorityPath in the config) ---
@@ -354,8 +395,8 @@ class SyncularClient private constructor(
             ?: throw SyncularException("client.invalid_host_response", "unknown local authority state", state)
     }
 
-    /** Upload the local authority's live rows to `baseUrl` (with the headers set
-     *  through [setHeaders]) and switch rounds to the server. Throws
+    /** Upload the local authority's live rows to `baseUrl` (with the headers
+     *  from [SyncularConfig.headers]) and switch rounds to the server. Throws
      *  `sync.attach_rejected` (reason in `details`) when the server refuses, and
      *  `client.local_authority_unconfigured` without `localAuthorityPath` or `baseUrl`. */
     fun attachLocalAuthority() {
@@ -502,11 +543,18 @@ class SyncularClient private constructor(
      *  handle is never freed under an in-flight `poll_event`. */
     override fun close() {
         stopPollLoop()
+        // The header loop polls with a 25 ms timeout, so it observes the flag
+        // promptly; the handle is freed only after it left `poll_headers`.
+        headersRunning.set(false)
+        headerThread?.join()
+        headerThread = null
         synchronized(commandLock) {
-            if (closed) return
-            closed = true
-            SyncularFfi.clientClose(handle)
-            handle = MemorySegment.NULL
+            synchronized(handleLock) {
+                if (closed) return
+                closed = true
+                SyncularFfi.clientClose(handle)
+                handle = MemorySegment.NULL
+            }
         }
     }
 
@@ -546,6 +594,44 @@ class SyncularClient private constructor(
             command("drainRealtime", JsonValue.Obj(emptyMap()))
         } else {
             listener?.onEvent(SyncularEvent(type, value))
+        }
+    }
+
+    // -- Header channel --------------------------------------------------------
+
+    private fun runHeaderLoop() {
+        while (headersRunning.get()) {
+            // close() joins THIS loop before it frees the handle.
+            val request = SyncularFfi.clientPollHeaders(handle, 25) ?: continue
+            answerHeaders(request)
+        }
+    }
+
+    /** Call the header source for one
+     *  `{"requestId":n,"rejected":...,"clientId":...,"round":...,"target":...}` request
+     *  on its own thread, so the loop keeps polling while the source runs, and
+     *  provide its result; a thrown exception provides null, and so does a
+     *  request without `clientId` or `target`, at once. */
+    internal fun answerHeaders(requestJson: String) {
+        val request = runCatching { JsonValue.parse(requestJson) }.getOrNull() ?: return
+        val requestId = request["requestId"]?.number?.toLong() ?: return
+        val rejected = request["rejected"]?.obj?.mapValues { it.value.string ?: "" }
+        val clientId = request["clientId"]?.string
+        val target = request["target"]?.string
+        if (clientId == null || target == null) return provideHeaders(requestId, null)
+        val context = SyncularHeaderContext(clientId, request["round"]?.number?.toLong(), target)
+        Thread({
+            provideHeaders(requestId, runCatching { headerSource?.headers(rejected, context) }.getOrNull())
+        }, "syncular-header-source").apply { isDaemon = true }.start()
+    }
+
+    /** Hands the headers for a request (null: none) to the core; a closed
+     *  client drops them. The core's reply carries nothing the source could
+     *  act on. Tests replace it to observe the answers. */
+    internal var provideHeaders: (Long, Map<String, String>?) -> Unit = { requestId, headers ->
+        val json = headers?.let { h -> JsonValue.Obj(h.mapValues { JsonValue.of(it.value) }) } ?: JsonValue.Null
+        synchronized(handleLock) {
+            if (!closed) SyncularFfi.clientProvideHeaders(handle, requestId, json.encode())
         }
     }
 }

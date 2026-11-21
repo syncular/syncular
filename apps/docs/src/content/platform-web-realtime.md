@@ -158,18 +158,20 @@ rejects the same way.
 ::::
 
 ::::step{title="Authenticate and rotate" time="2 min"}
-Pass `headers` (for example `Authorization`) to the handle config to
-authenticate sync, segment, and blob requests. Rotate them without recreating
-the handle:
+Pass `headers` to `startSyncWorker` in the worker entry. The worker asks it
+before every sync, segment, and blob request, so a renewed token needs no call
+on the handle:
 
-```ts title="src/auth.ts"
-await handle.setHeaders({ Authorization: `Bearer ${freshToken}` });
+```ts title="src/worker.ts"
+startSyncWorker({
+  headers: async (rejected) => ({ Authorization: `Bearer ${await auth.token(rejected)}` }),
+});
 ```
 
 The realtime socket cannot carry headers. It authenticates by cookie or ticket;
-see [Authentication](/guide-auth/#browser-send-and-rotate-the-header).
+see [Authentication](/guide-auth/#browser-give-the-worker-a-header-source).
 
-::checkpoint[The next `POST /sync` request carries the new `Authorization` header.]
+::checkpoint[The next `POST /sync` request carries the `Authorization` value the source answered.]
 ::::
 :::::
 
@@ -248,8 +250,8 @@ refuses new network work with `sync.offline`, and suspends automatic retry
 scheduling. Resuming emits one interactive wake. An already-started round
 finishes its atomic apply; the client closes realtime afterwards and starts no
 follow-up round while the gate is closed. The gate is independent of security
-preflight and defaults open on each new client instance. Install fresh
-transport headers before you resume. A realtime supervisor whose connect the
+preflight and defaults open on each new client instance. Make sure the
+header source answers a fresh credential before you resume. A realtime supervisor whose connect the
 closed gate refused with `sync.offline` reports phase `offline` and makes no
 further attempt until the client reports the gate open again.
 

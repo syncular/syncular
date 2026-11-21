@@ -112,7 +112,10 @@ async function makeWorkerCore(
   actor: string,
 ): Promise<DeviceCore> {
   const handle = await createSyncClientHandle({
-    worker: () => new Worker('worker.js', { type: 'module' }),
+    worker: () =>
+      new Worker(`worker.js?actor=${encodeURIComponent(actor)}`, {
+        type: 'module',
+      }),
     schema,
     database: { mode: 'persistent', name: `demo-${device}` },
     endpoints: {
@@ -121,7 +124,6 @@ async function makeWorkerCore(
       blobsUrl: 'blobs',
       realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}&actor=${actor}`,
     },
-    headers: { 'x-syncular-demo-actor': actor },
     limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
     // §8.4 host loop: wake-ups coalesce into sync rounds INSIDE the worker.
     autoSync: true,

@@ -44,13 +44,15 @@ All three wrappers share these properties:
 |---|---|
 | `baseUrl` | The server mount, such as `http://localhost:8787`. Engages the native HTTP and WebSocket transport, which appends `/sync`, `/segments/{id}`, `/blobs/{id}`, and `/realtime`. Without it the client runs the lean core. A `baseUrl` on a core built without `native-transport` fails construction with `client.failed`. |
 | `wsUrl` | Realtime socket URL. Derived from `baseUrl` when absent. |
-| `headers` | Request headers for the native transport, such as `Authorization`. |
+| `headers` | The header source for the native transport. Each binding takes a function that answers the full header set; the transport asks it before every host-authenticated request and every WebSocket handshake. A `baseUrl` with no source throws `client.headers_required`. |
 | `dbPath` | SQLite file. Without it the replica lives in memory and loses rows, cursors, client identity, and the outbox on restart. |
 | `clientId` | Stable client id. Absent, the core creates one and persists it in the database. |
 | `limits` | Client limits forwarded to `create`. |
 | `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, `realtimeHeartbeatMs`, `redirects` | The native transport policy. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) lists the semantics and error codes. |
 
-`setHeaders` replaces the full header set. The next HTTP request uses the new headers. An open WebSocket keeps the headers from its handshake; call `pause()` then `resume()` to repeat the handshake.
+The transport asks the header source before every sync, segment, blob, and remote-operation request and every native WebSocket handshake; a signed URL never asks, and concurrent requests share one question. A 401 asks once more, passing the refused headers, and resends once; a second 401 surfaces the retryable `sync.auth_required`, and the next attempt asks again. A source that fails, or answers no headers, fails the request with `sync.auth_required` and `causeKind` `header_source`. An open WebSocket keeps the headers from its handshake; `pause()` then `resume()` repeats the handshake and asks the source.
+
+A binding that drives the C ABI directly answers the question itself. `syncular_client_poll_headers(handle, timeout_ms)` returns `{"requestId":n,"rejected":{...}|null}`, or NULL on timeout, and `syncular_client_provide_headers(handle, request_id, headers_json)` answers it. Neither takes the client lock. The transport waits at most 30 s for an answer, then fails the request with the retryable `sync.auth_required`; a late answer is ignored.
 
 ## Events
 

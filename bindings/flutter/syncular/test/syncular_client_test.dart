@@ -10,6 +10,7 @@
 // close idempotence, and pause/resume.
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:syncular/syncular.dart';
 import 'package:test/test.dart';
@@ -39,6 +40,20 @@ Map<String, Object?> upsert(String id, String title) => {
 
 SyncularClient makeClient() =>
     SyncularClient.create(clientId: 'dart-test', schema: todoSchema());
+
+// Header sources are top-level functions: the auth isolate runs them. This
+// one echoes its context into the headers, so the answers show it arrived.
+Future<Map<String, String>> renewingHeaders(
+        Map<String, String>? rejected, SyncularHeaderContext context) async =>
+    {
+      'authorization': rejected == null ? 'Bearer first' : 'Bearer renewed',
+      'x-context':
+          '${context.clientId} ${context.round ?? 'none'} ${context.target}',
+    };
+
+Future<Map<String, String>> failingHeaders(
+        Map<String, String>? rejected, SyncularHeaderContext context) =>
+    Future.error(StateError('signed out'));
 
 void main() {
   test('init creates a client and subscribe reports active', () {
@@ -259,12 +274,135 @@ void main() {
     expect(result['id'], isA<String>());
   });
 
-  test('rotates transport headers without recreating the client', () {
+  test('a client with baseUrl requires a headers source', () {
+    expect(
+      () => SyncularClient.create(
+        schema: todoSchema(),
+        config: const SyncularConfig(baseUrl: 'https://api.example.com'),
+      ),
+      throwsA(isA<SyncularError>()
+          .having((e) => e.code, 'code', 'client.headers_required')),
+    );
+  });
+
+  test('a header request is answered from the source', () async {
+    expect(
+      await SyncularClient.answerHeaders(
+          '{"requestId":1,"rejected":null,"clientId":"c1","round":7,"target":"sync"}',
+          renewingHeaders),
+      equals((1, '{"authorization":"Bearer first","x-context":"c1 7 sync"}')),
+    );
+    expect(
+      await SyncularClient.answerHeaders(
+          '{"requestId":2,"rejected":{"authorization":"Bearer first"},'
+          '"clientId":"c1","round":null,"target":"realtime"}',
+          renewingHeaders),
+      equals((
+        2,
+        '{"authorization":"Bearer renewed","x-context":"c1 none realtime"}'
+      )),
+    );
+  });
+
+  test('a throwing source answers null headers', () async {
+    expect(
+      await SyncularClient.answerHeaders(
+          '{"requestId":3,"rejected":null,"clientId":"c1","round":null,"target":"blob"}',
+          failingHeaders),
+      equals((3, 'null')),
+    );
+  });
+
+  test('a request without context is answered with null headers', () async {
+    expect(
+      await SyncularClient.answerHeaders(
+          '{"requestId":5,"rejected":null,"round":null}', renewingHeaders),
+      equals((5, 'null')),
+    );
+  });
+
+  test('events keep flowing while a header source is pending', () async {
+    final gate = Completer<Map<String, String>>();
+    final client = SyncularClient.create(
+      clientId: 'dart-pending-source',
+      schema: todoSchema(),
+      pollInterval: const Duration(days: 1),
+    );
+    addTearDown(client.close);
+    final delivered = <String>[];
+    client.events.listen((event) => delivered.add(event.type));
+    final answer = SyncularClient.answerHeaders(
+        '{"requestId":4,"rejected":null,"clientId":"c1","round":1,"target":"segment"}',
+        (_, __) => gate.future);
+    client.handleEvent('{"type":"presence","scopeKey":"room:1"}');
+    await pumpEventQueue();
+    expect(delivered, equals(['presence']));
+    gate.complete({'authorization': 'Bearer late'});
+    expect(await answer, equals((4, '{"authorization":"Bearer late"}')));
+  });
+
+  test('a client with a header source runs commands and closes', () {
+    // The auth isolate starts at create and is killed by close; a leaked
+    // isolate would keep the test process from exiting.
+    final client = SyncularClient.create(
+      clientId: 'dart-auth-isolate',
+      schema: todoSchema(),
+      config: const SyncularConfig(headers: renewingHeaders),
+    );
+    final id = client.subscribe({'id': 't1'});
+    expect(client.unit(id)?['status'], equals('active'));
+    client.close();
+    expect(
+      () => client.readRows('todo'),
+      throwsA(
+        isA<SyncularError>().having((e) => e.code, 'code', 'client.closed'),
+      ),
+    );
+  });
+
+  test('a source the auth isolate cannot receive surfaces on events', () async {
+    // A closure capturing a ReceivePort cannot be sent to another isolate.
+    // The core is still freed at close: a leaked exit port would keep the
+    // test process from exiting.
+    final port = ReceivePort();
+    addTearDown(port.close);
+    final client = SyncularClient.create(
+      clientId: 'dart-unsendable-source',
+      schema: todoSchema(),
+      config: SyncularConfig(
+          headers: (_, __) async => {'port': '${port.hashCode}'}),
+      pollInterval: const Duration(days: 1),
+    );
+    final failure = Completer<Object>();
+    client.events.listen((_) {}, onError: failure.complete);
+    expect(await failure.future, isA<ArgumentError>());
+    client.close();
+  });
+
+  test('close before the spawn failure arrives still frees the core', () {
+    final port = ReceivePort();
+    addTearDown(port.close);
+    SyncularClient.create(
+      clientId: 'dart-unsendable-closed',
+      schema: todoSchema(),
+      config: SyncularConfig(
+          headers: (_, __) async => {'port': '${port.hashCode}'}),
+    ).close();
+  });
+
+  test('addEncryptionKeys reaches the core as hex keys by key id', () {
     final client = makeClient();
     addTearDown(client.close);
-    client.setHeaders({'authorization': 'Bearer fresh'});
-    final id = client.subscribe({'id': 'after-rotation'});
-    expect(client.unit(id)?['status'], equals('active'));
+    client.addEncryptionKeys({'practice-v2': List.filled(32, 0x2b)});
+    // The core refuses a key that is not 32 bytes and names it, so the key id
+    // and the bytes both arrived.
+    expect(
+      () => client.addEncryptionKeys({
+        'short': [0x00, 0xab]
+      }),
+      throwsA(isA<SyncularError>()
+          .having((e) => (e.details as Map?)?['keyId'], 'keyId', 'short')),
+    );
   });
 
   test('connectivity adapter pauses, resumes, and detaches', () async {

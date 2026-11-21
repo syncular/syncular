@@ -22,6 +22,8 @@ import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncu
 import {
   createNativeSyncClient,
   NativeSyncError,
+  SYNCULAR_EVENT,
+  SYNCULAR_HEADERS,
   type SyncularEvent,
   type SyncularEventEmitter,
   type SyncularNativeModule,
@@ -34,11 +36,17 @@ function makeNative(
   nativeModule: SyncularNativeModule;
   eventEmitter: SyncularEventEmitter;
   calls: Array<{ fn: string; arg: unknown }>;
+  answers: unknown[];
   emit: (payload: string | SyncularEvent) => void;
+  requestHeaders: (payload: string) => void;
   pump: { started: number; stopped: number; closed: number };
 } {
   const calls: Array<{ fn: string; arg: unknown }> = [];
-  const handlers = new Set<(payload: string | SyncularEvent) => void>();
+  const answers: unknown[] = [];
+  const handlers = new Map<
+    string,
+    Set<(payload: string | SyncularEvent) => void>
+  >();
   const pump = { started: 0, stopped: 0, closed: 0 };
 
   const nativeModule: SyncularNativeModule = {
@@ -62,6 +70,9 @@ function makeNative(
     close: async () => {
       pump.closed += 1;
     },
+    provideHeaders: (requestId, headersJson) => {
+      answers.push({ requestId, headers: JSON.parse(headersJson) });
+    },
     startEvents: () => {
       pump.started += 1;
     },
@@ -71,16 +82,29 @@ function makeNative(
   };
 
   const eventEmitter: SyncularEventEmitter = {
-    addListener: (_event, handler) => {
-      handlers.add(handler);
-      return { remove: () => handlers.delete(handler) };
+    addListener: (event, handler) => {
+      const topic = handlers.get(event) ?? new Set();
+      handlers.set(event, topic);
+      topic.add(handler);
+      return { remove: () => topic.delete(handler) };
     },
   };
 
   const emit = (payload: string | SyncularEvent) => {
-    for (const h of handlers) h(payload);
+    for (const h of handlers.get(SYNCULAR_EVENT) ?? []) h(payload);
   };
-  return { nativeModule, eventEmitter, calls, emit, pump };
+  const requestHeaders = (payload: string) => {
+    for (const h of handlers.get(SYNCULAR_HEADERS) ?? []) h(payload);
+  };
+  return {
+    nativeModule,
+    eventEmitter,
+    calls,
+    answers,
+    emit,
+    requestHeaders,
+    pump,
+  };
 }
 
 const OK = (result: unknown) => ({ result });
@@ -289,6 +313,7 @@ describe('createNativeSyncClient', () => {
       clientId: 'native-authority',
       schema: { version: 1, tables: [] },
       baseUrl: 'https://api.example.com',
+      headers: () => ({}),
       dbPath: '/data/replica.db',
       localAuthorityPath: '/data/authority.db',
       nativeModule,
@@ -390,6 +415,7 @@ describe('createNativeSyncClient', () => {
       clientId: 'native-policy',
       schema: { version: 1, tables: [] },
       baseUrl: 'https://api.example.com',
+      headers: () => ({}),
       requestTimeoutMs: 1000,
       roundDeadlineMs: 2000,
       maxRequestBytes: 1024,
@@ -493,7 +519,6 @@ describe('createNativeSyncClient', () => {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },
         keyIdColumns: { patients: 'encryption_key_id' },
       },
-      headers: { authorization: 'Bearer post-preflight' },
     });
     expect(await client.securityLifecycle()).toBe('active');
     const activation = calls.find(
@@ -508,29 +533,147 @@ describe('createNativeSyncClient', () => {
         }
       ).params.encryption.keys['practice-v2'],
     ).toEqual({ $bytes: '3c'.repeat(32) });
-    // The fresh token rides the activation command itself, so the native
-    // host can apply it before the startup sync the activation enqueues.
-    expect(
-      (
-        activation?.arg as {
-          params: { headers: Record<string, string> };
-        }
-      ).params.headers,
-    ).toEqual({ authorization: 'Bearer post-preflight' });
+    expect(activation?.arg).not.toHaveProperty('params.headers');
     expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
-    await client.setHeaders({ authorization: 'Bearer rotated' });
-    const rotation = calls.find(
+    await client.addEncryptionKeys({
+      'practice-v3': new Uint8Array(32).fill(0x4d),
+    });
+    const addition = calls.find(
       (call) =>
         call.fn === 'command' &&
-        (call.arg as { method?: string }).method === 'setHeaders',
+        (call.arg as { method?: string }).method === 'addEncryptionKeys',
     );
+    expect(addition?.arg).toEqual({
+      method: 'addEncryptionKeys',
+      params: { keys: { 'practice-v3': { $bytes: '4d'.repeat(32) } } },
+    });
+    await client.close();
+  });
+
+  test('a client with baseUrl requires a headers source', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    await expect(
+      createNativeSyncClient({
+        schema: { version: 1, tables: [] },
+        baseUrl: 'https://api.example.com',
+        nativeModule,
+        eventEmitter,
+      }),
+    ).rejects.toMatchObject({ code: 'client.headers_required' });
+    expect(calls).toHaveLength(0);
+  });
+
+  test('a header request is answered from the source, ordinary and after a refusal', async () => {
+    const { nativeModule, eventEmitter, calls, answers, requestHeaders } =
+      makeNative(defaultResponder);
+    const asked: unknown[] = [];
+    const contexts: unknown[] = [];
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      baseUrl: 'https://api.example.com',
+      headers: async (rejected, context) => {
+        asked.push(rejected);
+        contexts.push(context);
+        return {
+          authorization:
+            rejected === undefined ? 'Bearer first' : 'Bearer renewed',
+        };
+      },
+      nativeModule,
+      eventEmitter,
+    });
     expect(
-      (
-        rotation?.arg as {
-          params: { headers: Record<string, string> };
-        }
-      ).params.headers,
-    ).toEqual({ authorization: 'Bearer rotated' });
+      JSON.parse(
+        (
+          calls.find((call) => call.fn === 'create')?.arg as {
+            configJson: string;
+          }
+        ).configJson,
+      ),
+    ).not.toHaveProperty('headers');
+    requestHeaders(
+      JSON.stringify({
+        requestId: 1,
+        rejected: null,
+        clientId: 'c1',
+        round: 7,
+        target: 'sync',
+      }),
+    );
+    await settle();
+    requestHeaders(
+      JSON.stringify({
+        requestId: 2,
+        rejected: { authorization: 'Bearer first' },
+        clientId: 'c1',
+        round: null,
+        target: 'realtime',
+      }),
+    );
+    await settle();
+    expect(asked).toEqual([undefined, { authorization: 'Bearer first' }]);
+    expect(contexts).toEqual([
+      { clientId: 'c1', round: 7, target: 'sync' },
+      { clientId: 'c1', round: null, target: 'realtime' },
+    ]);
+    expect(answers).toEqual([
+      { requestId: 1, headers: { authorization: 'Bearer first' } },
+      { requestId: 2, headers: { authorization: 'Bearer renewed' } },
+    ]);
+    await client.close();
+  });
+
+  test('a throwing or rejecting source answers null headers', async () => {
+    const { nativeModule, eventEmitter, answers, requestHeaders } =
+      makeNative(defaultResponder);
+    let calls = 0;
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      baseUrl: 'https://api.example.com',
+      headers: () => {
+        calls += 1;
+        if (calls === 1) throw new Error('signed out');
+        return Promise.reject(new Error('refresh failed'));
+      },
+      nativeModule,
+      eventEmitter,
+    });
+    requestHeaders(JSON.stringify({ requestId: 3, rejected: null }));
+    requestHeaders(JSON.stringify({ requestId: 4, rejected: null }));
+    await settle();
+    expect(answers).toEqual([
+      { requestId: 3, headers: null },
+      { requestId: 4, headers: null },
+    ]);
+    await client.close();
+  });
+
+  test('events keep flowing while a header source is pending', async () => {
+    const { nativeModule, eventEmitter, answers, emit, requestHeaders } =
+      makeNative(defaultResponder);
+    let release: (headers: Record<string, string>) => void = () => {};
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      baseUrl: 'https://api.example.com',
+      headers: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      nativeModule,
+      eventEmitter,
+    });
+    const presence: string[] = [];
+    client.onPresence((key) => presence.push(key));
+    requestHeaders(JSON.stringify({ requestId: 5, rejected: null }));
+    emit({ type: 'presence', scopeKey: 'room:1' });
+    await settle();
+    expect(presence).toEqual(['room:1']);
+    expect(answers).toEqual([]);
+    release({ authorization: 'Bearer late' });
+    await settle();
+    expect(answers).toEqual([
+      { requestId: 5, headers: { authorization: 'Bearer late' } },
+    ]);
     await client.close();
   });
 

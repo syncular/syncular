@@ -255,6 +255,15 @@ pub trait Transport {
     /// a call that reaches it fails with `sync.idle_timeout`. The default
     /// ignores it.
     fn set_idle_bound(&mut self, _bound: Option<std::time::Duration>) {}
+    /// The id of the client this transport serves, set when the client is
+    /// created. A transport with a header source names it in each request's
+    /// context. The default ignores it.
+    fn set_client_id(&mut self, _client_id: &str) {}
+    /// Scope the transport to the round whose progress `attempt` this is for
+    /// the duration of a single exchange; `None` clears it. A transport with
+    /// a header source names it in each request's context. The default
+    /// ignores it.
+    fn set_round(&mut self, _attempt: Option<u64>) {}
     /// Client → server JSON control message (acks, §8.2).
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError>;
     fn realtime_close(&mut self) -> Result<(), TransportError>;

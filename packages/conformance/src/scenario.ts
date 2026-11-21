@@ -24,6 +24,7 @@ import type {
   ClientInstance,
   ClientLimitsOptions,
   ClientPreviousVersionContextOptions,
+  DriverAuth,
   DriverEncryptionConfig,
   DriverError,
   DriverRealtimePolicy,
@@ -386,6 +387,8 @@ export interface NewClientOptions {
   readonly previousVersionContext?: ClientPreviousVersionContextOptions;
   /** SPEC §8.8 realtime policy; absent ⇒ the core default (`optional`). */
   readonly realtimePolicy?: DriverRealtimePolicy;
+  /** §1.1 header source and authentication stand-in; absent ⇒ no auth. */
+  readonly auth?: DriverAuth;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +584,7 @@ export class ScenarioContext {
       ...(options.syncClockStepMs !== undefined
         ? { syncClockStepMs: options.syncClockStepMs }
         : {}),
+      ...(options.auth !== undefined ? { auth: options.auth } : {}),
       ...(options.encryption !== undefined
         ? { encryption: options.encryption }
         : {}),

@@ -24,6 +24,21 @@
 //!   "realtimeSend"|"realtimeClose", "params": {...}}`
 //! - host → shim response: same response shape, echoing the "t<n>" id.
 //!
+//! Header source (create `"auth": true`, which needs `nowMs`): every
+//! host-authenticated transport request (`sync`, `downloadSegment`,
+//! `blobUpload`, `blobDownload`, `blobUploadGrant`, `realtimeConnect`)
+//! carries `"headers": {lowercase name: value}`, read through the shared Rust
+//! `HeaderSource` and `HeaderQuestions` the FFI uses. Each read sends the
+//! notification `{"method": "headersNeeded", "params": {"requestId": n,
+//! "rejected": {..} | null, "clientId": "..", "round": n | null, "target":
+//! "sync" | "segment" | "blob" | "realtime"}}` and blocks until the harness calls
+//! `provideHeaders` `{"requestId": n, "headers": {..} | null}`. A refusal
+//! whose error carries `details.httpStatus` 401 reads the source again with
+//! the refused headers and resends once. The bound counts on the pinned client
+//! clock, which `setClock` `{"nowMs": n}` moves. A stdin reader thread answers
+//! `provideHeaders` and `setClock` on arrival, because the main thread may be
+//! blocked on a question; every other line reaches the main loop in order.
+//!
 //! A shim process hosts either a client or one §12 local authority
 //! (`localAuthority*` methods). Attach and abandon reach the remote server through
 //! the same `sync` callback the client transport uses.
@@ -33,12 +48,15 @@
 //! response to its own transport request.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, StdinLock, Stdout, Write};
+use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority, Retention};
+use syncular_client::native_transport::{
+    HeaderContext, HeaderQuestions, HeaderSource, HeaderTarget,
+};
 use syncular_client::{
     BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
 };
@@ -68,9 +86,19 @@ enum RtEvent {
     Binary(Vec<u8>),
 }
 
+/// The header questions of an `auth` client and the pinned clock their
+/// bound counts on, shared with the stdin reader thread.
+struct ShimAuth {
+    questions: Arc<HeaderQuestions>,
+    clock: Arc<AtomicI64>,
+}
+
 struct HostIo {
-    reader: BufReader<StdinLock<'static>>,
-    out: Stdout,
+    /// Lines from the stdin reader thread, minus the ones it answers itself.
+    lines: mpsc::Receiver<String>,
+    auth: Arc<Mutex<Option<ShimAuth>>>,
+    /// The header source of an `auth` client.
+    headers: Option<HeaderSource>,
     next_id: u64,
     rt_queue: VecDeque<RtEvent>,
     /// Driver requests that arrived while a transport call was in flight
@@ -82,35 +110,154 @@ struct HostIo {
     /// The pinned client clock and create `syncClockStepMs`: every sync
     /// request advances it by the step (§7.8 drive deadline scenarios).
     clock_step: Option<(Arc<AtomicI64>, i64)>,
+    /// The created client's id and the progress attempt of the round in
+    /// flight, named in each header question.
+    client_id: String,
+    round: Option<u64>,
 }
 
 impl HostIo {
     fn new() -> Self {
+        let auth = Arc::new(Mutex::new(None::<ShimAuth>));
+        let reader_auth = auth.clone();
+        let (forward, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                let request = serde_json::from_str::<Value>(line.trim()).ok();
+                let answer = request.as_ref().and_then(|request| {
+                    let method = request.get("method")?.as_str()?;
+                    let id = request.get("id")?;
+                    let params = request.get("params").unwrap_or(&Value::Null);
+                    let auth = reader_auth.lock().expect("shim auth lock");
+                    let result = match (method, auth.as_ref()) {
+                        ("provideHeaders" | "setClock", None) => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "provideHeaders and setClock need a client created with auth",
+                        )),
+                        ("provideHeaders", Some(auth)) => {
+                            match params.get("requestId").and_then(Value::as_u64) {
+                                Some(request_id) => auth
+                                    .questions
+                                    .provide(
+                                        request_id,
+                                        params.get("headers").unwrap_or(&Value::Null),
+                                    )
+                                    .map(|()| json!({}))
+                                    .map_err(|error| CommandError::new(error.code, error.message)),
+                                None => Err(CommandError::new(
+                                    "harness.invalid_request",
+                                    "provideHeaders.requestId is required",
+                                )),
+                            }
+                        }
+                        ("setClock", Some(auth)) => {
+                            match params.get("nowMs").and_then(Value::as_i64) {
+                                Some(now_ms) => {
+                                    auth.clock.store(now_ms, Ordering::SeqCst);
+                                    auth.questions.recheck();
+                                    Ok(json!({}))
+                                }
+                                None => Err(CommandError::new(
+                                    "harness.invalid_request",
+                                    "setClock.nowMs is required",
+                                )),
+                            }
+                        }
+                        _ => return None,
+                    };
+                    Some(match result {
+                        Ok(value) => json!({ "id": id, "result": value }),
+                        Err(error) => json!({ "id": id, "error": error_envelope(error) }),
+                    })
+                });
+                match answer {
+                    Some(answer) => write_line(&answer),
+                    None => {
+                        if forward.send(line).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         HostIo {
-            reader: BufReader::new(std::io::stdin().lock()),
-            out: std::io::stdout(),
+            lines,
+            auth,
+            headers: None,
             next_id: 0,
             rt_queue: VecDeque::new(),
             deferred: VecDeque::new(),
             signed_urls: false,
             clock_step: None,
+            client_id: String::new(),
+            round: None,
         }
     }
 
     fn write_line(&mut self, value: &Value) {
-        let mut handle = self.out.lock();
-        let _ = writeln!(handle, "{value}");
-        let _ = handle.flush();
+        write_line(value);
+    }
+
+    /// Install (or with `false`, remove) the header source of a created
+    /// client. Closing the previous questions fails a stale read.
+    fn set_auth(&mut self, on: bool, clock: Option<Arc<AtomicI64>>) -> Result<(), CommandError> {
+        let mut auth = self.auth.lock().expect("shim auth lock");
+        if let Some(previous) = auth.take() {
+            previous.questions.close();
+        }
+        self.headers = None;
+        if !on {
+            return Ok(());
+        }
+        let clock = clock.ok_or_else(|| {
+            CommandError::new("harness.invalid_request", "auth needs a pinned nowMs clock")
+        })?;
+        let now = clock.clone();
+        let questions = HeaderQuestions::new(
+            |id, context: &HeaderContext, rejected| {
+                write_line(&json!({ "method": "headersNeeded", "params": {
+                    "requestId": id,
+                    "rejected": rejected.map(headers_value),
+                    "clientId": context.client_id,
+                    "round": context.round,
+                    "target": context.target.as_str(),
+                } }))
+            },
+            move || now.load(Ordering::SeqCst),
+        );
+        self.headers = Some(questions.source());
+        *auth = Some(ShimAuth { questions, clock });
+        Ok(())
+    }
+
+    /// A host request that carries the header source's headers, resent once
+    /// after a 401 refusal. Without a source it carries none.
+    fn call_authenticated(
+        &mut self,
+        target: HeaderTarget,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, TransportError> {
+        let Some(source) = self.headers.clone() else {
+            return self.call_host(method, params);
+        };
+        let context = HeaderContext {
+            client_id: self.client_id.clone(),
+            round: self.round,
+            target,
+        };
+        source.authenticated(&context, |headers| {
+            let mut params = params.clone();
+            params["headers"] = headers_value(headers);
+            self.call_host(method, params)
+        })
     }
 
     fn read_next(&mut self) -> Option<Incoming> {
         loop {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => return None, // EOF: host is gone
-                Ok(_) => {}
-                Err(_) => return None,
-            }
+            // A closed channel is stdin EOF: the host is gone.
+            let line = self.lines.recv().ok()?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -220,12 +367,34 @@ impl HostIo {
     }
 }
 
+/// One JSON line to the harness. Lines from the main loop and the stdin
+/// reader thread never interleave: each holds the stdout lock for its line.
+fn write_line(value: &Value) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{value}");
+    let _ = out.flush();
+}
+
+/// Headers as the harness sees them: an object keyed by lowercase name.
+fn headers_value(headers: &[(String, String)]) -> Value {
+    Value::Object(
+        headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), Value::from(value.clone())))
+            .collect(),
+    )
+}
+
 impl Transport for HostIo {
     fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
         if let Some((clock, step)) = &self.clock_step {
             clock.fetch_add(*step, Ordering::Relaxed);
         }
-        let result = self.call_host("sync", json!({ "request": bytes_value(request) }))?;
+        let result = self.call_authenticated(
+            HeaderTarget::Sync,
+            "sync",
+            json!({ "request": bytes_value(request) }),
+        )?;
         value_bytes(result.get("response")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
@@ -251,7 +420,11 @@ impl Transport for HostIo {
             "requestedScopesJson".to_owned(),
             Value::from(request.requested_scopes_json.clone()),
         );
-        let result = self.call_host("downloadSegment", Value::Object(params))?;
+        let result = self.call_authenticated(
+            HeaderTarget::Segment,
+            "downloadSegment",
+            Value::Object(params),
+        )?;
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
@@ -284,7 +457,7 @@ impl Transport for HostIo {
         if let Some(mt) = media_type {
             params.insert("mediaType".to_owned(), Value::from(mt.to_owned()));
         }
-        self.call_host("blobUpload", Value::Object(params))
+        self.call_authenticated(HeaderTarget::Blob, "blobUpload", Value::Object(params))
             .map(|_| ())
     }
 
@@ -293,7 +466,11 @@ impl Transport for HostIo {
         blob_id: &str,
         _byte_length: Option<u64>,
     ) -> Result<BlobDownload, TransportError> {
-        let result = self.call_host("blobDownload", json!({ "blobId": blob_id }))?;
+        let result = self.call_authenticated(
+            HeaderTarget::Blob,
+            "blobDownload",
+            json!({ "blobId": blob_id }),
+        )?;
         // §5.9.5 always-issue: a `url` field means presigned delivery; else
         // inline bytes.
         if let Some(url) = result.get("url").and_then(Value::as_str) {
@@ -329,7 +506,8 @@ impl Transport for HostIo {
         if let Some(mt) = media_type {
             params.insert("mediaType".to_owned(), Value::from(mt.to_owned()));
         }
-        let result = self.call_host("blobUploadGrant", Value::Object(params))?;
+        let result =
+            self.call_authenticated(HeaderTarget::Blob, "blobUploadGrant", Value::Object(params))?;
         if let Some(url) = result.get("url").and_then(Value::as_str) {
             return Ok(BlobUploadGrant::Url {
                 url: url.to_owned(),
@@ -360,7 +538,8 @@ impl Transport for HostIo {
     }
 
     fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
-        self.call_host("realtimeConnect", json!({})).map(|_| ())
+        self.call_authenticated(HeaderTarget::Realtime, "realtimeConnect", json!({}))
+            .map(|_| ())
     }
 
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
@@ -370,6 +549,14 @@ impl Transport for HostIo {
 
     fn realtime_close(&mut self) -> Result<(), TransportError> {
         self.call_host("realtimeClose", json!({})).map(|_| ())
+    }
+
+    fn set_client_id(&mut self, client_id: &str) {
+        self.client_id = client_id.to_owned();
+    }
+
+    fn set_round(&mut self, attempt: Option<u64>) {
+        self.round = attempt;
     }
 }
 
@@ -517,7 +704,11 @@ fn main() {
                     };
                     let mut remote = |request: &[u8]| -> Result<Vec<u8>, AuthorityError> {
                         let result = io
-                            .call_host("sync", json!({ "request": bytes_value(request) }))
+                            .call_authenticated(
+                                HeaderTarget::Sync,
+                                "sync",
+                                json!({ "request": bytes_value(request) }),
+                            )
                             .map_err(|error| AuthorityError {
                                 code: error.code,
                                 message: error.message,
@@ -646,6 +837,15 @@ fn main() {
                         })
                     });
                 }
+                let result = match result {
+                    Ok(value) if method == "create" => io
+                        .set_auth(
+                            params.get("auth").and_then(Value::as_bool) == Some(true),
+                            client.as_ref().and_then(SyncClient::pinned_clock),
+                        )
+                        .map(|()| value),
+                    other => other,
+                };
                 if method == "create" {
                     io.signed_urls = effects.signed_urls;
                     io.clock_step = client

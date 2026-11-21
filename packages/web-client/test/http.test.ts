@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ClientSyncError,
+  type HeaderSource,
   httpSegmentDownloader,
   httpBlobTransport,
   httpSyncTransport,
@@ -794,4 +795,175 @@ test('a presigned blob PUT sends the blob id digest without hashing the body (§
     'q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=',
   );
   expect(seen[0]?.headers.authorization).toBeUndefined();
+});
+
+describe('the header source (§1.1)', () => {
+  // A host that accepts one bearer and answers 401 to any other.
+  function authHost(accepted: () => string) {
+    const presented: (string | undefined)[] = [];
+    const doFetch = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      presented.push(authorization ?? undefined);
+      return authorization === `Bearer ${accepted()}`
+        ? new Response(new Uint8Array([1]))
+        : Response.json(
+            { code: 'sync.auth_required', message: 'auth', retryable: true },
+            { status: 401 },
+          );
+    }) as typeof fetch;
+    return { presented, doFetch };
+  }
+
+  test('a 401 asks the source again with the refused headers and retries once', async () => {
+    let valid = 'one';
+    const { presented, doFetch } = authHost(() => valid);
+    const asked: (string | undefined)[] = [];
+    const transport = httpSyncTransport('https://host/sync', {
+      fetch: doFetch,
+      headers: (rejected) => {
+        asked.push(rejected?.authorization);
+        return { authorization: `Bearer ${rejected ? valid : 'one'}` };
+      },
+    });
+    await transport(new Uint8Array([0]));
+    valid = 'two';
+    await transport(new Uint8Array([0]));
+    expect(presented).toEqual(['Bearer one', 'Bearer one', 'Bearer two']);
+    expect(asked).toEqual([undefined, undefined, 'Bearer one']);
+  });
+
+  test('a source that renews to a refused token gives two requests, then sync.auth_required', async () => {
+    const { presented, doFetch } = authHost(() => 'valid');
+    const transport = httpSyncTransport('https://host/sync', {
+      fetch: doFetch,
+      headers: () => ({ authorization: 'Bearer stale' }),
+    });
+    await expect(transport(new Uint8Array([0]))).rejects.toMatchObject({
+      code: 'sync.auth_required',
+      retryable: true,
+    });
+    expect(presented).toEqual(['Bearer stale', 'Bearer stale']);
+  });
+
+  test('concurrent requests share one source call, across transports on that source', async () => {
+    const { presented, doFetch } = authHost(() => 'valid');
+    let calls = 0;
+    let answer: (headers: Record<string, string>) => void = () => {};
+    const headers = () => {
+      calls += 1;
+      return new Promise<Record<string, string>>((resolve) => {
+        answer = resolve;
+      });
+    };
+    const sync = httpSyncTransport('https://host/sync', {
+      fetch: doFetch,
+      headers,
+    });
+    const blobs = httpBlobTransport('https://host/blobs', {
+      fetch: doFetch,
+      headers,
+    });
+    const pending = Promise.all([
+      sync(new Uint8Array([0])),
+      sync(new Uint8Array([0])),
+      blobs.upload('sha256:ab', new Uint8Array([1])),
+    ]);
+    // Let every request reach the shared flight before it settles.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    answer({ authorization: 'Bearer valid' });
+    await pending;
+    expect(calls).toBe(1);
+    expect(presented).toEqual(['Bearer valid', 'Bearer valid', 'Bearer valid']);
+    // A later request asks again.
+    const later = sync(new Uint8Array([0]));
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    answer({ authorization: 'Bearer valid' });
+    await later;
+    expect(calls).toBe(2);
+  });
+
+  test('a failing source fails the request with the retryable sync.auth_required', async () => {
+    const { presented, doFetch } = authHost(() => 'valid');
+    const transport = httpSyncTransport('https://host/sync', {
+      fetch: doFetch,
+      headers: async () => {
+        throw new Error('token store locked: secret detail');
+      },
+    });
+    const error = await transport(new Uint8Array([0])).catch((e) => e);
+    expect(error).toBeInstanceOf(ClientSyncError);
+    expect(error).toMatchObject({
+      code: 'sync.auth_required',
+      message: 'the header source failed',
+      retryable: true,
+      details: { causeKind: 'header_source' },
+    });
+    expect(presented).toEqual([]);
+  });
+
+  test('the source gets the replica, round and target; flights are per replica and round', async () => {
+    const { presented, doFetch } = authHost(() => 'valid');
+    const contexts: unknown[] = [];
+    const answers: ((headers: Record<string, string>) => void)[] = [];
+    const headers: HeaderSource = (_rejected, context) => {
+      contexts.push(context);
+      return new Promise((resolve) => answers.push(resolve));
+    };
+    const sync = httpSyncTransport('https://host/sync', {
+      fetch: doFetch,
+      headers,
+    });
+    const segments = httpSegmentDownloader('https://host/segments', {
+      fetch: doFetch,
+      headers,
+    });
+    const blobs = httpBlobTransport('https://host/blobs', {
+      fetch: doFetch,
+      headers,
+    });
+    const round1 = { clientId: 'a', round: 1 };
+    const pending = Promise.all([
+      segments({
+        segmentId: 'sha256:ab',
+        table: 'tasks',
+        requestedScopesJson: '{}',
+        context: round1,
+      }),
+      sync(new Uint8Array([0]), undefined, round1),
+      sync(new Uint8Array([0]), undefined, { clientId: 'a', round: 2 }),
+      sync(new Uint8Array([0]), undefined, { clientId: 'b', round: 1 }),
+      blobs.upload('sha256:ab', new Uint8Array([1]), undefined, undefined, {
+        clientId: 'a',
+        round: null,
+      }),
+    ]);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    // One question per (replica, round): the segment and the sync of round 1
+    // share the first.
+    expect(contexts).toEqual([
+      { clientId: 'a', round: 1, target: 'segment' },
+      { clientId: 'a', round: 2, target: 'sync' },
+      { clientId: 'b', round: 1, target: 'sync' },
+      { clientId: 'a', round: null, target: 'blob' },
+    ]);
+    for (const answer of answers) answer({ authorization: 'Bearer valid' });
+    await pending;
+    expect(presented).toHaveLength(5);
+  });
+
+  test('signed segment URLs never ask the source and carry no headers', async () => {
+    const { presented, doFetch } = authHost(() => 'valid');
+    let calls = 0;
+    const downloader = httpSegmentDownloader('https://host/segments', {
+      fetch: doFetch,
+      headers: () => {
+        calls += 1;
+        return { authorization: 'Bearer valid' };
+      },
+    });
+    // The fake host refuses the headerless request; only the source count matters.
+    await downloader.fetchUrl?.('https://cdn.example/x').catch(() => undefined);
+    expect(calls).toBe(0);
+    expect(presented).toEqual([undefined]);
+  });
 });

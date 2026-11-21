@@ -11,6 +11,7 @@ import { ClientSyncError, transportFailed } from './errors';
 import { hexToBytes } from './schema';
 import type {
   RealtimeConnector,
+  TransportContext,
   RemoteOperationTransport,
   RemoteOperationRealtimeConnector,
   SegmentDownloader,
@@ -94,23 +95,91 @@ async function throwHttpError(
   );
 }
 
+/** The request a header source answers for (§1.1). */
+export interface HeaderContext extends TransportContext {
+  readonly target: 'sync' | 'segment' | 'blob' | 'realtime';
+}
+
+/**
+ * The host's header source (§1.1 "The transport asks, the host answers"):
+ * called before every host-authenticated request, and once more with the
+ * refused headers after a 401, before the one retry. `context` names the
+ * replica, round and target; a transport called directly, outside a client,
+ * passes none.
+ */
+export type HeaderSource = (
+  rejected: Readonly<Record<string, string>> | undefined,
+  context: HeaderContext | undefined,
+) =>
+  | Readonly<Record<string, string>>
+  | Promise<Readonly<Record<string, string>>>;
+
 export interface HttpTransportOptions {
   /**
-   * Host auth headers. A function is read on every request, so a rotated
-   * token applies from the next request on. Signed-URL fetches never
-   * carry them (§5.4, §5.9.5).
+   * Host auth headers: a fixed set, or the {@link HeaderSource} the
+   * transport asks per request. Signed-URL fetches never carry them (§5.4,
+   * §5.9.5).
    */
-  readonly headers?:
-    | Readonly<Record<string, string>>
-    | (() => Readonly<Record<string, string>>);
+  readonly headers?: Readonly<Record<string, string>> | HeaderSource;
   readonly fetch?: typeof fetch;
 }
 
-function hostHeaders(
+/** In-flight source calls per source, keyed by replica, round and whether
+ * they follow a 401, shared by every transport built on that source (single
+ * flight, §1.1). */
+const flights = new WeakMap<
+  HeaderSource,
+  Map<string, Promise<Readonly<Record<string, string>>>>
+>();
+
+/**
+ * Send one host-authenticated request (§1.1). A source is asked first; a 401
+ * asks it again with the refused headers and resends once. A second 401
+ * surfaces through the caller's status handling as `sync.auth_required`.
+ */
+async function authorized(
   options: HttpTransportOptions | undefined,
-): Readonly<Record<string, string>> | undefined {
-  const headers = options?.headers;
-  return typeof headers === 'function' ? headers() : headers;
+  message: string,
+  context: HeaderContext | undefined,
+  send: (headers?: Readonly<Record<string, string>>) => Promise<Response>,
+): Promise<Response> {
+  const source = options?.headers;
+  if (typeof source !== 'function')
+    return transfer(message, () => send(source));
+  const ask = (rejected?: Readonly<Record<string, string>>) => {
+    let byKind = flights.get(source);
+    if (byKind === undefined) flights.set(source, (byKind = new Map()));
+    const kind = JSON.stringify([
+      context?.clientId,
+      context?.round,
+      rejected !== undefined,
+    ]);
+    let flight = byKind.get(kind);
+    if (flight === undefined) {
+      const started = (flight = Promise.resolve()
+        .then(() => source(rejected, context))
+        .catch(() => {
+          throw new ClientSyncError(
+            'sync.auth_required',
+            'the header source failed',
+            true,
+            { causeKind: 'header_source' },
+          );
+        }));
+      byKind.set(kind, started);
+      const settle = () => {
+        if (byKind.get(kind) === started) byKind.delete(kind);
+      };
+      started.then(settle, settle);
+    }
+    return flight;
+  };
+  const headers = await ask();
+  const response = await transfer(message, () => send(headers));
+  if (response.status !== 401) return response;
+  await response.body?.cancel();
+  const renewed = await ask(headers);
+  return transfer(message, () => send(renewed));
 }
 
 /** POST `<mount>/sync` with SSP2 bodies (§1.1). */
@@ -119,17 +188,19 @@ export function httpSyncTransport(
   options?: HttpTransportOptions,
 ): SyncTransport {
   const doFetch = options?.fetch ?? fetch;
-  return async (request, signal) => {
-    const response = await transfer('sync request failed', () =>
-      doFetch(syncUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': SSP2_CONTENT_TYPE,
-          ...hostHeaders(options),
-        },
-        body: request.slice().buffer as ArrayBuffer,
-        ...definedObject({ signal }),
-      }),
+  return async (request, signal, context) => {
+    const body = request.slice().buffer as ArrayBuffer;
+    const response = await authorized(
+      options,
+      'sync request failed',
+      context && { ...context, target: 'sync' },
+      (headers) =>
+        doFetch(syncUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': SSP2_CONTENT_TYPE, ...headers },
+          body,
+          ...definedObject({ signal }),
+        }),
     );
     if (!response.ok) await throwHttpError(response);
     return new Uint8Array(
@@ -148,16 +219,21 @@ export function httpRemoteOperationTransport(
   options?: HttpTransportOptions,
 ): RemoteOperationTransport {
   const doFetch = options?.fetch ?? fetch;
-  return async (request) => {
-    const response = await transfer('remote operation request failed', () =>
-      doFetch(operationsUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/vnd.syncular.operations.v1+json',
-          ...hostHeaders(options),
-        },
-        body: request.slice().buffer as ArrayBuffer,
-      }),
+  return async (request, context) => {
+    const body = request.slice().buffer as ArrayBuffer;
+    const response = await authorized(
+      options,
+      'remote operation request failed',
+      context && { ...context, target: 'sync' },
+      (headers) =>
+        doFetch(operationsUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/vnd.syncular.operations.v1+json',
+            ...headers,
+          },
+          body,
+        }),
     );
     if (!response.ok) await throwHttpError(response);
     return new Uint8Array(
@@ -292,14 +368,23 @@ export function httpSegmentDownloader(
   const doFetch = options?.fetch ?? fetch;
   const download = async (
     url: string,
-    init?: RequestInit,
+    init: (
+      headers?: Readonly<Record<string, string>>,
+    ) => RequestInit | undefined,
     onProgress?: (bytesReceived: number) => void,
     signed = false,
     maxBytes?: number,
+    context?: TransportContext,
   ) => {
-    const response = await transfer('segment transfer failed', () =>
-      doFetch(url, init),
-    );
+    // Deliberately headerless when signed: the URL is the bearer grant (§5.4).
+    const response = signed
+      ? await transfer('segment transfer failed', () => doFetch(url, init()))
+      : await authorized(
+          options,
+          'segment transfer failed',
+          context && { ...context, target: 'segment' },
+          (headers) => doFetch(url, init(headers)),
+        );
     if (!response.ok) {
       if (!signed) await throwHttpError(response);
       throw transportFailed('signed segment request failed', {
@@ -319,19 +404,21 @@ export function httpSegmentDownloader(
     readonly byteLength?: number;
     readonly onProgress?: (bytesReceived: number) => void;
     readonly signal?: AbortSignal;
+    readonly context?: TransportContext;
   }) =>
     download(
       `${segmentsBaseUrl}/${encodeURIComponent(request.segmentId)}`,
-      {
+      (headers) => ({
         headers: {
           'X-Syncular-Scopes': request.requestedScopesJson,
-          ...hostHeaders(options),
+          ...headers,
         },
         ...definedObject({ signal: request.signal }),
-      },
+      }),
       request.onProgress,
       false,
       request.byteLength,
+      request.context,
     );
   // Deliberately headerless: the URL is the bearer grant (§5.4).
   const fetchUrl = (
@@ -339,7 +426,7 @@ export function httpSegmentDownloader(
     onProgress?: (bytesReceived: number) => void,
     signal?: AbortSignal,
     byteLength?: number,
-  ) => download(url, signal && { signal }, onProgress, true, byteLength);
+  ) => download(url, () => signal && { signal }, onProgress, true, byteLength);
   return Object.assign(direct, { fetchUrl });
 }
 
@@ -357,25 +444,31 @@ export function httpBlobTransport(
   const blobUrl = (blobId: string) =>
     `${blobsBaseUrl}/${encodeURIComponent(blobId)}`;
   return {
-    upload: async (blobId, bytes, mediaType, signal) => {
-      const response = await transfer('blob upload failed', () =>
-        doFetch(blobUrl(blobId), {
-          method: 'PUT',
-          headers: {
-            'Content-Type': mediaType ?? 'application/octet-stream',
-            ...hostHeaders(options),
-          },
-          body: bytes.slice().buffer as ArrayBuffer,
-          ...definedObject({ signal }),
-        }),
+    upload: async (blobId, bytes, mediaType, signal, context) => {
+      const body = bytes.slice().buffer as ArrayBuffer;
+      const response = await authorized(
+        options,
+        'blob upload failed',
+        context && { ...context, target: 'blob' },
+        (headers) =>
+          doFetch(blobUrl(blobId), {
+            method: 'PUT',
+            headers: {
+              'Content-Type': mediaType ?? 'application/octet-stream',
+              ...headers,
+            },
+            body,
+            ...definedObject({ signal }),
+          }),
       );
       if (!response.ok) await throwHttpError(response);
     },
-    download: async (blobId, byteLength) => {
-      const response = await transfer('blob download failed', () =>
-        doFetch(blobUrl(blobId), {
-          headers: { ...hostHeaders(options) },
-        }),
+    download: async (blobId, byteLength, context) => {
+      const response = await authorized(
+        options,
+        'blob download failed',
+        context && { ...context, target: 'blob' },
+        (headers) => doFetch(blobUrl(blobId), { headers: { ...headers } }),
       );
       if (!response.ok)
         await throwHttpError(
@@ -428,20 +521,24 @@ export function httpBlobTransport(
       );
     },
     // §5.9.3: presigned-upload grant.
-    uploadGrant: async (blobId, byteLength, mediaType, signal) => {
-      const response = await transfer('blob upload grant request failed', () =>
-        doFetch(`${blobUrl(blobId)}/upload-grant`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...hostHeaders(options),
-          },
-          body: JSON.stringify({
-            byteLength,
-            mediaType,
+    uploadGrant: async (blobId, byteLength, mediaType, signal, context) => {
+      const response = await authorized(
+        options,
+        'blob upload grant request failed',
+        context && { ...context, target: 'blob' },
+        (headers) =>
+          doFetch(`${blobUrl(blobId)}/upload-grant`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...headers,
+            },
+            body: JSON.stringify({
+              byteLength,
+              mediaType,
+            }),
+            ...definedObject({ signal }),
           }),
-          ...definedObject({ signal }),
-        }),
       );
       if (!response.ok) await throwHttpError(response);
       const body = (await transfer(

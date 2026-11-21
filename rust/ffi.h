@@ -2,7 +2,7 @@
  * syncular — C-ABI header for the Syncular v2 Rust client native core.
  *
  * Hand-written and dependency-free (no cbindgen). Kept EXACTLY in sync with
- * the five #[no_mangle] extern "C" functions in crates/ffi/src/lib.rs — the
+ * the seven #[no_mangle] extern "C" functions in crates/ffi/src/lib.rs — the
  * crate's `header_matches_symbols` test asserts this header's function set
  * equals the crate's exported symbols via `nm`, so drift fails the build.
  *
@@ -22,7 +22,13 @@
  * Threading: the host serializes syncular_client_command calls; commands on
  * one handle never run concurrently. One pump thread may block in
  * syncular_client_poll_event while another thread issues commands. No thread
- * may be inside either function when syncular_client_close runs.
+ * A header thread may block in syncular_client_poll_headers and answer with
+ * syncular_client_provide_headers while a command waits for headers; neither
+ * takes the core lock. syncular_client_close fails a command waiting for
+ * headers with client.closed, returns NULL to a blocked
+ * syncular_client_poll_headers, and waits for header calls in progress to
+ * return; a header thread stops when its poll returns NULL. No other call
+ * may enter the handle after close begins.
  */
 
 #ifndef SYNCULAR_FFI_H
@@ -37,11 +43,12 @@ extern "C" {
 /*
  * Create a client core. `config_json` is a JSON object:
  *   {}                              -> dependency-lean core (local commands)
- *   {"baseUrl":"https://host/mount", "headers": {...}, "wsUrl": "..."}
+ *   {"baseUrl":"https://host/mount", "wsUrl": "..."}
  *                                   -> native HTTP+WS transport
  *                                      (requires the `native-transport` build)
  * Returns an opaque handle, or NULL on a malformed config / unsupported
- * transport.
+ * transport. A "headers" key is refused: the transport asks for headers
+ * through syncular_client_poll_headers instead.
  */
 void *syncular_client_new(const char *config_json);
 
@@ -81,14 +88,45 @@ char *syncular_client_command(void *handle, const char *command_json);
 char *syncular_client_poll_event(void *handle, int64_t timeout_ms);
 
 /*
+ * Poll the next header question: the transport needs request headers before
+ * a host-authenticated HTTP request or realtime handshake, and that request
+ * blocks until the question is answered. Returns a heap-owned
+ *   {"requestId":n,"rejected":{name:value}|null,"clientId":"...",
+ *    "round":n|null,"target":"sync"|"segment"|"blob"|"realtime"}
+ * string to free with syncular_free_string. "rejected" carries the headers
+ * the server just answered 401 to; the request is resent once with the
+ * answer. "round" is the progress attempt of the sync round the request
+ * belongs to, null outside a round; requests of one client and round share
+ * one question. Each question is returned once, and not at all once its request
+ * already failed past the 30 s bound. `timeout_ms` works as in
+ * syncular_client_poll_event. Returns NULL on timeout and once
+ * syncular_client_close has begun.
+ */
+char *syncular_client_poll_headers(void *handle, int64_t timeout_ms);
+
+/*
+ * Answer header question `request_id`. `headers_json` is a JSON object of
+ * string values, or the JSON literal null (a NULL pointer counts as null)
+ * when the host has no headers. Null headers, or no answer within 30 s, fail
+ * the request with the retryable sync.auth_required (details.causeKind
+ * "header_source"). An answer for an unknown or expired request_id is
+ * ignored. Returns {"result":{}} or {"error":{"code":"sync.invalid_request",
+ * ...}} for malformed JSON, to free with syncular_free_string; NULL only on a
+ * NULL handle.
+ */
+char *syncular_client_provide_headers(void *handle, uint64_t request_id,
+                                      const char *headers_json);
+
+/*
  * Close a client core, releasing its database, transport, and socket thread.
  * The handle is invalid after this call; do not use or close it again.
  */
 void syncular_client_close(void *handle);
 
 /*
- * Free a string returned by syncular_client_command or
- * syncular_client_poll_event. Free each returned string exactly once.
+ * Free a string returned by syncular_client_command,
+ * syncular_client_poll_event, syncular_client_poll_headers or
+ * syncular_client_provide_headers. Free each returned string exactly once.
  */
 void syncular_free_string(char *ptr);
 

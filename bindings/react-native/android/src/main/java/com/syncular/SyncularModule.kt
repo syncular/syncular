@@ -11,6 +11,7 @@ import java.lang.foreign.Linker
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -25,7 +26,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Everything is JSON strings on the wire (matching the C ABI), so there is no
  * custom marshaling — the JS layer (src/index.ts) owns parsing and the
  * {$bytes:hex} convention. Events pump on a background thread and emit on the
- * `syncular::event` DeviceEventManager topic.
+ * `syncular::event` DeviceEventManager topic; a second thread polls the
+ * header channel from create to close and emits each request on
+ * `syncular::headers`.
+ *
+ * Commands run on a private single-thread executor, never on the native
+ * modules thread: a command can block inside the core until the JS header
+ * source answers its header request, and that answer
+ * ([provideHeaders]) arrives on the native modules thread.
  *
  * Note on FFM + Android: FFM (Panama) requires a recent Android runtime. On
  * older Android, swap this shim's downcalls for JNI or the JNA fallback (see
@@ -34,9 +42,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SyncularModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
-    private var handle: MemorySegment = MemorySegment.NULL
+    /** Written under `this`'s monitor on the command executor; [provideHeaders]
+     *  reads it under the same monitor. */
+    @Volatile private var handle: MemorySegment = MemorySegment.NULL
+    private val commands = Executors.newSingleThreadExecutor { Thread(it, "syncular-command") }
     private val pumping = AtomicBoolean(false)
     private var pumpThread: Thread? = null
+    private val headerPumping = AtomicBoolean(false)
+    private var headerThread: Thread? = null
 
     override fun getName(): String = "Syncular"
 
@@ -44,61 +57,94 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun create(configJson: String, createJson: String, promise: Promise) {
-        try {
-            if (handle.address() != 0L) {
-                stopPump()
-                Ffi.clientClose(handle)
-                handle = MemorySegment.NULL
+        commands.execute {
+            try {
+                closeHandle()
+                val created = Ffi.clientNew(configJson)
+                if (created.address() == 0L) {
+                    promise.reject("client.failed", "syncular_client_new returned null")
+                    return@execute
+                }
+                synchronized(this) { handle = created }
+                headerPumping.set(true)
+                headerThread = Thread({ runHeaderPump() }, "syncular-headers").apply {
+                    isDaemon = true
+                    start()
+                }
+                val command = "{\"method\":\"create\",\"params\":$createJson}"
+                promise.resolve(Ffi.clientCommand(created, command))
+            } catch (t: Throwable) {
+                promise.reject("client.failed", t.message, t)
             }
-            handle = Ffi.clientNew(configJson)
-            if (handle.address() == 0L) {
-                promise.reject("client.failed", "syncular_client_new returned null")
-                return
-            }
-            val command = "{\"method\":\"create\",\"params\":$createJson}"
-            promise.resolve(Ffi.clientCommand(handle, command))
-        } catch (t: Throwable) {
-            promise.reject("client.failed", t.message, t)
         }
     }
 
     @ReactMethod
     fun command(commandJson: String, promise: Promise) {
-        if (handle.address() == 0L) {
-            promise.reject("client.closed", "client is closed")
-            return
-        }
-        try {
-            promise.resolve(Ffi.clientCommand(handle, commandJson))
-        } catch (t: Throwable) {
-            promise.reject("client.failed", t.message, t)
+        commands.execute {
+            if (handle.address() == 0L) {
+                promise.reject("client.closed", "client is closed")
+                return@execute
+            }
+            try {
+                promise.resolve(Ffi.clientCommand(handle, commandJson))
+            } catch (t: Throwable) {
+                promise.reject("client.failed", t.message, t)
+            }
         }
     }
 
     @ReactMethod
     fun query(sql: String, paramsJson: String, promise: Promise) {
-        if (handle.address() == 0L) {
-            promise.reject("client.closed", "client is closed")
-            return
-        }
-        try {
-            val sqlLiteral = jsonString(sql)
-            val command =
-                "{\"method\":\"query\",\"params\":{\"sql\":$sqlLiteral,\"params\":$paramsJson}}"
-            promise.resolve(Ffi.clientCommand(handle, command))
-        } catch (t: Throwable) {
-            promise.reject("client.failed", t.message, t)
+        commands.execute {
+            if (handle.address() == 0L) {
+                promise.reject("client.closed", "client is closed")
+                return@execute
+            }
+            try {
+                val sqlLiteral = jsonString(sql)
+                val command =
+                    "{\"method\":\"query\",\"params\":{\"sql\":$sqlLiteral,\"params\":$paramsJson}}"
+                promise.resolve(Ffi.clientCommand(handle, command))
+            } catch (t: Throwable) {
+                promise.reject("client.failed", t.message, t)
+            }
         }
     }
 
     @ReactMethod
     fun close(promise: Promise) {
-        stopPump()
-        if (handle.address() != 0L) {
-            Ffi.clientClose(handle)
-            handle = MemorySegment.NULL
+        commands.execute {
+            closeHandle()
+            promise.resolve(null)
         }
-        promise.resolve(null)
+    }
+
+    /** Runs on the native modules thread, outside [commands]: the command
+     *  waiting for these headers occupies it. `syncular_client_provide_headers`
+     *  takes no core lock; the monitor only keeps [closeHandle] from freeing the
+     *  handle under it. The core's reply carries nothing the JS source could
+     *  act on. */
+    @ReactMethod
+    fun provideHeaders(requestId: Double, headersJson: String) {
+        synchronized(this) {
+            if (handle.address() != 0L) Ffi.clientProvideHeaders(handle, requestId.toLong(), headersJson)
+        }
+    }
+
+    /** Stops both pumps, then frees the handle. Runs on [commands] (or after
+     *  it drained), so no command is inside the core. */
+    private fun closeHandle() {
+        stopPump()
+        headerPumping.set(false)
+        headerThread?.join()
+        headerThread = null
+        synchronized(this) {
+            if (handle.address() != 0L) {
+                Ffi.clientClose(handle)
+                handle = MemorySegment.NULL
+            }
+        }
     }
 
     @ReactMethod
@@ -140,12 +186,21 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
-    override fun invalidate() {
-        stopPump()
-        if (handle.address() != 0L) {
-            Ffi.clientClose(handle)
-            handle = MemorySegment.NULL
+    /** Polls the header channel until [closeHandle]; it keeps running through
+     *  `stopEvents`, because a command may need headers while the app is in
+     *  the background. */
+    private fun runHeaderPump() {
+        val emitter =
+            reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        while (headerPumping.get() && handle.address() != 0L) {
+            val request = Ffi.clientPollHeaders(handle, 25) ?: continue
+            emitter.emit("syncular::headers", request)
         }
+    }
+
+    override fun invalidate() {
+        commands.submit { closeHandle() }.get()
+        commands.shutdown()
         super.invalidate()
     }
 
@@ -164,7 +219,7 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
         return sb.append('"').toString()
     }
 
-    /** The FFM downcalls to the five C functions — mirrors bindings/kotlin's
+    /** The FFM downcalls to the seven C functions — mirrors bindings/kotlin's
      *  SyncularFfi, loading the library by name from the APK's jniLibs. */
     private object Ffi {
         private val linker = Linker.nativeLinker()
@@ -172,6 +227,8 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
         private val hNew: MethodHandle
         private val hCommand: MethodHandle
         private val hPollEvent: MethodHandle
+        private val hPollHeaders: MethodHandle
+        private val hProvideHeaders: MethodHandle
         private val hClose: MethodHandle
         private val hFreeString: MethodHandle
 
@@ -183,6 +240,8 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
             hNew = downcall("syncular_client_new", FunctionDescriptor.of(ptr, ptr))
             hCommand = downcall("syncular_client_command", FunctionDescriptor.of(ptr, ptr, ptr))
             hPollEvent = downcall("syncular_client_poll_event", FunctionDescriptor.of(ptr, ptr, long))
+            hPollHeaders = downcall("syncular_client_poll_headers", FunctionDescriptor.of(ptr, ptr, long))
+            hProvideHeaders = downcall("syncular_client_provide_headers", FunctionDescriptor.of(ptr, ptr, long, ptr))
             hClose = downcall("syncular_client_close", FunctionDescriptor.ofVoid(ptr))
             hFreeString = downcall("syncular_free_string", FunctionDescriptor.ofVoid(ptr))
         }
@@ -203,6 +262,14 @@ class SyncularModule(private val reactContext: ReactApplicationContext) :
 
         fun clientPollEvent(handle: MemorySegment, timeoutMs: Long): String? =
             takeOwned(hPollEvent.invokeExact(handle, timeoutMs) as MemorySegment)
+
+        fun clientPollHeaders(handle: MemorySegment, timeoutMs: Long): String? =
+            takeOwned(hPollHeaders.invokeExact(handle, timeoutMs) as MemorySegment)
+
+        fun clientProvideHeaders(handle: MemorySegment, requestId: Long, headersJson: String): String? =
+            Arena.ofConfined().use { a ->
+                takeOwned(hProvideHeaders.invokeExact(handle, requestId, a.allocateUtf8String(headersJson)) as MemorySegment)
+            }
 
         fun clientClose(handle: MemorySegment) { hClose.invokeExact(handle) as Unit }
 

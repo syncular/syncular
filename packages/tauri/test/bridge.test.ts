@@ -497,7 +497,6 @@ describe('createTauriSyncClient', () => {
       await client.close();
       const before = calls.length;
       for (const call of [
-        () => client.setHeaders({ authorization: 'Bearer late' }),
         () => client.query('SELECT 1'),
         () => client.querySnapshot({ sql: 'SELECT 1' }),
         () => client.securityLifecycle(),
@@ -542,14 +541,6 @@ describe('createTauriSyncClient', () => {
     expect(calls.some((call) => call.cmd.endsWith('syncular_query'))).toBe(
       false,
     );
-    await expect(
-      client.setHeaders({ authorization: 'Bearer must-not-enter-native' }),
-    ).rejects.toMatchObject({
-      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
-    });
-    expect(
-      calls.some((call) => call.cmd.endsWith('syncular_set_headers')),
-    ).toBe(false);
     await client.purgeLocalData({
       purgeId: 'directive-1',
       targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],
@@ -587,7 +578,6 @@ describe('createTauriSyncClient', () => {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x5a) },
         keyIdColumns: { patients: 'encryption_key_id' },
       },
-      headers: { authorization: 'Bearer post-preflight' },
     });
     expect(await client.securityLifecycle()).toBe('active');
     expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
@@ -604,15 +594,10 @@ describe('createTauriSyncClient', () => {
         }
       ).params.encryption.keys['practice-v2'],
     ).toEqual({ $bytes: '5a'.repeat(32) });
-    // The fresh token rides the activation command itself, so the native
-    // side can apply it before the startup sync the activation enqueues.
+    // Activation carries no headers: the Rust header source answers (§1.1).
     expect(
-      (
-        activation?.args.command as {
-          params: { headers: Record<string, string> };
-        }
-      ).params.headers,
-    ).toEqual({ authorization: 'Bearer post-preflight' });
+      (activation?.args.command as { params: Record<string, unknown> }).params,
+    ).not.toHaveProperty('headers');
 
     const barrier = client.beginSecurityPreflight();
     await expect(client.query('SELECT 1')).rejects.toMatchObject({
@@ -1359,7 +1344,6 @@ describe('createTauriSyncClient', () => {
     await client.setTransportEnabled(false);
     await client.setOffline(true);
     await client.activateSecurity();
-    await client.setHeaders({ authorization: 'Bearer fresh' });
     await client.setTransportEnabled(true);
     const gate = calls.filter(
       (c) =>
@@ -1390,15 +1374,6 @@ describe('createTauriSyncClient', () => {
         .filter((command) => command?.method === 'setHostLifecycle')
         .map((command) => command.params),
     ).toEqual([{ state: 'background' }, { state: 'active' }]);
-  });
-
-  test('setHeaders posts the full set to syncular_set_headers', async () => {
-    const { client, calls } = await build();
-    await client.setHeaders({ authorization: 'Bearer fresh' });
-    const call = calls.find(
-      (c) => c.cmd === 'plugin:syncular|syncular_set_headers',
-    );
-    expect(call?.args.headers).toEqual({ authorization: 'Bearer fresh' });
   });
 
   test('accessor methods unwrap their command replies', async () => {
@@ -2186,12 +2161,11 @@ test('every command the bridge invokes is registered and permitted by the plugin
   await client.query('SELECT 1');
   await client.querySnapshot({ sql: 'SELECT 1' });
   await client.snapshotRead({ statements: [{ sql: 'SELECT 1' }] });
-  await client.setHeaders({ authorization: 'Bearer x' });
   client.onDiagnostics(() => {});
   await client.sync();
   await client.close();
   const invoked = new Set(calls.map((call) => call.cmd));
-  expect(invoked.size).toBe(4);
+  expect(invoked.size).toBe(3);
   for (const cmd of invoked) {
     expect(permittedCommands).toContain(cmd.replace('plugin:syncular|', ''));
   }

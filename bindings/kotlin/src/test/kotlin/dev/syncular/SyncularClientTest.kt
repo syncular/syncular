@@ -1,5 +1,7 @@
 package dev.syncular
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -91,7 +93,7 @@ class SyncularClientTest {
         // The original four-argument order (baseUrl, wsUrl, headers, dbPath)
         // must keep compiling, so the new policy fields are appended after it.
         val config =
-            SyncularConfig("https://api.example.com", null, emptyMap(), "/tmp/replica.db")
+            SyncularConfig("https://api.example.com", null, { _, _ -> emptyMap() }, "/tmp/replica.db")
         assertEquals("https://api.example.com", config.baseUrl)
         assertEquals("/tmp/replica.db", config.dbPath)
         assertEquals(null, config.requestTimeoutMs)
@@ -293,11 +295,91 @@ class SyncularClientTest {
     }
 
     @Test
-    fun rotatesTransportHeadersWithoutRecreatingTheClient() {
+    fun aClientWithBaseUrlRequiresAHeaderSource() {
+        val error = assertFailsWith<SyncularException> {
+            SyncularClient.create(schema = todoSchema(), config = SyncularConfig(baseUrl = "https://api.example.com"))
+        }
+        assertEquals("client.headers_required", error.code)
+    }
+
+    /** A client whose header answers land in the returned queue instead of the core. */
+    private fun headerClient(source: SyncularHeaderSource): Pair<SyncularClient, LinkedBlockingQueue<Pair<Long, Map<String, String>?>>> {
+        val client = SyncularClient.create(
+            clientId = "kotlin-headers",
+            schema = todoSchema(),
+            config = SyncularConfig(headers = source),
+        )
+        val answers = LinkedBlockingQueue<Pair<Long, Map<String, String>?>>()
+        client.provideHeaders = { requestId, headers -> answers.put(requestId to headers) }
+        return client to answers
+    }
+
+    @Test
+    fun aHeaderRequestIsAnsweredFromTheSource() {
+        // The source echoes its context into the headers, so the answers show it arrived.
+        val (client, answers) = headerClient { rejected, context ->
+            mapOf(
+                "authorization" to if (rejected == null) "Bearer first" else "Bearer renewed",
+                "x-context" to "${context.clientId} ${context.round ?: "none"} ${context.target}",
+            )
+        }
+        client.use {
+            client.answerHeaders("""{"requestId":1,"rejected":null,"clientId":"c1","round":7,"target":"sync"}""")
+            assertEquals(1L to mapOf("authorization" to "Bearer first", "x-context" to "c1 7 sync"), answers.take())
+            client.answerHeaders(
+                """{"requestId":2,"rejected":{"authorization":"Bearer first"},"clientId":"c1","round":null,"target":"realtime"}""",
+            )
+            assertEquals(2L to mapOf("authorization" to "Bearer renewed", "x-context" to "c1 none realtime"), answers.take())
+        }
+    }
+
+    @Test
+    fun aThrowingSourceAnswersNoHeaders() {
+        val (client, answers) = headerClient { _, _ -> throw IllegalStateException("signed out") }
+        client.use {
+            client.answerHeaders("""{"requestId":3,"rejected":null,"clientId":"c1","round":null,"target":"blob"}""")
+            assertEquals(3L to null, answers.take())
+        }
+    }
+
+    @Test
+    fun aRequestWithoutContextIsAnsweredWithNoHeaders() {
+        val (client, answers) = headerClient { _, _ -> mapOf("authorization" to "Bearer unused") }
+        client.use {
+            client.answerHeaders("""{"requestId":5,"rejected":null,"round":null}""")
+            assertEquals(5L to null, answers.take())
+        }
+    }
+
+    @Test
+    fun eventsKeepFlowingWhileASourceIsPending() {
+        val gate = CountDownLatch(1)
+        val (client, answers) = headerClient { _, _ ->
+            gate.await()
+            mapOf("authorization" to "Bearer late")
+        }
+        client.use {
+            val delivered = java.util.concurrent.CopyOnWriteArrayList<String>()
+            client.listener = SyncularEventListener { delivered.add(it.type) }
+            client.answerHeaders("""{"requestId":4,"rejected":null,"clientId":"c1","round":1,"target":"segment"}""")
+            client.handleEvent("""{"type":"presence","scopeKey":"room:1"}""")
+            assertTrue("presence" in delivered)
+            assertTrue(answers.isEmpty())
+            gate.countDown()
+            assertEquals(4L to mapOf("authorization" to "Bearer late"), answers.take())
+        }
+    }
+
+    @Test
+    fun addEncryptionKeysReachesTheCoreAsHexKeysByKeyId() {
         makeClient().use { client ->
-            client.setHeaders(mapOf("authorization" to "Bearer fresh"))
-            val id = client.subscribe(mapOf("id" to "after-rotation"))
-            assertEquals("active", client.unit(id)?.get("status")?.string)
+            client.addEncryptionKeys(mapOf("practice-v2" to ByteArray(32) { 0x2b }))
+            // The core refuses a key that is not 32 bytes and names it, so the
+            // key id and the bytes both arrived.
+            val error = assertFailsWith<SyncularException> {
+                client.addEncryptionKeys(mapOf("short" to byteArrayOf(0x00, 0xab.toByte())))
+            }
+            assertEquals(JsonValue.of("short"), error.details?.get("keyId"))
         }
     }
 

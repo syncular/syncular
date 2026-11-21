@@ -350,10 +350,6 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   protected abstract sendQuerySnapshot(
     params: Record<string, unknown>,
   ): Promise<NativeReply>;
-  /** Replace the native transport's full header set. */
-  protected abstract sendHeaders(
-    headers: Readonly<Record<string, string>>,
-  ): Promise<NativeReply>;
   /** Stop the native core. `close()` detaches listeners once it settles. */
   protected abstract shutdown(): Promise<void>;
 
@@ -651,18 +647,10 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return barrier;
   }
 
-  /**
-   * Complete the security preflight. `headers` optionally carries a fresh
-   * FULL transport header set that the native host applies atomically with
-   * the activation, before the startup sync it enqueues, so a preflight that
-   * outlives the boot token starts its first round with valid credentials
-   * (the direct `setHeaders` path stays refused while gated).
-   */
+  /** Complete the security preflight. The native host asks its header
+   * source for the startup round like for any other request (§1.1). */
   async activateSecurity(
-    options: {
-      readonly encryption?: EncryptionKeyringConfig;
-      readonly headers?: Readonly<Record<string, string>>;
-    } = {},
+    options: { readonly encryption?: EncryptionKeyringConfig } = {},
   ): Promise<void> {
     this.requireOpen();
     if (this.#securityLifecycle === 'active') {
@@ -676,7 +664,6 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       ...(options.encryption !== undefined
         ? { encryption: encodeValue(options.encryption) }
         : {}),
-      ...(options.headers !== undefined ? { headers: options.headers } : {}),
     });
     this.#securityLifecycle = 'active';
   }
@@ -902,17 +889,6 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return decodePreviousVersionDiscardResult(
       await this.command('previousVersionDiscard', {}),
     );
-  }
-
-  /**
-   * Replace the native transport's request headers at runtime, the auth
-   * rotation path. Pass the FULL header set: it replaces the current set.
-   * HTTP requests use the new set from the next call; the realtime socket
-   * applies it on its next (re)connect.
-   */
-  async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
-    this.#requireActive();
-    await this.#reply(() => this.sendHeaders(headers));
   }
 
   // -- Native CRDT (SPEC.md §5.10.5; needs the host's `crdt-yjs` feature) ----

@@ -417,6 +417,7 @@ fn ffi_realtime_client(port: u16) -> *mut crate::Handle {
     .unwrap();
     let handle = crate::syncular_client_new(config.as_ptr());
     assert!(!handle.is_null());
+    crate::tests::answer_headers(handle);
     let created = command(
         handle,
         "create",

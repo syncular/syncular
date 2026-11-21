@@ -1,6 +1,6 @@
 # syncular · Swift bindings
 
-An idiomatic Swift wrapper over the **syncular-ffi** C-ABI native core (the five
+An idiomatic Swift wrapper over the **syncular-ffi** C-ABI native core (the seven
 functions in [`rust/ffi.h`](../../rust/ffi.h)). A `SyncularClient` class owns the
 opaque handle, marshals JSON commands, offers typed conveniences over the common
 command set, and runs the `poll_event` loop on a background queue — delivering
@@ -19,6 +19,9 @@ let client = try SyncularClient(
     schema: schemaJSON,                 // JSONValue from your generated schema
     config: SyncularConfig(
         baseUrl: "https://your.server/sync",   // engages native transport
+        headers: { rejected, context in        // required with baseUrl
+            ["Authorization": "Bearer \(try await auth.token(refresh: rejected != nil))"]
+        },
         dbPath: "\(appSupport)/syncular.db"    // file-backed persistence
     )
 )
@@ -62,9 +65,23 @@ share: `{method, params}` in, `{result|error}` out, bytes as `{"$bytes":"<hex>"}
 `readRows` returns `RowState` objects (`{rowId, version, values}`; `version == -1`
 marks an optimistic, not-yet-synced row); `query` returns flat SQL rows.
 
-Call `setHeaders(["Authorization": "Bearer \(token)"])` after credential
-rotation. HTTP requests use the new headers immediately. Reconnect realtime to
-repeat the WebSocket handshake with them.
+`SyncularConfig.headers` is the header source of the native transport, and a
+client with `baseUrl` requires one (`client.headers_required` otherwise). The
+core calls it before a host-authenticated HTTP request or realtime handshake,
+one call at a time. After a 401 or a realtime auth close it calls the source
+once more with the refused headers as `rejected`; return renewed credentials
+there. The second argument, `SyncularHeaderContext`, carries the `clientId`,
+the sync `round` (the `attempt` progress reports; nil outside a round) and the
+`target` of the request: `"sync"`, `"segment"`, `"blob"` or `"realtime"`. The client polls the core's header channel
+(`syncular_client_poll_headers`) on its own queue from construction to
+`close()`, `pause()` included, and runs the source in a `Task` while the
+command that needs the headers blocks, so the source must not wait for the
+thread that issued that command. A thrown
+error, or no answer within 30 s, fails the request with retryable
+`sync.auth_required`.
+
+`addEncryptionKeys(["<keyId>": keyBytes])` adds keys to the active encryption
+keyring and keeps the keys already in it.
 
 ## Local authority
 

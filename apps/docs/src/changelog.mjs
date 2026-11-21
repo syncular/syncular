@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-21',
+    title: 'The transport asks for headers',
+    body: "A hidden Mac app sent native `/sync` requests with an expired bearer for 4 minutes, because the page pushed renewed headers through a throttled webview. No host has a call that pushes headers into a running client. The host now gives the client a header source, and the transport asks it before every sync, segment, blob, and remote-operation request and every native WebSocket handshake. A signed URL never asks, and concurrent requests share one question. A 401 asks once more with the refused headers and resends once; a second 401 surfaces the retryable `sync.auth_required`, and the next attempt asks again. A source that fails, or answers no headers, fails the request with `sync.auth_required` and `causeKind` `header_source`. The browser worker takes `startSyncWorker({ headers })`; Swift, Kotlin, Flutter and React Native take `headers` in their config; Tauri takes `header_source` in the host's Rust `SyncularConfig`; a binding with a `baseUrl` and no source throws `client.headers_required`.",
+    links: [
+      {
+        href: '/guide-auth/#native-and-headless-give-the-client-a-header-source',
+        label: 'Authentication: the header source',
+      },
+    ],
+  },
+  {
+    date: '2026-11-21',
     title: 'Add an encryption key while the client runs',
     body: '`addEncryptionKeys(keys)` installs a key that arrives after activation, on the direct client, worker handles, Tauri and React Native. It extends the active keyring and reveals the rows sealed under the new keys in the same step; reads, writes, units and realtime keep running. A key id held with other bytes, or a key that is not 32 bytes, fails the whole call with `sync.invalid_request`. Every host now takes one keyring shape, `{ keys, keyIdColumns }`: the direct `SyncClient` no longer accepts `keyProvider` or `keyIdFor`.',
     links: [

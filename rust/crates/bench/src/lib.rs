@@ -13,7 +13,7 @@
 //! subscribe/mutate/sync/syncUntilIdle/readRows/query/uploadBlob/fetchBlob/
 //! connectRealtime/…), plus bench-only commands:
 //!
-//! - `create` additionally takes `transport: {baseUrl, wsUrl?, headers?}` —
+//! - `create` additionally takes `transport: {baseUrl, wsUrl?}` —
 //!   the native transport config (an explicit full `wsUrl` with query params
 //!   is honored verbatim).
 //! - `waitForQuery {sql, params?, matchCount?: {op: "eq"|"gte", value},

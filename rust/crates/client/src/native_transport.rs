@@ -21,7 +21,7 @@
 //! wire fixes therefore reach FFI, Tauri, and future Rust hosts together.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
 use crate::{
@@ -31,17 +31,17 @@ use crate::{
 /// Redirect handling for native HTTP requests and the WebSocket handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedirectPolicy {
-    /// Never follow a 3xx. A redirected request would replay configured
+    /// Never follow a 3xx. A redirected request would replay host
     /// headers, URL userinfo, or a signed capability to an unverified
     /// destination, so refusal is the default. A refused redirect surfaces
     /// `transport.redirect`.
     #[default]
     Deny,
-    /// Follow a redirect for a request that carries neither configured
+    /// Follow a redirect for a request that carries neither host
     /// headers, base-URL userinfo, nor a signed capability URL. A
     /// credential-bearing request is still refused even under this policy,
-    /// because ureq forwards configured headers and URL userinfo to the
-    /// redirect target, and tungstenite forwards configured headers to a
+    /// because ureq forwards host headers and URL userinfo to the
+    /// redirect target, and tungstenite forwards host headers to a
     /// WebSocket redirect target. A WebSocket handshake additionally may not
     /// follow a redirect when its realtime URL carries userinfo or a query
     /// (a signed capability). Enable only for a deployment whose
@@ -169,6 +169,349 @@ impl HostTransportPolicy {
         };
         policy.validate()?;
         Ok(policy)
+    }
+}
+
+/// What a host-authenticated request is for, as a header source sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HeaderTarget {
+    /// `POST /sync` and remote operations.
+    Sync,
+    /// `GET /segments/{id}`.
+    Segment,
+    /// The blob endpoints: upload, download and upload grant.
+    Blob,
+    /// The realtime WebSocket handshake.
+    Realtime,
+}
+
+impl HeaderTarget {
+    /// The wire name hosts receive: `sync`, `segment`, `blob`, `realtime`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Segment => "segment",
+            Self::Blob => "blob",
+            Self::Realtime => "realtime",
+        }
+    }
+}
+
+/// The request a header source answers for. `round` is the progress
+/// `attempt` of the sync round the request belongs to, and `None` outside a
+/// round (an app-initiated blob transfer, a realtime connect, a remote
+/// operation). `client_id` is empty before the client is created.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HeaderContext {
+    pub client_id: String,
+    pub round: Option<u64>,
+    pub target: HeaderTarget,
+}
+
+type HeaderRead = dyn Fn(&HeaderContext, Option<&[(String, String)]>) -> Result<Vec<(String, String)>, TransportError>
+    + Send
+    + Sync;
+
+/// Where a Rust host transport reads its request headers (auth, actor and
+/// project ids, per-round trace headers). The transport calls it before every
+/// host-authenticated HTTP request and every realtime handshake; a signed URL
+/// never carries them. It receives the request's [`HeaderContext`] and `None`
+/// for an ordinary read, or the headers the server just answered 401 to for a
+/// refresh. A source that answers `None` has no headers to give, and the
+/// request fails with the retryable `sync.auth_required`
+/// (`causeKind: "header_source"`) before any network I/O.
+///
+/// Concurrent reads of one client and round share one in-flight call, with
+/// the first reader's context. Ordinary reads and refreshes fly separately,
+/// so a refresh never joins an ordinary read of the refused headers, and
+/// different rounds or clients never share a call. Clones share the flights.
+#[derive(Clone)]
+pub struct HeaderSource(Arc<HeaderFlights>);
+
+/// A flight key: client id, round, and whether the read is a refresh.
+type FlightKey = (String, Option<u64>, bool);
+
+struct HeaderFlights {
+    read: Box<HeaderRead>,
+    /// Running flights, and landed ones whose joined readers have yet to
+    /// collect the outcome.
+    state: Mutex<std::collections::HashMap<FlightKey, HeaderFlight>>,
+    landed: Condvar,
+}
+
+#[derive(Default)]
+struct HeaderFlight {
+    running: bool,
+    landings: u64,
+    /// Readers waiting for the running call to land.
+    joined: usize,
+    /// The outcome of the last call that landed.
+    outcome: Option<Result<Vec<(String, String)>, TransportError>>,
+}
+
+fn header_source_error() -> TransportError {
+    let mut error = TransportError::new(
+        "sync.auth_required",
+        "the host header source gave no headers",
+    );
+    error.details = Some(serde_json::json!({ "causeKind": "header_source" }));
+    error
+}
+
+impl std::fmt::Debug for HeaderSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeaderSource")
+    }
+}
+
+impl HeaderSource {
+    pub fn new(
+        read: impl Fn(&HeaderContext, Option<&[(String, String)]>) -> Option<Vec<(String, String)>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self::from_read(Box::new(move |context, rejected| {
+            read(context, rejected).ok_or_else(header_source_error)
+        }))
+    }
+
+    fn from_read(read: Box<HeaderRead>) -> Self {
+        Self(Arc::new(HeaderFlights {
+            read,
+            state: Mutex::default(),
+            landed: Condvar::new(),
+        }))
+    }
+
+    /// Read the headers for one request, joining the flight of the same
+    /// client, round and kind when one is in progress.
+    pub fn read(
+        &self,
+        context: &HeaderContext,
+        rejected: Option<&[(String, String)]>,
+    ) -> Result<Vec<(String, String)>, TransportError> {
+        let flights = &self.0;
+        let key = (context.client_id.clone(), context.round, rejected.is_some());
+        let mut state = flights.state.lock().expect("header source lock");
+        let flight = state.entry(key.clone()).or_default();
+        if flight.running {
+            let landing = flight.landings;
+            flight.joined += 1;
+            while state[&key].landings == landing {
+                state = flights.landed.wait(state).expect("header source wait");
+            }
+            let flight = state.get_mut(&key).expect("a joined flight stays");
+            flight.joined -= 1;
+            let outcome = flight
+                .outcome
+                .clone()
+                .expect("a landed flight has an outcome");
+            if flight.joined == 0 && !flight.running {
+                state.remove(&key);
+            }
+            return outcome;
+        }
+        flight.running = true;
+        drop(state);
+        // A panicking source still lands its flight, so joined readers wake
+        // before the panic resumes on this thread.
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (flights.read)(context, rejected)
+        }));
+        let outcome = match &read {
+            Ok(outcome) => outcome.clone(),
+            Err(_) => Err(header_source_error()),
+        };
+        let mut state = flights.state.lock().expect("header source lock");
+        let flight = state.get_mut(&key).expect("a running flight stays");
+        flight.running = false;
+        if flight.joined == 0 {
+            state.remove(&key);
+        } else {
+            flight.landings += 1;
+            flight.outcome = Some(outcome.clone());
+            flights.landed.notify_all();
+        }
+        drop(state);
+        if let Err(panic) = read {
+            std::panic::resume_unwind(panic);
+        }
+        outcome
+    }
+
+    /// Run one host-authenticated request with this source's headers. A
+    /// refusal carrying `details.httpStatus` 401 reads the source again, in
+    /// the same context, with the refused headers and resends once; a second
+    /// 401 surfaces.
+    pub fn authenticated<T>(
+        &self,
+        context: &HeaderContext,
+        mut send: impl FnMut(&[(String, String)]) -> Result<T, TransportError>,
+    ) -> Result<T, TransportError> {
+        let headers = self.read(context, None)?;
+        match send(&headers) {
+            Err(error)
+                if error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("httpStatus"))
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(401) =>
+            {
+                send(&self.read(context, Some(&headers))?)
+            }
+            result => result,
+        }
+    }
+}
+
+/// How long a [`HeaderQuestions`] source waits for the host's answer. Past
+/// it the request fails with the retryable `sync.auth_required`
+/// (`causeKind: "header_source"`), and a late answer is ignored.
+pub const HEADER_ANSWER_WAIT_MS: i64 = 30_000;
+
+type HeaderAsk = dyn Fn(u64, &HeaderContext, Option<&[(String, String)]>) + Send + Sync;
+
+/// The header source of a host that answers over a pull channel (the FFI
+/// event queue, the conformance shim's stdio). Each read asks the host one
+/// question under a fresh request id and blocks until [`Self::provide`]
+/// answers it, [`HEADER_ANSWER_WAIT_MS`] pass on the clock, or
+/// [`Self::close`] runs. `clock` is monotonic milliseconds; a waiter
+/// re-checks it on every answer, every [`Self::recheck`], and at its
+/// deadline in real time.
+pub struct HeaderQuestions {
+    ask: Box<HeaderAsk>,
+    clock: Box<dyn Fn() -> i64 + Send + Sync>,
+    state: Mutex<QuestionState>,
+    answered: Condvar,
+}
+
+/// A host's answer: headers, or `None` when it has none.
+type HeaderAnswer = Option<Vec<(String, String)>>;
+
+#[derive(Default)]
+struct QuestionState {
+    next_id: u64,
+    /// Open questions by id: the deadline, and `Some` once answered
+    /// (`Some(None)`: the host has no headers).
+    open: std::collections::HashMap<u64, (i64, Option<HeaderAnswer>)>,
+    closed: bool,
+}
+
+impl HeaderQuestions {
+    pub fn new(
+        ask: impl Fn(u64, &HeaderContext, Option<&[(String, String)]>) + Send + Sync + 'static,
+        clock: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            ask: Box::new(ask),
+            clock: Box::new(clock),
+            state: Mutex::default(),
+            answered: Condvar::new(),
+        })
+    }
+
+    /// The header source whose reads ask these questions.
+    pub fn source(self: &Arc<Self>) -> HeaderSource {
+        let questions = Arc::clone(self);
+        HeaderSource::from_read(Box::new(move |context, rejected| {
+            let mut state = questions.state.lock().expect("header questions lock");
+            if state.closed {
+                return Err(TransportError::new(
+                    "client.closed",
+                    "the client closed while the transport waited for headers",
+                ));
+            }
+            state.next_id += 1;
+            let id = state.next_id;
+            let deadline = (questions.clock)().saturating_add(HEADER_ANSWER_WAIT_MS);
+            state.open.insert(id, (deadline, None));
+            // Ask outside the lock: a host channel may call `is_open` while it
+            // holds its own lock, so this lock is never taken inside the ask.
+            drop(state);
+            (questions.ask)(id, context, rejected);
+            state = questions.state.lock().expect("header questions lock");
+            loop {
+                if state.closed {
+                    state.open.remove(&id);
+                    return Err(TransportError::new(
+                        "client.closed",
+                        "the client closed while the transport waited for headers",
+                    ));
+                }
+                if let Some((_, Some(_))) = state.open.get(&id) {
+                    let answer = state
+                        .open
+                        .remove(&id)
+                        .and_then(|(_, answer)| answer)
+                        .flatten();
+                    return answer.ok_or_else(header_source_error);
+                }
+                let now = (questions.clock)();
+                if now >= deadline {
+                    state.open.remove(&id);
+                    return Err(header_source_error());
+                }
+                state = questions
+                    .answered
+                    .wait_timeout(state, Duration::from_millis((deadline - now) as u64))
+                    .expect("header questions wait")
+                    .0;
+            }
+        }))
+    }
+
+    /// Answer question `id` with `headers`: an object of string values, or
+    /// `null` when the host cannot produce headers. An answer to an unknown
+    /// or expired id is ignored.
+    pub fn provide(&self, id: u64, headers: &serde_json::Value) -> Result<(), TransportError> {
+        let invalid = || {
+            TransportError::new(
+                "sync.invalid_request",
+                "provided headers must be an object of string values or null",
+            )
+        };
+        let headers = match headers {
+            serde_json::Value::Null => None,
+            serde_json::Value::Object(map) => Some(
+                map.iter()
+                    .map(|(name, value)| {
+                        value
+                            .as_str()
+                            .map(|value| (name.clone(), value.to_owned()))
+                            .ok_or_else(invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            _ => return Err(invalid()),
+        };
+        let mut state = self.state.lock().expect("header questions lock");
+        if let Some((_, slot)) = state.open.get_mut(&id) {
+            *slot = Some(headers);
+            self.answered.notify_all();
+        }
+        Ok(())
+    }
+
+    /// Whether question `id` still waits for an answer: asked, unanswered,
+    /// and within its bound. A host channel skips a question that is not.
+    pub fn is_open(&self, id: u64) -> bool {
+        let now = (self.clock)();
+        let state = self.state.lock().expect("header questions lock");
+        matches!(state.open.get(&id), Some((deadline, None)) if now < *deadline)
+    }
+
+    /// Wake every waiter to re-check its deadline after the clock moved.
+    pub fn recheck(&self) {
+        let _state = self.state.lock().expect("header questions lock");
+        self.answered.notify_all();
+    }
+
+    /// Fail every open question and every later read with `client.closed`.
+    pub fn close(&self) {
+        self.state.lock().expect("header questions lock").closed = true;
+        self.answered.notify_all();
     }
 }
 
@@ -326,6 +669,14 @@ impl HostTransport {
         policy: HostTransportPolicy,
         notify: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
+        // Static headers expire while the transport keeps sending them; the
+        // host answers the transport's header source instead.
+        if config.get("headers").is_some() {
+            return Err(
+                "sync.invalid_request: transport config headers is not supported; install a header source"
+                    .to_owned(),
+            );
+        }
         let local_authority_path = match config.get("localAuthorityPath") {
             None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(path)) if !path.is_empty() => Some(path.clone()),
@@ -401,15 +752,16 @@ impl HostTransport {
         }
     }
 
-    /// Replace auth/application headers for subsequent HTTP requests and the
-    /// next realtime connection. A live socket retains its handshake headers.
-    pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
+    /// Install the host's header source. Every later host-authenticated HTTP
+    /// request and realtime handshake reads it; round forks share it. A live
+    /// socket keeps the headers of its handshake.
+    pub fn set_header_source(&mut self, source: HeaderSource) {
         match self {
-            HostTransport::Null { .. } => drop(headers),
+            HostTransport::Null { .. } => drop(source),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.set_headers(headers),
+            HostTransport::Native(t) => t.headers = Some(source),
             #[cfg(feature = "local-authority")]
-            HostTransport::Local(t) => t.remote.set_headers(headers),
+            HostTransport::Local(t) => t.remote.set_header_source(source),
         }
     }
 
@@ -722,6 +1074,26 @@ impl Transport for HostTransport {
         }
     }
 
+    fn set_client_id(&mut self, client_id: &str) {
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_client_id(client_id),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.set_client_id(client_id),
+        }
+    }
+
+    fn set_round(&mut self, attempt: Option<u64>) {
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_round(attempt),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.set_round(attempt),
+        }
+    }
+
     #[cfg(feature = "local-authority")]
     fn open_local_authority(
         &mut self,
@@ -989,6 +1361,14 @@ mod local {
             self.remote.set_idle_bound(bound);
         }
 
+        fn set_client_id(&mut self, client_id: &str) {
+            self.remote.set_client_id(client_id);
+        }
+
+        fn set_round(&mut self, attempt: Option<u64>) {
+            self.remote.set_round(attempt);
+        }
+
         fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
             self.remote.realtime_send(text)
         }
@@ -1074,7 +1454,7 @@ mod native {
     //!
     //! Wire contract mirrors the reference HTTP+WS bindings (§1.1, §8.7):
     //! `POST {baseUrl}/sync` (application/vnd.syncular.sync.v2, `X-Syncular-Scopes`
-    //! not needed here — the native app authenticates via configured headers),
+    //! not needed here — the native app authenticates via its header source),
     //! `GET {baseUrl}/segments/{id}`, `PUT/GET {baseUrl}/blobs/{id}`, and the
     //! realtime socket at `{wsUrl}` (ws(s):// derived from baseUrl).
 
@@ -1095,7 +1475,10 @@ mod native {
     };
     use ureq::Timeout as UreqTimeout;
 
-    use super::{HostTransportPolicy, Inbound, InboundBuffer, RealtimeReceiptKind, RedirectPolicy};
+    use super::{
+        HeaderContext, HeaderSource, HeaderTarget, HostTransportPolicy, Inbound, InboundBuffer,
+        RealtimeReceiptKind, RedirectPolicy,
+    };
     use crate::{
         BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentFetch, SegmentRequest,
         Transport, TransportError,
@@ -1767,11 +2150,15 @@ mod native {
     pub struct NativeTransport {
         base_url: String,
         ws_url: String,
-        /// Extra request headers (auth, actor/project ids) as (name, value).
-        headers: Vec<(String, String)>,
+        /// The host's header source; `None` sends no host headers.
+        pub headers: Option<HeaderSource>,
+        /// The served client's id and the progress attempt of the round in
+        /// flight, named in each header source read.
+        client_id: String,
+        round_attempt: Option<u64>,
         /// The base URL carries `user:pass@`, which ureq turns into request
         /// credentials; a request to it is credential bearing even without
-        /// configured headers.
+        /// host headers.
         base_url_has_userinfo: bool,
         agent: ureq::Agent,
         policy: HostTransportPolicy,
@@ -1903,6 +2290,8 @@ mod native {
                 base_url: self.base_url.clone(),
                 ws_url: self.ws_url.clone(),
                 headers: self.headers.clone(),
+                client_id: self.client_id.clone(),
+                round_attempt: self.round_attempt,
                 base_url_has_userinfo: self.base_url_has_userinfo,
                 agent: self.agent.clone(),
                 policy: self.policy.clone(),
@@ -1933,14 +2322,6 @@ mod native {
             notify: Option<Arc<dyn Fn() + Send + Sync>>,
         ) -> Result<Self, String> {
             policy.validate()?;
-            let mut headers = Vec::new();
-            if let Some(map) = config.get("headers").and_then(|v| v.as_object()) {
-                for (k, v) in map {
-                    if let Some(s) = v.as_str() {
-                        headers.push((k.clone(), s.to_owned()));
-                    }
-                }
-            }
             let ws_url = config
                 .get("wsUrl")
                 .and_then(|v| v.as_str())
@@ -1954,7 +2335,9 @@ mod native {
             Ok(NativeTransport {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 ws_url,
-                headers,
+                headers: None,
+                client_id: String::new(),
+                round_attempt: None,
                 base_url_has_userinfo,
                 agent: build_agent(&policy),
                 policy,
@@ -2004,24 +2387,50 @@ mod native {
             }
         }
 
-        /// Whether a request to the base URL carries credentials: configured
-        /// headers, or `user:pass@` userinfo ureq replays as Basic auth.
-        fn credentialed(&self) -> bool {
-            !self.headers.is_empty() || self.base_url_has_userinfo
+        /// Run one host-authenticated request through the header source,
+        /// in the context of this transport's client and round (one resend
+        /// after a 401). Without a source the request carries no host
+        /// headers and is not resent.
+        fn authenticated<T>(
+            &self,
+            target: HeaderTarget,
+            mut send: impl FnMut(&[(String, String)]) -> Result<T, TransportError>,
+        ) -> Result<T, TransportError> {
+            match &self.headers {
+                Some(source) => source.authenticated(
+                    &HeaderContext {
+                        client_id: self.client_id.clone(),
+                        round: self.round_attempt,
+                        target,
+                    },
+                    send,
+                ),
+                None => send(&[]),
+            }
         }
 
-        /// Apply the per-call bounds to a request: the round's remaining time,
-        /// the drive bound on every socket read and write (each restarts it), and
-        /// a redirect ceiling of zero whenever the request is credential
-        /// bearing or the policy denies redirects. A credential-bearing
-        /// request is refused a redirect under every policy, because ureq
-        /// forwards configured headers to the redirect target.
+        /// Attach host `headers` (`None` for a signed URL, which carries
+        /// none) and apply the per-call bounds: the round's remaining time,
+        /// the drive bound on every socket read and write (each restarts it),
+        /// and a redirect ceiling of zero whenever the request is credential
+        /// bearing or the policy denies redirects. Host headers, base-URL
+        /// userinfo (ureq replays it as Basic auth) and a signed URL are each
+        /// credentials, and a credential-bearing request is refused a redirect
+        /// under every policy, because ureq forwards headers to the redirect
+        /// target.
         fn finish_request<B>(
             &self,
-            req: ureq::RequestBuilder<B>,
-            credentialed: bool,
+            mut req: ureq::RequestBuilder<B>,
+            headers: Option<&[(String, String)]>,
         ) -> Result<ureq::RequestBuilder<B>, TransportError> {
             let timeout = self.round_remaining()?;
+            let credentialed = match headers {
+                None => true,
+                Some(headers) => !headers.is_empty() || self.base_url_has_userinfo,
+            };
+            for (name, value) in headers.unwrap_or_default() {
+                req = req.header(name.as_str(), value.as_str());
+            }
             let follow = self.policy.redirects == RedirectPolicy::Follow && !credentialed;
             Ok(req
                 .config()
@@ -2050,44 +2459,39 @@ mod native {
 
         fn post_sync(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, TransportError> {
             self.check_request_bytes(body.len() as u64)?;
-            let credentialed = self.credentialed();
             let url = format!("{}{}", self.base_url, path);
-            // SSP2 requests carry their own media type (SPEC 1.1); a stock
-            // server answers 415 to anything else.
-            let mut req = self
-                .agent
-                .post(&url)
-                .header("content-type", "application/vnd.syncular.sync.v2");
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let resp = req
-                .send(body)
-                .map_err(|e| http_err("sync request failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes, None)
+            self.authenticated(HeaderTarget::Sync, |headers| {
+                // SSP2 requests carry their own media type (SPEC 1.1); a stock
+                // server answers 415 to anything else.
+                let req = self.finish_request(
+                    self.agent
+                        .post(&url)
+                        .header("content-type", "application/vnd.syncular.sync.v2"),
+                    Some(headers),
+                )?;
+                let resp = req
+                    .send(body)
+                    .map_err(|e| http_err("sync request failed", e))?;
+                read_body(resp, None, self.policy.max_response_bytes, None)
+            })
         }
 
         fn post_operation(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
             self.check_request_bytes(body.len() as u64)?;
-            let credentialed = self.credentialed();
             let url = format!("{}/operations", self.base_url);
-            let mut req = self.agent.post(&url).header(
-                "content-type",
-                "application/vnd.syncular.operations.v1+json",
-            );
-            for (key, value) in &self.headers {
-                req = req.header(key.as_str(), value.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let response = req
-                .send(body)
-                .map_err(|error| http_err("remote operation request failed", error))?;
-            read_body(response, None, self.policy.max_response_bytes, None)
-        }
-
-        pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
-            self.headers = headers;
+            self.authenticated(HeaderTarget::Sync, |headers| {
+                let req = self.finish_request(
+                    self.agent.post(&url).header(
+                        "content-type",
+                        "application/vnd.syncular.operations.v1+json",
+                    ),
+                    Some(headers),
+                )?;
+                let response = req
+                    .send(body)
+                    .map_err(|error| http_err("remote operation request failed", error))?;
+                read_body(response, None, self.policy.max_response_bytes, None)
+            })
         }
 
         pub fn shutdown(&mut self) {
@@ -2332,25 +2736,24 @@ mod native {
             // re-authorizes the download against it (§5.5) and answers
             // `sync.forbidden` when it is missing.
             let url = format!("{}/segments/{}", self.base_url, request.segment_id);
-            let credentialed = self.credentialed();
-            let mut req = self
-                .agent
-                .get(&url)
-                .header("x-syncular-scopes", &request.requested_scopes_json);
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let resp = req
-                .call()
-                .map_err(|error| segment_error(http_err("segment request failed", error)))?;
-            read_body(
-                resp,
-                Some(on_progress),
-                self.policy.max_response_bytes,
-                Some(request.byte_length),
-            )
-            .map_err(segment_error)
+            self.authenticated(HeaderTarget::Segment, |headers| {
+                let req = self.finish_request(
+                    self.agent
+                        .get(&url)
+                        .header("x-syncular-scopes", &request.requested_scopes_json),
+                    Some(headers),
+                )?;
+                let resp = req
+                    .call()
+                    .map_err(|error| segment_error(http_err("segment request failed", error)))?;
+                read_body(
+                    resp,
+                    Some(&mut *on_progress),
+                    self.policy.max_response_bytes,
+                    Some(request.byte_length),
+                )
+                .map_err(segment_error)
+            })
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -2366,7 +2769,7 @@ mod native {
             // state, so a page list downloads on a bounded pool instead of one
             // blocking request after the other: four pages of a paged
             // bootstrap overlap (§5.2). `fork_round` hands each worker the same
-            // agent (a cheap clone) and headers; the round's anchored deadline
+            // agent (a cheap clone) and header source; the round's anchored deadline
             // is copied over explicitly, because a fork starts without one.
             // Every fetch is attempted; the client stops consuming at the
             // first error in wire order.
@@ -2421,7 +2824,7 @@ mod native {
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
-            let req = self.finish_request(self.agent.get(url), true)?;
+            let req = self.finish_request(self.agent.get(url), None)?;
             let resp = req
                 .call()
                 .map_err(|error| segment_error(http_err("segment request failed", error)))?;
@@ -2443,20 +2846,20 @@ mod native {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
             self.check_request_bytes(bytes.len() as u64)?;
-            let credentialed = self.credentialed();
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
-            let mut req = self.agent.put(&url).header(
-                "content-type",
-                media_type.unwrap_or("application/octet-stream"),
-            );
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let resp = req
-                .send(bytes)
-                .map_err(|e| http_err("blob upload failed", e))?;
-            read_body(resp, None, self.policy.max_response_bytes, None)?;
+            self.authenticated(HeaderTarget::Blob, |headers| {
+                let req = self.finish_request(
+                    self.agent.put(&url).header(
+                        "content-type",
+                        media_type.unwrap_or("application/octet-stream"),
+                    ),
+                    Some(headers),
+                )?;
+                let resp = req
+                    .send(bytes)
+                    .map_err(|e| http_err("blob upload failed", e))?;
+                read_body(resp, None, self.policy.max_response_bytes, None)
+            })?;
             Ok(())
         }
 
@@ -2467,60 +2870,15 @@ mod native {
         ) -> Result<BlobDownload, TransportError> {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
-            let credentialed = self.credentialed();
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
-            let mut req = self.agent.get(&url);
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let resp = req.call().map_err(|cause| {
-                let status = match &cause {
-                    ureq::Error::StatusCode(status) => Some(*status),
-                    _ => None,
-                };
-                let mut error = http_err("blob download failed", cause);
-                match status {
-                    Some(404) => {
-                        error.code = "blob.not_found".into();
-                        error.message = "blob not found".into();
-                    }
-                    Some(403) => {
-                        error.code = "blob.forbidden".into();
-                        error.message = "blob download forbidden".into();
-                    }
-                    Some(401) => {
-                        error.code = "sync.auth_required".into();
-                        error.message = "host authentication required".into();
-                    }
-                    _ => {}
-                }
-                error
-            })?;
-            // §5.9.5 always-issue: a JSON body carries a presigned `url`; an
-            // octet-stream body is inline bytes.
-            let is_json = resp
-                .headers()
-                .get(ureq::http::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.contains("application/json"));
-            // A JSON envelope is not the blob body, so the declared size caps
-            // inline bytes only.
-            let stop = byte_length.filter(|_| !is_json);
-            let body = read_body(resp, None, self.policy.max_response_bytes, stop).map_err(
-                |mut error| {
-                    // The blob endpoint keeps its status classification: an
-                    // error body supplies details, but the HTTP status decides
-                    // the code.
-                    let status = error
-                        .details
-                        .as_ref()
-                        .filter(|details| {
-                            details.get("causeKind").and_then(serde_json::Value::as_str)
-                                == Some("status")
-                        })
-                        .and_then(|details| details.get("httpStatus"))
-                        .and_then(serde_json::Value::as_u64);
+            let (is_json, body) = self.authenticated(HeaderTarget::Blob, |headers| {
+                let req = self.finish_request(self.agent.get(&url), Some(headers))?;
+                let resp = req.call().map_err(|cause| {
+                    let status = match &cause {
+                        ureq::Error::StatusCode(status) => Some(*status),
+                        _ => None,
+                    };
+                    let mut error = http_err("blob download failed", cause);
                     match status {
                         Some(404) => {
                             error.code = "blob.not_found".into();
@@ -2534,15 +2892,58 @@ mod native {
                             error.code = "sync.auth_required".into();
                             error.message = "host authentication required".into();
                         }
-                        Some(_) => {
-                            error.code = "transport.failed".into();
-                            error.message = "blob download failed".into();
-                        }
-                        None => {}
+                        _ => {}
                     }
                     error
-                },
-            )?;
+                })?;
+                // §5.9.5 always-issue: a JSON body carries a presigned `url`; an
+                // octet-stream body is inline bytes.
+                let is_json = resp
+                    .headers()
+                    .get(ureq::http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.contains("application/json"));
+                // A JSON envelope is not the blob body, so the declared size caps
+                // inline bytes only.
+                let stop = byte_length.filter(|_| !is_json);
+                let body = read_body(resp, None, self.policy.max_response_bytes, stop).map_err(
+                    |mut error| {
+                        // The blob endpoint keeps its status classification: an
+                        // error body supplies details, but the HTTP status decides
+                        // the code.
+                        let status = error
+                            .details
+                            .as_ref()
+                            .filter(|details| {
+                                details.get("causeKind").and_then(serde_json::Value::as_str)
+                                    == Some("status")
+                            })
+                            .and_then(|details| details.get("httpStatus"))
+                            .and_then(serde_json::Value::as_u64);
+                        match status {
+                            Some(404) => {
+                                error.code = "blob.not_found".into();
+                                error.message = "blob not found".into();
+                            }
+                            Some(403) => {
+                                error.code = "blob.forbidden".into();
+                                error.message = "blob download forbidden".into();
+                            }
+                            Some(401) => {
+                                error.code = "sync.auth_required".into();
+                                error.message = "host authentication required".into();
+                            }
+                            Some(_) => {
+                                error.code = "transport.failed".into();
+                                error.message = "blob download failed".into();
+                            }
+                            None => {}
+                        }
+                        error
+                    },
+                )?;
+                Ok((is_json, body))
+            })?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                     if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -2565,7 +2966,7 @@ mod native {
         ) -> Result<Vec<u8>, TransportError> {
             // §5.9.5: the URL is the entire grant — no host credentials, and
             // the URL capability makes the request credential bearing.
-            let req = self.finish_request(self.agent.get(url), true)?;
+            let req = self.finish_request(self.agent.get(url), None)?;
             let resp = req.call().map_err(|e| http_err("URL fetch failed", e))?;
             read_body(resp, None, self.policy.max_response_bytes, byte_length)
         }
@@ -2583,19 +2984,18 @@ mod native {
             })
             .to_string();
             self.check_request_bytes(body.len() as u64)?;
-            let credentialed = self.credentialed();
-            let mut req = self
-                .agent
-                .post(&url)
-                .header("content-type", "application/json");
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            let req = self.finish_request(req, credentialed)?;
-            let resp = req
-                .send(body)
-                .map_err(|e| http_err("blob upload grant request failed", e))?;
-            let grant_body = read_body(resp, None, self.policy.max_response_bytes, None)?;
+            let grant_body = self.authenticated(HeaderTarget::Blob, |headers| {
+                let req = self.finish_request(
+                    self.agent
+                        .post(&url)
+                        .header("content-type", "application/json"),
+                    Some(headers),
+                )?;
+                let resp = req
+                    .send(body.as_bytes())
+                    .map_err(|e| http_err("blob upload grant request failed", e))?;
+                read_body(resp, None, self.policy.max_response_bytes, None)
+            })?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
                 .map_err(|_| transfer_error("blob upload grant decode failed", "decode", None))?;
             if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -2650,7 +3050,7 @@ mod native {
                         media_type.unwrap_or("application/octet-stream"),
                     )
                     .header("x-amz-checksum-sha256", ssp2::util::base64(&digest)),
-                true,
+                None,
             )?;
             let resp = req
                 .send(bytes)
@@ -2676,7 +3076,8 @@ mod native {
             // fills the mandatory handshake headers (Host / Connection /
             // Upgrade / Sec-WebSocket-Version / Sec-WebSocket-Key); a
             // hand-built `http::Request` is taken as-is and would omit them.
-            // Then layer the configured auth/actor headers on top.
+            // Then layer the header source's auth/actor headers on top; a
+            // handshake answered 401 reads the source again and retries once.
             use tungstenite::client::IntoClientRequest;
             let mut url = url::Url::parse(&self.ws_url)
                 .map_err(|_| transfer_error("realtime URL invalid", "request", None))?;
@@ -2689,21 +3090,6 @@ mod native {
             url.query_pairs_mut()
                 .extend_pairs(retained_query)
                 .append_pair("clientId", client_id);
-            let mut request = url
-                .as_str()
-                .into_client_request()
-                .map_err(|error| ws_err("realtime request failed", error))?;
-            {
-                let out = request.headers_mut();
-                for (k, v) in &self.headers {
-                    if let (Ok(name), Ok(value)) = (
-                        tungstenite::http::HeaderName::try_from(k.as_str()),
-                        tungstenite::http::HeaderValue::try_from(v.as_str()),
-                    ) {
-                        out.insert(name, value);
-                    }
-                }
-            }
             // The bounded establishment never follows a redirect, so a transport configured with
             // `RedirectPolicy::Follow` fails here instead of having the policy silently ignored.
             if self.policy.redirects == RedirectPolicy::Follow {
@@ -2712,7 +3098,22 @@ mod native {
                     None,
                 ));
             }
-            let mut ws = connect_websocket(request, Instant::now() + CONNECT_TIMEOUT)?;
+            let mut ws = self.authenticated(HeaderTarget::Realtime, |headers| {
+                let mut request = url
+                    .as_str()
+                    .into_client_request()
+                    .map_err(|error| ws_err("realtime request failed", error))?;
+                let out = request.headers_mut();
+                for (k, v) in headers {
+                    if let (Ok(name), Ok(value)) = (
+                        tungstenite::http::HeaderName::try_from(k.as_str()),
+                        tungstenite::http::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        out.insert(name, value);
+                    }
+                }
+                connect_websocket(request, Instant::now() + CONNECT_TIMEOUT)
+            })?;
             let stream = match ws.get_mut() {
                 MaybeTlsStream::Plain(stream) => stream.established(),
                 MaybeTlsStream::Rustls(stream) => stream.get_mut().established(),
@@ -2918,6 +3319,14 @@ mod native {
 
         fn set_idle_bound(&mut self, bound: Option<Duration>) {
             self.drive_bound = bound;
+        }
+
+        fn set_client_id(&mut self, client_id: &str) {
+            self.client_id = client_id.to_owned();
+        }
+
+        fn set_round(&mut self, attempt: Option<u64>) {
+            self.round_attempt = attempt;
         }
     }
     #[cfg(test)]
@@ -3974,7 +4383,9 @@ mod tests {
                 detached.realtime_sync(&request)
             });
             entered_rx.recv().unwrap();
-            owner.set_headers(vec![("authorization".into(), "Bearer rotated".into())]);
+            owner.set_header_source(HeaderSource::new(|_, _| {
+                Some(vec![("authorization".into(), "Bearer rotated".into())])
+            }));
             assert!(owner.take_inbound().is_empty());
             if cancelled {
                 owner.shutdown();
@@ -4334,10 +4745,11 @@ mod tests {
                 .unwrap();
                 socket.write_all(&bytes).unwrap();
             });
-            let mut transport = HostTransport::from_config(
-                &serde_json::json!({"baseUrl": base, "headers": {"authorization": "Bearer test"}}),
-            )
-            .unwrap();
+            let mut transport =
+                HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+            transport.set_header_source(HeaderSource::new(|_, _| {
+                Some(vec![("authorization".into(), "Bearer test".into())])
+            }));
             let mut updates = Vec::new();
             let mut progress = |bytes| updates.push(bytes);
             let bytes = if signed {
@@ -4396,13 +4808,10 @@ mod tests {
                 let location = format!("http://{}/landed", destination.local_addr().unwrap());
                 let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                 let host = origin.local_addr().unwrap();
-                let (base, headers) = match credentials {
-                    "headers" => (
-                        format!("http://{host}"),
-                        serde_json::json!({"authorization": "Bearer secret"}),
-                    ),
-                    "userinfo" => (format!("http://user:secret@{host}"), serde_json::json!({})),
-                    _ => (format!("http://:secret@{host}"), serde_json::json!({})),
+                let base = match credentials {
+                    "headers" => format!("http://{host}"),
+                    "userinfo" => format!("http://user:secret@{host}"),
+                    _ => format!("http://:secret@{host}"),
                 };
                 let server = std::thread::spawn(move || {
                     let (mut socket, _) = origin.accept().unwrap();
@@ -4422,9 +4831,13 @@ mod tests {
                 let mut transport = HostTransport::from_config(&serde_json::json!({
                     "baseUrl": base,
                     "redirects": redirects,
-                    "headers": headers,
                 }))
                 .unwrap();
+                if credentials == "headers" {
+                    transport.set_header_source(HeaderSource::new(|_, _| {
+                        Some(vec![("authorization".into(), "Bearer secret".into())])
+                    }));
+                }
                 let error = transport.blob_download("sha256:test", None).unwrap_err();
                 assert_eq!(
                     error.code, "transport.redirect",
@@ -4444,7 +4857,7 @@ mod tests {
 
     #[test]
     fn websocket_handshake_redirects_obey_the_redirect_policy() {
-        // The handshake request carries the configured headers and the realtime
+        // The handshake request carries the header source's headers and the realtime
         // URL's query, so a redirect response is an error and never replays
         // them to the Location. The Location points at a second listener so
         // the test can prove it was never contacted. A `follow` policy cannot
@@ -4484,17 +4897,10 @@ mod tests {
             });
             let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let origin_addr = origin.local_addr().unwrap();
-            let (headers, ws_url) = match credential {
-                "headers" => (serde_json::json!({"authorization": "Bearer secret"}), None),
-                "userinfo" => (
-                    serde_json::json!({}),
-                    Some(format!("ws://user:secret@{origin_addr}/realtime")),
-                ),
-                "query" => (
-                    serde_json::json!({}),
-                    Some(format!("ws://{origin_addr}/realtime?token=secret")),
-                ),
-                _ => (serde_json::json!({}), None),
+            let ws_url = match credential {
+                "userinfo" => Some(format!("ws://user:secret@{origin_addr}/realtime")),
+                "query" => Some(format!("ws://{origin_addr}/realtime?token=secret")),
+                _ => None,
             };
             let (head_tx, head_rx) = std::sync::mpsc::channel();
             let origin_thread = std::thread::spawn(move || {
@@ -4517,13 +4923,17 @@ mod tests {
             });
             let mut config = serde_json::json!({
                 "baseUrl": format!("http://{origin_addr}"),
-                "headers": headers,
                 "redirects": redirects,
             });
             if let Some(ws_url) = &ws_url {
                 config["wsUrl"] = serde_json::json!(ws_url);
             }
             let mut transport = HostTransport::from_config(&config).unwrap();
+            if credential == "headers" {
+                transport.set_header_source(HeaderSource::new(|_, _| {
+                    Some(vec![("authorization".into(), "Bearer secret".into())])
+                }));
+            }
             let result = transport.realtime_connect("c1");
             // Stop the responder even when the redirect was refused; the
             // sentinel is the only connection it may have seen.
@@ -4680,6 +5090,321 @@ mod tests {
         assert_eq!(details["httpStatus"], 400);
         assert_eq!(details["actorId"], "actor-b");
         server.join().unwrap();
+    }
+
+    /// Answer one HTTP request per status, in order, and return each request
+    /// head lowercased. A 401 carries the server's `sync.auth_required` body.
+    fn answer(
+        listener: std::net::TcpListener,
+        statuses: Vec<u16>,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        std::thread::spawn(move || {
+            statuses
+                .into_iter()
+                .map(|status| {
+                    use std::io::Read;
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    let mut head = String::new();
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        let line = line.to_ascii_lowercase();
+                        if let Some(value) = line.strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        head.push_str(&line);
+                    }
+                    reader.read_exact(&mut vec![0; length]).unwrap();
+                    let body = if status == 401 {
+                        r#"{"code":"sync.auth_required","message":"host authentication required"}"#
+                    } else {
+                        "ok"
+                    };
+                    write!(
+                        socket,
+                        "HTTP/1.1 {status} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                    head
+                })
+                .collect()
+        })
+    }
+
+    fn bearer(token: &str) -> Vec<(String, String)> {
+        vec![("authorization".to_owned(), format!("Bearer {token}"))]
+    }
+
+    #[test]
+    fn transport_config_headers_are_refused() {
+        let error = HostTransport::from_config(&serde_json::json!({
+            "baseUrl": "http://127.0.0.1:1",
+            "headers": { "authorization": "Bearer static" }
+        }))
+        .err()
+        .unwrap();
+        assert!(error.starts_with("sync.invalid_request:"), "{error}");
+    }
+
+    #[test]
+    fn each_host_request_reads_its_context_and_signed_urls_carry_no_host_headers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = answer(listener, vec![200; 7]);
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let seen = contexts.clone();
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+        transport.set_header_source(HeaderSource::new(move |context, rejected| {
+            assert!(rejected.is_none());
+            let mut seen = seen.lock().unwrap();
+            seen.push(context.clone());
+            let mut headers = bearer(&(seen.len() - 1).to_string());
+            headers.push(("sentry-trace".into(), format!("trace-{}", seen.len() - 1)));
+            Some(headers)
+        }));
+        transport.set_client_id("c1");
+        transport.set_round(Some(7));
+        transport.sync(b"sync").unwrap();
+        transport
+            .download_segment(
+                &SegmentRequest {
+                    segment_id: "sha256:test".into(),
+                    table: "tasks".into(),
+                    requested_scopes_json: "{}".into(),
+                    byte_length: 1 << 20,
+                },
+                &mut |_| {},
+            )
+            .unwrap();
+        transport.set_round(None);
+        transport.remote_operation(b"operation").unwrap();
+        transport.blob_upload("sha256:test", b"blob", None).unwrap();
+        transport
+            .fetch_url(&format!("{base}/signed-segment"), 1 << 20, &mut |_| {})
+            .unwrap();
+        transport
+            .fetch_blob_url(&format!("{base}/signed-blob"), None)
+            .unwrap();
+        transport
+            .blob_put_url(
+                &format!("sha256:{}", "0".repeat(64)),
+                &format!("{base}/signed-put"),
+                b"blob",
+                None,
+            )
+            .unwrap();
+        let heads = server.join().unwrap();
+        for (index, head) in heads[..4].iter().enumerate() {
+            assert!(
+                head.contains(&format!("authorization: bearer {index}")),
+                "{head}"
+            );
+            assert!(
+                head.contains(&format!("sentry-trace: trace-{index}")),
+                "{head}"
+            );
+        }
+        for head in &heads[4..] {
+            assert!(!head.contains("authorization:"), "{head}");
+            assert!(!head.contains("sentry-trace:"), "{head}");
+        }
+        let context = |round, target| HeaderContext {
+            client_id: "c1".into(),
+            round,
+            target,
+        };
+        assert_eq!(
+            *contexts.lock().unwrap(),
+            vec![
+                context(Some(7), HeaderTarget::Sync),
+                context(Some(7), HeaderTarget::Segment),
+                context(None, HeaderTarget::Sync),
+                context(None, HeaderTarget::Blob),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_source_without_headers_fails_before_the_network() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+        transport.set_header_source(HeaderSource::new(|_, _| None));
+        for error in [
+            transport.sync(b"sync").unwrap_err(),
+            transport
+                .blob_upload("sha256:test", b"blob", None)
+                .unwrap_err(),
+            transport.realtime_connect("c1").unwrap_err(),
+        ] {
+            assert_eq!(error.code, "sync.auth_required");
+            assert_eq!(error.message, "the host header source gave no headers");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind": "header_source" }))
+            );
+        }
+        assert!(
+            matches!(listener.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "no request reaches the server"
+        );
+    }
+
+    #[test]
+    fn a_401_refreshes_the_header_source_and_retries_exactly_once() {
+        // `stale`: the refresh returns the refused token again, so the server
+        // sees exactly two requests and the second 401 surfaces.
+        for stale in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = answer(listener, vec![401, if stale { 401 } else { 200 }]);
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let seen = reads.clone();
+            let mut transport =
+                HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+            transport.set_header_source(HeaderSource::new(move |_, rejected| {
+                seen.lock().unwrap().push(rejected.map(<[_]>::to_vec));
+                Some(bearer(if rejected.is_none() || stale {
+                    "stale"
+                } else {
+                    "fresh"
+                }))
+            }));
+            let result = transport.sync(b"sync");
+            let heads = server.join().unwrap();
+            assert!(heads[0].contains("authorization: bearer stale"));
+            assert_eq!(heads[1].contains("authorization: bearer fresh"), !stale);
+            assert_eq!(*reads.lock().unwrap(), vec![None, Some(bearer("stale"))]);
+            if stale {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, "sync.auth_required");
+                assert_eq!(error.details.unwrap()["httpStatus"], 401);
+            } else {
+                assert_eq!(result.unwrap(), b"ok");
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)]
+    fn a_realtime_handshake_reads_the_header_source_and_retries_a_401_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut refused, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(refused.try_clone().unwrap());
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line.to_ascii_lowercase());
+            }
+            assert!(head.contains("authorization: bearer stale"), "{head}");
+            write!(
+                refused,
+                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let (accepted, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept_hdr(
+                accepted,
+                |request: &tungstenite::handshake::server::Request, response| {
+                    assert_eq!(request.headers()["authorization"], "Bearer fresh");
+                    Ok(response)
+                },
+            )
+            .unwrap();
+            while socket.read().is_ok() {}
+        });
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let seen = reads.clone();
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({ "baseUrl": base })).unwrap();
+        transport.set_header_source(HeaderSource::new(move |_, rejected| {
+            seen.lock().unwrap().push(rejected.map(<[_]>::to_vec));
+            Some(bearer(if rejected.is_none() { "stale" } else { "fresh" }))
+        }));
+        transport.realtime_connect("c1").unwrap();
+        assert_eq!(*reads.lock().unwrap(), vec![None, Some(bearer("stale"))]);
+        transport.shutdown();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reads_of_one_round_share_a_flight_and_other_rounds_and_replicas_fly_alone() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        let source = HeaderSource::new(move |_, _| {
+            let call = counted.fetch_add(1, Ordering::SeqCst);
+            entered_tx.send(()).unwrap();
+            released.lock().unwrap().recv().unwrap();
+            Some(bearer(&call.to_string()))
+        });
+        let read = |client: &str, round: u64, target, rejected: Option<Vec<(String, String)>>| {
+            let source = source.clone();
+            let context = HeaderContext {
+                client_id: client.into(),
+                round: Some(round),
+                target,
+            };
+            std::thread::spawn(move || source.read(&context, rejected.as_deref()).unwrap())
+        };
+        let first = read("c1", 1, HeaderTarget::Sync, None);
+        entered.recv().unwrap();
+        // The same round's segment reads join the sync read's flight.
+        let joined = [
+            read("c1", 1, HeaderTarget::Segment, None),
+            read("c1", 1, HeaderTarget::Segment, None),
+        ];
+        // A refresh, another round and another replica each start a call.
+        // Each starts only after the previous one entered, so the call numbers
+        // follow this order.
+        let others = [
+            ("c1", 1, Some(bearer("0"))),
+            ("c1", 2, None),
+            ("c2", 1, None),
+        ]
+        .into_iter()
+        .map(|(client, round, rejected)| {
+            let reader = read(client, round, HeaderTarget::Sync, rejected);
+            entered.recv().unwrap();
+            reader
+        })
+        .collect::<Vec<_>>();
+        let key = ("c1".to_owned(), Some(1), false);
+        while source.0.state.lock().unwrap()[&key].joined < 2 {
+            std::thread::yield_now();
+        }
+        for _ in 0..4 {
+            release.send(()).unwrap();
+        }
+        assert_eq!(first.join().unwrap(), bearer("0"));
+        for reader in joined {
+            assert_eq!(reader.join().unwrap(), bearer("0"));
+        }
+        for (call, reader) in others.into_iter().enumerate() {
+            assert_eq!(reader.join().unwrap(), bearer(&(call + 1).to_string()));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(
+            source.0.state.lock().unwrap().is_empty(),
+            "landed flights are dropped"
+        );
     }
 }
 
@@ -4955,5 +5680,83 @@ mod local_authority_tests {
             assert_eq!(rows[0].row_id, "t1");
             assert!(rows[0].version >= 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod header_question_tests {
+    use super::*;
+    use std::sync::atomic::AtomicI64;
+
+    fn context() -> HeaderContext {
+        HeaderContext {
+            client_id: "c1".into(),
+            round: None,
+            target: HeaderTarget::Realtime,
+        }
+    }
+
+    #[test]
+    fn an_unanswered_question_fails_once_the_clock_passes_the_bound() {
+        let clock = Arc::new(AtomicI64::new(5_000));
+        let now = clock.clone();
+        let (asked_tx, asked) = mpsc::channel();
+        let questions = HeaderQuestions::new(
+            move |id, context: &HeaderContext, _| {
+                assert_eq!(context.target, HeaderTarget::Realtime);
+                asked_tx.send(id).unwrap()
+            },
+            move || now.load(Ordering::SeqCst),
+        );
+        let source = questions.source();
+        let read = std::thread::spawn(move || source.read(&context(), None));
+        assert_eq!(asked.recv().unwrap(), 1);
+        assert!(questions.is_open(1));
+        clock.store(5_000 + HEADER_ANSWER_WAIT_MS, Ordering::SeqCst);
+        // Past the bound the question is closed even before its waiter wakes.
+        assert!(!questions.is_open(1));
+        questions.recheck();
+        let error = read.join().unwrap().unwrap_err();
+        assert_eq!(error.code, "sync.auth_required");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "causeKind": "header_source" }))
+        );
+        // The late answer is ignored; the next read asks again under a new id.
+        questions.provide(1, &serde_json::json!({})).unwrap();
+        let source = questions.source();
+        let read = std::thread::spawn(move || source.read(&context(), None));
+        assert_eq!(asked.recv().unwrap(), 2);
+        assert_eq!(
+            questions
+                .provide(2, &serde_json::json!({ "x-actor": 7 }))
+                .unwrap_err()
+                .code,
+            "sync.invalid_request"
+        );
+        questions
+            .provide(2, &serde_json::json!({ "x-actor": "a1" }))
+            .unwrap();
+        assert_eq!(
+            read.join().unwrap().unwrap(),
+            vec![("x-actor".to_owned(), "a1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn close_fails_open_and_later_questions() {
+        let (asked_tx, asked) = mpsc::channel();
+        let questions = HeaderQuestions::new(move |id, _, _| asked_tx.send(id).unwrap(), || 0);
+        let source = questions.source();
+        let waiting = source.clone();
+        let read = std::thread::spawn(move || waiting.read(&context(), None));
+        asked.recv().unwrap();
+        questions.close();
+        assert_eq!(read.join().unwrap().unwrap_err().code, "client.closed");
+        assert_eq!(
+            source.read(&context(), None).unwrap_err().code,
+            "client.closed"
+        );
+        assert!(asked.try_recv().is_err(), "a closed source asks nothing");
     }
 }

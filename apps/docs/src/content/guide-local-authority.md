@@ -82,7 +82,7 @@ export const handle = await createSyncClientHandle({
 
 The worker opens the authority in a sibling OPFS file beside the replica and routes every round to it. Without the override, `createSyncClientHandle` rejects with `client.local_authority_unconfigured`. While the authority serves the client, the worker connects no realtime socket. `handle.localAuthorityState()` returns `local`, `attaching`, or `attached`.
 
-`handle.attachLocalAuthority()` holds the client's rounds, uploads the rows with the headers set through `setHeaders`, and then routes rounds to `endpoints.syncUrl`, where the replica rebinds through the log-epoch reset. After attach the authority file keeps only its state, so the page keeps passing `localAuthority: true` and the worker keeps syncing with the remote server. `handle.abandonLocalAuthorityAttach()` rolls a stopped attach back ([When attach stops](#when-attach-stops)).
+`handle.attachLocalAuthority()` holds the client's rounds, uploads the rows with the headers its header source answers, and then routes rounds to `endpoints.syncUrl`, where the replica rebinds through the log-epoch reset. After attach the authority file keeps only its state, so the page keeps passing `localAuthority: true` and the worker keeps syncing with the remote server. `handle.abandonLocalAuthorityAttach()` rolls a stopped attach back ([When attach stops](#when-attach-stops)).
 
 ## In a native app
 

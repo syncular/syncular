@@ -19,6 +19,11 @@ const _serverBase = String.fromEnvironment('SYNCULAR_SERVER',
     defaultValue: 'http://localhost:8787');
 const _listId = 'inbox';
 
+/// The quickstart server authenticates every request without headers.
+Future<Map<String, String>> _noHeaders(
+        Map<String, String>? rejected, SyncularHeaderContext context) async =>
+    const {};
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final dir = await getApplicationSupportDirectory();
@@ -28,7 +33,11 @@ Future<void> main() async {
   final client = SyncularClient.create(
     clientId: 'flutter-demo',
     schema: syncularSchema,
-    config: SyncularConfig(baseUrl: base, dbPath: '${dir.path}/todos.db'),
+    config: SyncularConfig(
+      baseUrl: base,
+      headers: _noHeaders,
+      dbPath: '${dir.path}/todos.db',
+    ),
   );
   client.subscribe(SyncularTodoListSubscription.scopes(listId: _listId));
   runApp(TodoApp(client));

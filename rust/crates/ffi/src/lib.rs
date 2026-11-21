@@ -1,6 +1,6 @@
 //! # syncular-ffi — the Syncular v2 Rust client core as a C-ABI native library
 //!
-//! The POC client crate, packaged for shipping. Five C functions expose the
+//! The POC client crate, packaged for shipping. Seven C functions expose the
 //! whole client over a JSON command surface — the v1-proven bindings shape,
 //! and the SAME `syncular-command` router the conformance shim locks:
 //!
@@ -8,6 +8,9 @@
 //! void*  syncular_client_new(const char* config_json);
 //! char*  syncular_client_command(void* handle, const char* command_json);
 //! char*  syncular_client_poll_event(void* handle, int64_t timeout_ms);
+//! char*  syncular_client_poll_headers(void* handle, int64_t timeout_ms);
+//! char*  syncular_client_provide_headers(void* handle, uint64_t request_id,
+//!                                        const char* headers_json);
 //! void   syncular_client_close(void* handle);
 //! void   syncular_free_string(char* ptr);
 //! ```
@@ -45,10 +48,26 @@
 //! further traffic adds none until a command drains the buffer. The host
 //! answers the event with the `drainRealtime` command.
 //!
+//! ## Request headers
+//!
+//! The transport asks the host for its request headers before every
+//! host-authenticated HTTP request and realtime handshake, on a channel of
+//! its own beside the event queue. `poll_headers` returns each question once,
+//! `{"requestId":n,"rejected":{name:value}|null,"clientId":"..","round":n|null,
+//! "target":"sync"|"segment"|"blob"|"realtime"}`, and the request blocks
+//! until `provide_headers` answers that id with a header object, or `null`
+//! when the host has none. `rejected` carries the headers the server just
+//! answered 401 to; the transport resends that request once with the answer.
+//! `null` headers, or no answer within `HEADER_ANSWER_WAIT_MS` (30 s), fail
+//! the request with the retryable `sync.auth_required`
+//! (`causeKind: "header_source"`). Neither call takes the core lock, so a
+//! header thread answers while a command waits.
+//!
 //! ## Threading
 //!
-//! The event queue sits outside the mutex that guards the client, so one pump
-//! thread may block in `poll_event` while another thread issues commands.
+//! The event queue and the header channel sit outside the mutex that guards
+//! the client, so pump threads may block in `poll_event` and `poll_headers`
+//! while another thread issues commands.
 //! Commands are not concurrent: the host serializes them.
 
 use std::collections::VecDeque;
@@ -58,11 +77,9 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use serde_json::{json, Value};
 use syncular_client::{ClientDiagnosticsSnapshot, SyncClient};
-use syncular_command::{
-    diagnostics_event, dispatch, parse_headers, presence_event, reply, CreateEffects,
-};
+use syncular_command::{diagnostics_event, dispatch, presence_event, reply, CreateEffects};
 
-use syncular_client::native_transport::{HostTransport, Inbound};
+use syncular_client::native_transport::{HeaderContext, HeaderQuestions, HostTransport, Inbound};
 
 /// One client-observable event (§8 realtime signals + §6 conflicts + §1.6
 /// schema floor + §7.3 lease). JSON-able; delivered by `poll_event`.
@@ -71,12 +88,31 @@ struct Event {
     json: Value,
 }
 
-/// The opaque handle behind the `void*`. `poll_event` reads only `queue`;
-/// `command` locks `core`, so a pump thread blocked in `poll_event` never
-/// aliases the state a command mutates.
+/// The opaque handle behind the `void*`. `poll_event` reads only `queue`,
+/// `poll_headers` only `asked`, `provide_headers` only `questions`;
+/// `command` locks `core`, so a pump thread never aliases the state a
+/// command mutates.
 pub struct Handle {
     queue: Arc<EventQueue>,
+    questions: Arc<HeaderQuestions>,
+    asked: Arc<AskedHeaders>,
     core: Mutex<Core>,
+}
+
+/// Header questions not yet handed to `poll_headers`, and the header calls
+/// in progress that `close` waits out.
+#[derive(Default)]
+struct AskedHeaders {
+    state: Mutex<AskedState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct AskedState {
+    questions: VecDeque<Value>,
+    /// Threads inside `poll_headers` or `provide_headers`.
+    pollers: usize,
+    closed: bool,
 }
 
 /// One `SyncClient` instance, its owned transport, and the producer side of the
@@ -192,9 +228,38 @@ impl Handle {
     }
 
     fn new(config: &Value) -> Result<Self, String> {
-        let core = Core::new(config)?;
+        let mut core = Core::new(config)?;
+        let asked = Arc::new(AskedHeaders::default());
+        let asks = asked.clone();
+        let started = std::time::Instant::now();
+        let questions = HeaderQuestions::new(
+            move |id, context: &HeaderContext, rejected| {
+                let question = json!({
+                    "requestId": id,
+                    "clientId": context.client_id,
+                    "round": context.round,
+                    "target": context.target.as_str(),
+                    "rejected": rejected.map(|headers| {
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.clone(), Value::from(value.clone())))
+                            .collect::<serde_json::Map<_, _>>()
+                    }),
+                });
+                asks.state
+                    .lock()
+                    .expect("asked headers lock")
+                    .questions
+                    .push_back(question);
+                asks.changed.notify_all();
+            },
+            move || started.elapsed().as_millis() as i64,
+        );
+        core.transport.set_header_source(questions.source());
         Ok(Handle {
             queue: core.queue.clone(),
+            questions,
+            asked,
             core: Mutex::new(core),
         })
     }
@@ -253,18 +318,6 @@ impl Core {
         if method == "create" {
             self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
-        }
-        if matches!(method, "activateSecurity" | "setHeaders") && result.is_ok() {
-            // The shared router already validated the replacement set. Apply
-            // it before a successful activation's startup sync intent reaches
-            // the host; direct rotation takes effect on the next HTTP request
-            // and the next realtime connection.
-            if let Some(headers) = params
-                .get("headers")
-                .and_then(|value| parse_headers(value).ok())
-            {
-                self.transport.set_headers(headers);
-            }
         }
         // Command-local work is an explicit router effect (mutation and
         // window changes); realtime/retry work is drained from the core queue
@@ -347,7 +400,7 @@ impl Core {
     }
 }
 
-// -- C-ABI surface (the 5 functions kept exactly in sync with rust/ffi.h) ----
+// -- C-ABI surface (the 7 functions kept exactly in sync with rust/ffi.h) ----
 
 /// Turn a Rust string into a heap `char*` the caller frees with
 /// `syncular_free_string`. Never returns null for a valid string.
@@ -446,8 +499,134 @@ pub extern "C" fn syncular_client_poll_event(
     }
 }
 
+/// Poll the next header question, waiting up to `timeout_ms` (negative =
+/// block until one arrives, 0 = non-blocking). Returns a freshly-allocated
+/// `{"requestId": n, "rejected": {name: value} | null, "clientId": "..",
+/// "round": n | null, "target": "sync" | "segment" | "blob" | "realtime"}`
+/// string, or null on
+/// timeout and once `syncular_client_close` has begun. Each question is
+/// returned once, and never after its request failed (past the 30 s bound).
+/// Takes no core lock.
+///
+/// # Safety
+/// `handle` must be a live handle from `syncular_client_new`.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn syncular_client_poll_headers(
+    handle: *mut Handle,
+    timeout_ms: c_longlong,
+) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Safety: non-null per the contract; close waits until this poll returns.
+    let handle = unsafe { &*handle };
+    let asked = &handle.asked;
+    let mut state = asked.state.lock().expect("asked headers lock");
+    state.pollers += 1;
+    let deadline = (timeout_ms > 0)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64));
+    let question = loop {
+        if state.closed {
+            break None;
+        }
+        // A question whose request already failed (bound passed, answered,
+        // or closed) is dropped instead of handed out.
+        if let Some(question) = state.questions.pop_front() {
+            if handle
+                .questions
+                .is_open(question["requestId"].as_u64().expect("question id"))
+            {
+                break Some(question);
+            }
+            continue;
+        }
+        if timeout_ms == 0 {
+            break None;
+        }
+        match deadline {
+            None => state = asked.changed.wait(state).expect("asked headers wait"),
+            Some(deadline) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break None;
+                }
+                state = asked
+                    .changed
+                    .wait_timeout(state, deadline - now)
+                    .expect("asked headers wait")
+                    .0;
+            }
+        }
+    };
+    state.pollers -= 1;
+    asked.changed.notify_all();
+    match question {
+        Some(question) => into_c_string(question.to_string()),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Answer header question `request_id`. `headers_json` is a JSON object of
+/// string values, or `null` (a null pointer counts as `null`) when the host
+/// cannot produce headers. Returns `{"result": {}}`, also for an unknown or
+/// expired id, or `{"error": {"code": "sync.invalid_request", ...}}` for a
+/// malformed answer; the caller frees it with `syncular_free_string`. Takes
+/// no core lock; `close` waits for a call in progress, and a call after
+/// close began answers `{"result": {}}`. Returns null only on a null handle.
+///
+/// # Safety
+/// `handle` must be a live handle from `syncular_client_new`;
+/// `headers_json` a valid NUL-terminated UTF-8 C string or null.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn syncular_client_provide_headers(
+    handle: *mut Handle,
+    request_id: u64,
+    headers_json: *const c_char,
+) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Safety: non-null per the contract; close waits until this call returns.
+    let handle = unsafe { &*handle };
+    {
+        let mut asked = handle.asked.state.lock().expect("asked headers lock");
+        if asked.closed {
+            return into_c_string(json!({ "result": {} }).to_string());
+        }
+        asked.pollers += 1;
+    }
+    let headers = if headers_json.is_null() {
+        Ok(Value::Null)
+    } else {
+        c_str_to_value(headers_json)
+    };
+    let provided = match headers {
+        Ok(headers) => handle
+            .questions
+            .provide(request_id, &headers)
+            .map_err(|error| error.message),
+        Err(_) => Err("provided headers must be JSON".to_owned()),
+    };
+    let reply = match provided {
+        Ok(()) => json!({ "result": {} }),
+        Err(message) => json!({ "error": { "code": "sync.invalid_request", "message": message } }),
+    };
+    handle
+        .asked
+        .state
+        .lock()
+        .expect("asked headers lock")
+        .pollers -= 1;
+    handle.asked.changed.notify_all();
+    into_c_string(reply.to_string())
+}
+
 /// Close a client core, releasing its database, transport, and socket thread.
-/// The handle is invalid after this call.
+/// A command waiting for headers fails with `client.closed` and a blocked
+/// `poll_headers` returns null first, so close never waits on an unanswered
+/// question. The handle is invalid after this call.
 ///
 /// # Safety
 /// `handle` must be a live handle from `syncular_client_new`, closed once.
@@ -457,15 +636,29 @@ pub extern "C" fn syncular_client_close(handle: *mut Handle) {
     if handle.is_null() {
         return;
     }
-    // Safety: reclaim the Box; dropping shuts down the transport/socket.
-    let mut handle = unsafe { Box::from_raw(handle) };
-    handle
+    // Safety: non-null per the contract. Wake header waiters, then wait for
+    // the running command to release the core before shutting it down.
+    let shared = unsafe { &*handle };
+    shared.questions.close();
+    let mut asked = shared.asked.state.lock().expect("asked headers lock");
+    asked.closed = true;
+    shared.asked.changed.notify_all();
+    while asked.pollers > 0 {
+        asked = shared
+            .asked
+            .changed
+            .wait(asked)
+            .expect("asked headers wait");
+    }
+    drop(asked);
+    shared
         .core
-        .get_mut()
+        .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .transport
         .shutdown();
-    drop(handle);
+    // Safety: reclaim the Box; no command holds the core any more.
+    drop(unsafe { Box::from_raw(handle) });
 }
 
 /// Free a string returned by `syncular_client_command` /

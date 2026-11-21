@@ -12,7 +12,7 @@ Match a symptom to its cause and fix.
 | `sync()` returns `{ok: false, errorCode: "transport.unavailable"}` | No `baseUrl`, so the client runs the lean core | Pass `baseUrl`; the outbox keeps the commits until a round succeeds |
 | Writes vanish after relaunch | `dbPath` is nil, so the replica is in memory | Pass a file path under Application Support |
 | `sync-intent` events never arrive | The client is paused, or `onEvent` was set after the events were delivered and dropped | Call `resume()`; set `onEvent` right after construction |
-| New token ignored on the live socket | An open WebSocket keeps its handshake headers | `setHeaders`, then `pause()` and `resume()` |
+| New token ignored on the live socket | An open WebSocket keeps its handshake headers | `pause()` and `resume()`; the reconnect asks the `headers` source |
 | Commands throw `client.closed` | The client was closed or deallocated | Keep one strong reference for the app's lifetime |
 | Client stays paused after the app foregrounds | A connectivity adapter and a scene-phase handler fight over the lifecycle | Use one lifecycle owner; see [Realtime & lifecycle](/platform-swift-realtime/) |
 | `mutate` throws `sync.invalid_request` | An unknown column, a wrong value type, or a missing required column | Match the generated row struct; nothing is recorded |

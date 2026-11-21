@@ -1,8 +1,8 @@
 # Tauri: realtime & lifecycle
 
-Keep the native socket connected, rotate credentials, switch replicas on
+Keep the native socket connected, renew credentials through the header source, switch replicas on
 sign-in, and close the client cleanly. You finish with a supervisor installed on
-the client, header rotation that reaches the live socket, and one replica per
+the client, a header source that renews the bearer, and one replica per
 signed-in actor.
 
 ::meta{for="Developers running the Tauri client across sessions" time="8 minutes" first="platform-tauri-install" spec="1.5 8.4"}
@@ -13,17 +13,17 @@ signed-in actor.
 - **Handshake headers**: The headers the WebSocket sends when it connects.
 :::
 
-:::figure{title="Header rotation" note="HTTP at once, socket on reconnect" ticks}
+:::figure{title="Header source" note="Asked per request, socket on reconnect" ticks}
 <div class="d-row">
-<div class="node hot"><span class="t">setHeaders(full set)</span>Replaces the previous set</div>
+<div class="node hot"><span class="t">header_source(rejected)</span>Answers the full set for one request</div>
 <span class="d-arrow"></span>
 <div class="d-stack">
-<div class="node ok"><span class="t">HTTP</span>Sync rounds, segments, blobs use it from the next call</div>
+<div class="node ok"><span class="t">HTTP</span>Sync rounds, segments, blobs ask before every request</div>
 <div class="node"><span class="t">Live WebSocket</span>Keeps handshake headers until it reconnects</div>
 </div>
 </div>
 
-::caption[To put new credentials on the live socket immediately, call `disconnectRealtime()` then `connectRealtime()` after `setHeaders`.]
+::caption[A live socket keeps its handshake headers. A reconnect asks the source; call `disconnectRealtime()` then `connectRealtime()` to reconnect now.]
 :::
 
 :::::steps
@@ -59,24 +59,28 @@ diagnostics.
 ::checkpoint[`realtimeSupervisorSnapshot(client).phase` reads `connected` once the native socket opens.]
 ::::
 
-::::step{title="Rotate credentials" time="2 min"}
-`SyncularConfig.headers` sets the initial header set at registration. The bridge
-replaces it at runtime:
+::::step{title="Renew credentials" time="2 min"}
+The host app's Rust code passes a `header_source` in `SyncularConfig`. The
+webview has no call that pushes headers:
 
-```ts title="src/auth.ts"
-await client.setHeaders({ authorization: `Bearer ${freshToken}` });
+```rust title="src-tauri/src/lib.rs"
+header_source: Some(HeaderSource::new(|rejected| {
+    Some(vec![("authorization".into(), format!("Bearer {}", token(rejected)))])
+})),
 ```
 
-Pass the full header set each time; it replaces the previous set. HTTP requests
-use the new headers from the next call. The WebSocket sends headers at handshake
-time, so a live socket keeps its old set until it reconnects. To apply the new
-credential now, call `disconnectRealtime()` then `connectRealtime()`.
+The native transport calls the source in the host process before every HTTP
+request and every WebSocket handshake, so a hidden or throttled webview never
+delays a renewal. After a 401 it calls the source once more with the refused
+headers and resends once; a second 401 surfaces the retryable
+`sync.auth_required`. A source that returns `None` fails the request with
+`sync.auth_required` and `causeKind` `header_source`. A live socket keeps its
+handshake headers until it reconnects. To reconnect now, call
+`disconnectRealtime()` then `connectRealtime()`.
 
-To install the current bearer atomically with security activation, use
-`activateSecurity({ encryption, headers })`. Runtime `setHeaders()` requires an
-active client.
+`activateSecurity({ encryption })` takes no headers.
 
-::checkpoint[The next HTTP request carries the new `authorization` header.]
+::checkpoint[The next HTTP request carries the header the Rust source answered.]
 ::::
 
 ::::step{title="Open one replica per actor" time="3 min"}
@@ -108,7 +112,7 @@ a concurrent or repeated `close()` settles when the one native shutdown settles
 and rejects with its error. After `await client.close()`, data and control methods reject with `client.closed`
 before they check security preflight; local listener registration and progress
 reads throw the same code. Dispose host session listeners together with their
-client so a later sign-in cannot rotate a closed replica's headers.
+client so a later sign-in cannot reach a closed replica.
 
 ## Pausing the network
 

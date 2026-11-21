@@ -3,7 +3,14 @@
 // A THIN shim over the syncular-ffi C ABI (rust/ffi.h, linked from
 // Syncular.xcframework via the podspec). It owns the opaque handle, forwards
 // JSON command strings, and pumps `syncular_client_poll_event` on a background
-// queue, emitting each event JSON on the `syncular::event` topic.
+// queue, emitting each event JSON on the `syncular::event` topic. A second
+// pump polls `syncular_client_poll_headers` from create to close and emits each
+// header request on the `syncular::headers` topic.
+//
+// Commands run on a private serial queue, never on the module's method queue:
+// a command can block inside the core until the JS header source answers its
+// header request, and that answer (`provideHeaders`) arrives on the method
+// queue.
 //
 // Everything is JSON strings on the wire (matching the C ABI's char*/char*), so
 // there is zero custom marshaling — the JS layer (src/index.ts) owns parsing and
@@ -14,8 +21,11 @@
 
 @implementation Syncular {
   void *_handle;
+  dispatch_queue_t _commandQueue;
   dispatch_queue_t _pollQueue;
+  dispatch_queue_t _headerQueue;
   BOOL _pumping;
+  BOOL _headerPumping;
 }
 
 RCT_EXPORT_MODULE()
@@ -24,14 +34,17 @@ RCT_EXPORT_MODULE()
   if (self = [super init]) {
     _handle = NULL;
     _pumping = NO;
+    _headerPumping = NO;
+    _commandQueue = dispatch_queue_create("dev.syncular.command", DISPATCH_QUEUE_SERIAL);
     _pollQueue = dispatch_queue_create("dev.syncular.poll", DISPATCH_QUEUE_SERIAL);
+    _headerQueue = dispatch_queue_create("dev.syncular.headers", DISPATCH_QUEUE_SERIAL);
   }
   return self;
 }
 
 // The events this module can emit (the derived client-observable set).
 - (NSArray<NSString *> *)supportedEvents {
-  return @[ @"syncular::event" ];
+  return @[ @"syncular::event", @"syncular::headers" ];
 }
 
 + (BOOL)requiresMainQueueSetup {
@@ -58,32 +71,37 @@ RCT_EXPORT_METHOD(create
                   : (NSString *)createJson resolve
                   : (RCTPromiseResolveBlock)resolve reject
                   : (RCTPromiseRejectBlock)reject) {
-  if (_handle != NULL) {
-    [self stopPump];
-    syncular_client_close(_handle);
-    _handle = NULL;
-  }
-  _handle = syncular_client_new([configJson UTF8String]);
-  if (_handle == NULL) {
-    reject(@"client.failed", @"syncular_client_new returned null", nil);
-    return;
-  }
-  NSString *command =
-      [NSString stringWithFormat:@"{\"method\":\"create\",\"params\":%@}", createJson];
-  char *reply = syncular_client_command(_handle, [command UTF8String]);
-  resolve(takeOwnedString(reply));
+  dispatch_async(_commandQueue, ^{
+    [self closeHandle];
+    void *handle = syncular_client_new([configJson UTF8String]);
+    if (handle == NULL) {
+      reject(@"client.failed", @"syncular_client_new returned null", nil);
+      return;
+    }
+    @synchronized(self) {
+      self->_handle = handle;
+      self->_headerPumping = YES;
+    }
+    [self pumpHeaders];
+    NSString *command =
+        [NSString stringWithFormat:@"{\"method\":\"create\",\"params\":%@}", createJson];
+    char *reply = syncular_client_command(handle, [command UTF8String]);
+    resolve(takeOwnedString(reply));
+  });
 }
 
 RCT_EXPORT_METHOD(command
                   : (NSString *)commandJson resolve
                   : (RCTPromiseResolveBlock)resolve reject
                   : (RCTPromiseRejectBlock)reject) {
-  if (_handle == NULL) {
-    reject(@"client.closed", @"client is closed", nil);
-    return;
-  }
-  char *reply = syncular_client_command(_handle, [commandJson UTF8String]);
-  resolve(takeOwnedString(reply));
+  dispatch_async(_commandQueue, ^{
+    if (self->_handle == NULL) {
+      reject(@"client.closed", @"client is closed", nil);
+      return;
+    }
+    char *reply = syncular_client_command(self->_handle, [commandJson UTF8String]);
+    resolve(takeOwnedString(reply));
+  });
 }
 
 RCT_EXPORT_METHOD(query
@@ -91,28 +109,41 @@ RCT_EXPORT_METHOD(query
                   : (NSString *)paramsJson resolve
                   : (RCTPromiseResolveBlock)resolve reject
                   : (RCTPromiseRejectBlock)reject) {
-  if (_handle == NULL) {
-    reject(@"client.closed", @"client is closed", nil);
-    return;
-  }
-  // The `query` command wraps the SQL + params; the JS side already ensured
-  // paramsJson is a JSON array of driver values.
-  NSString *command = [NSString
-      stringWithFormat:@"{\"method\":\"query\",\"params\":{\"sql\":%@,\"params\":%@}}",
-                       jsonString(sql), paramsJson];
-  char *reply = syncular_client_command(_handle, [command UTF8String]);
-  resolve(takeOwnedString(reply));
+  dispatch_async(_commandQueue, ^{
+    if (self->_handle == NULL) {
+      reject(@"client.closed", @"client is closed", nil);
+      return;
+    }
+    // The `query` command wraps the SQL + params; the JS side already ensured
+    // paramsJson is a JSON array of driver values.
+    NSString *command = [NSString
+        stringWithFormat:@"{\"method\":\"query\",\"params\":{\"sql\":%@,\"params\":%@}}",
+                         jsonString(sql), paramsJson];
+    char *reply = syncular_client_command(self->_handle, [command UTF8String]);
+    resolve(takeOwnedString(reply));
+  });
 }
 
 RCT_EXPORT_METHOD(close
                   : (RCTPromiseResolveBlock)resolve reject
                   : (RCTPromiseRejectBlock)reject) {
-  [self stopPump];
-  if (_handle != NULL) {
-    syncular_client_close(_handle);
-    _handle = NULL;
+  dispatch_async(_commandQueue, ^{
+    [self closeHandle];
+    resolve(nil);
+  });
+}
+
+// Runs on the method queue, outside `_commandQueue`: the command waiting for
+// these headers occupies it. `syncular_client_provide_headers` takes no core
+// lock; holding `self` only keeps `closeHandle` from freeing the handle under
+// it. The core's reply carries nothing the JS source could act on.
+RCT_EXPORT_METHOD(provideHeaders : (double)requestId headersJson : (NSString *)headersJson) {
+  @synchronized(self) {
+    if (_handle != NULL) {
+      takeOwnedString(syncular_client_provide_headers(_handle, (uint64_t)requestId,
+                                                      [headersJson UTF8String]));
+    }
   }
-  resolve(nil);
 }
 
 RCT_EXPORT_METHOD(startEvents) {
@@ -166,12 +197,55 @@ RCT_EXPORT_METHOD(stopEvents) {
   });
 }
 
-- (void)invalidate {
+// -- Header pump ------------------------------------------------------------
+
+// Polls the header channel until `closeHandle` clears `_headerPumping`; it
+// keeps running through `stopEvents`, because a command may need headers
+// while the app is in the background.
+- (void)pumpHeaders {
+  __weak Syncular *weakSelf = self;
+  dispatch_async(_headerQueue, ^{
+    Syncular *strongSelf = weakSelf;
+    while (strongSelf != nil) {
+      @synchronized(strongSelf) {
+        if (!strongSelf->_headerPumping || strongSelf->_handle == NULL) {
+          break;
+        }
+      }
+      char *request = syncular_client_poll_headers(strongSelf->_handle, 25);
+      if (request == NULL) {
+        continue;
+      }
+      NSString *json = takeOwnedString(request);
+      if (json != nil) {
+        [strongSelf sendEventWithName:@"syncular::headers" body:json];
+      }
+    }
+  });
+}
+
+// Stops both pumps, then frees the handle. Runs on `_commandQueue` (or after
+// it drained), so no command is inside the core. The empty block joins the
+// header pump the same way `stopPump` joins the event pump.
+- (void)closeHandle {
   [self stopPump];
-  if (_handle != NULL) {
-    syncular_client_close(_handle);
-    _handle = NULL;
+  @synchronized(self) {
+    _headerPumping = NO;
   }
+  dispatch_sync(_headerQueue, ^{
+  });
+  @synchronized(self) {
+    if (_handle != NULL) {
+      syncular_client_close(_handle);
+      _handle = NULL;
+    }
+  }
+}
+
+- (void)invalidate {
+  dispatch_sync(_commandQueue, ^{
+    [self closeHandle];
+  });
   [super invalidate];
 }
 

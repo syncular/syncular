@@ -103,7 +103,7 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     let config = SyncularConfig(
         baseUrl: "https://api.example.com",
         wsUrl: nil,
-        headers: [:],
+        headers: { _, _ in [:] },
         dbPath: "/tmp/replica.db"
     )
     #expect(config.dbPath == "/tmp/replica.db")
@@ -267,12 +267,113 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     #expect(result["id"]?.stringValue != nil)
 }
 
-@Test func rotatesTransportHeadersWithoutRecreatingTheClient() throws {
-    let client = try makeClient()
+@Test func aClientWithBaseUrlRequiresAHeadersSource() {
+    var caught: SyncularError?
+    do {
+        _ = try SyncularClient(schema: todoSchema(), config: SyncularConfig(baseUrl: "https://api.example.com"))
+    } catch let error as SyncularError { caught = error } catch {}
+    #expect(caught?.code == "client.headers_required")
+}
+
+/// Records each header answer instead of handing it to the core.
+private final class HeaderAnswerClient: SyncularClient {
+    struct Answer: Equatable {
+        let requestId: UInt64
+        let headers: [String: String]?
+    }
+
+    let answers: AsyncStream<Answer>
+    private let answered: AsyncStream<Answer>.Continuation
+
+    init(
+        headers: @escaping @Sendable ([String: String]?, SyncularHeaderContext) async throws -> [String: String],
+        deliveryQueue: DispatchQueue = .main
+    ) throws {
+        let stream = AsyncStream<Answer>.makeStream()
+        answers = stream.stream
+        answered = stream.continuation
+        try super.init(
+            clientId: "swift-headers",
+            schema: todoSchema(),
+            config: SyncularConfig(headers: headers),
+            deliveryQueue: deliveryQueue
+        )
+    }
+
+    override func provideHeaders(requestId: UInt64, headers: [String: String]?) {
+        answered.yield(Answer(requestId: requestId, headers: headers))
+    }
+}
+
+private struct SourceFailure: Error {}
+
+@Test func aHeaderRequestIsAnsweredFromTheSource() async throws {
+    // The source echoes its context into the headers, so the answers show it arrived.
+    let client = try HeaderAnswerClient(headers: { rejected, context in
+        [
+            "authorization": rejected == nil ? "Bearer first" : "Bearer renewed",
+            "x-context": "\(context.clientId) \(context.round.map(String.init) ?? "none") \(context.target)",
+        ]
+    })
     defer { client.close() }
-    try client.setHeaders(["authorization": "Bearer fresh"])
-    let id = try client.subscribe(scopes: ["id": "after-rotation"])
-    #expect(try client.unit(id: id)?["status"]?.stringValue == "active")
+    var answers = client.answers.makeAsyncIterator()
+    client.answerHeaders(#"{"requestId":1,"rejected":null,"clientId":"c1","round":7,"target":"sync"}"#)
+    #expect(await answers.next() == .init(
+        requestId: 1,
+        headers: ["authorization": "Bearer first", "x-context": "c1 7 sync"]
+    ))
+    client.answerHeaders(
+        #"{"requestId":2,"rejected":{"authorization":"Bearer first"},"clientId":"c1","round":null,"target":"realtime"}"#
+    )
+    #expect(await answers.next() == .init(
+        requestId: 2,
+        headers: ["authorization": "Bearer renewed", "x-context": "c1 none realtime"]
+    ))
+}
+
+@Test func aThrowingSourceAnswersNoHeaders() async throws {
+    let client = try HeaderAnswerClient(headers: { _, _ in throw SourceFailure() })
+    defer { client.close() }
+    var answers = client.answers.makeAsyncIterator()
+    client.answerHeaders(#"{"requestId":3,"rejected":null,"clientId":"c1","round":null,"target":"blob"}"#)
+    #expect(await answers.next() == .init(requestId: 3, headers: nil))
+}
+
+@Test func aRequestWithoutContextIsAnsweredWithNoHeaders() async throws {
+    let client = try HeaderAnswerClient(headers: { _, _ in ["authorization": "Bearer unused"] })
+    defer { client.close() }
+    var answers = client.answers.makeAsyncIterator()
+    client.answerHeaders(#"{"requestId":5,"rejected":null,"round":null}"#)
+    #expect(await answers.next() == .init(requestId: 5, headers: nil))
+}
+
+@Test func eventsKeepFlowingWhileASourceIsPending() async throws {
+    let (gate, open) = AsyncStream<Void>.makeStream()
+    let queue = DispatchQueue(label: "syncular.test.pending-source")
+    let client = try HeaderAnswerClient(headers: { _, _ in
+        for await _ in gate { break }
+        return ["authorization": "Bearer late"]
+    }, deliveryQueue: queue)
+    defer { client.close() }
+    var delivered: [String] = []
+    client.onEvent = { delivered.append($0.type) }
+    var answers = client.answers.makeAsyncIterator()
+    client.answerHeaders(#"{"requestId":4,"rejected":null,"clientId":"c1","round":1,"target":"segment"}"#)
+    try client.handleEvent(#"{"type":"presence","scopeKey":"room:1"}"#)
+    queue.sync {}
+    #expect(delivered.contains("presence"))
+    open.yield()
+    #expect(await answers.next() == .init(requestId: 4, headers: ["authorization": "Bearer late"]))
+}
+
+@Test func addEncryptionKeysSendsHexKeysByKeyId() throws {
+    let client = try StubbedReplyClient(clientId: "swift-keys", schema: todoSchema())
+    defer { client.close() }
+    client.replies["addEncryptionKeys"] = .object([:])
+    try client.addEncryptionKeys(["practice-v2": [0x00, 0xab, 0x10]])
+    #expect(client.sent["addEncryptionKeys"] == .object([
+        "keys": .object(["practice-v2": .object(["$bytes": .string("00ab10")])]),
+    ]))
 }
 
 @Test func connectivityAdapterPausesResumesAndDetaches() throws {
@@ -291,9 +392,14 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
 /// `create` in `init` included) reaches the core.
 private final class StubbedReplyClient: SyncularClient {
     var replies: [String: JSONValue] = [:]
+    /// The params of the last stubbed call per method.
+    var sent: [String: JSONValue] = [:]
 
     override func command(method: String, params: JSONValue) throws -> JSONValue {
-        if let reply = replies[method] { return reply }
+        if let reply = replies[method] {
+            sent[method] = params
+            return reply
+        }
         return try super.command(method: method, params: params)
     }
 }

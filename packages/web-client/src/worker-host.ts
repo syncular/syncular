@@ -193,12 +193,6 @@ export interface SyncClientHandleConfig {
   readonly schema: ClientSchema;
   readonly database: WorkerDatabaseInit;
   readonly endpoints: WorkerEndpoints;
-  /**
-   * Host auth headers for sync, segment, and blob requests (e.g.
-   * `Authorization`). Rotate with `setHeaders`. Realtime authenticates
-   * through `realtimeUrl`, because WebSockets cannot carry headers.
-   */
-  readonly headers?: Readonly<Record<string, string>>;
   /** Structured-clone-safe E2EE keyring installed only in the leader worker. */
   readonly encryption?: EncryptionKeyringConfig;
   /** Fixed plain authority reads permitted before security activation. */
@@ -884,19 +878,6 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('fetchBlob', [blobIdOrRef]);
   }
 
-  /**
-   * Replace the full host auth header set. The next HTTP request uses it;
-   * a live realtime socket keeps its handshake credentials. A follower
-   * forwards to the leader and keeps the set for its own promotion.
-   */
-  setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
-    this.__headers = headers;
-    return this.#call('setHeaders', [headers]);
-  }
-
-  /** @internal — the latest `setHeaders` set, carried into a promotion. */
-  __headers: Readonly<Record<string, string>> | undefined;
-
   /** Sever/restore transport + realtime inside the worker (demos). */
   setOffline(offline: boolean): Promise<void> {
     return this.#call('setOffline', [offline]);
@@ -1077,15 +1058,11 @@ async function startWorkerCore(options: {
   }
 }
 
-function buildInitConfig(
-  config: SyncClientHandleConfig,
-  headers = config.headers,
-): WorkerInitConfig {
+function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
   return {
     schema: config.schema,
     database: config.database,
     endpoints: config.endpoints,
-    ...(headers !== undefined ? { headers } : {}),
     ...(config.encryption !== undefined
       ? { encryption: config.encryption }
       : {}),
@@ -1206,12 +1183,8 @@ export async function createSyncClientHandle(
     lead: async (context) => {
       const core = await startWorkerCore({
         config: resolvedConfig,
-        // A promoted tab carries the latest `setHeaders` set.
         initConfig: {
-          ...buildInitConfig(
-            resolvedConfig,
-            handleRef.handle?.__headers ?? resolvedConfig.headers,
-          ),
+          ...buildInitConfig(resolvedConfig),
           ...(context.takeover ? { takeOverStorage: true } : {}),
         },
         lease: context.lease,

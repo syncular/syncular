@@ -1145,21 +1145,40 @@ test('a host scope refresh crosses the worker to the handle (§8.7)', async () =
   await handle.disconnectRealtime();
 });
 
-test('host auth headers reach /sync and rotate through setHeaders', async () => {
-  const { handle } = await makeHandle({
-    clientId: 'rpc-auth',
-    autoSync: false,
-    headers: { Authorization: 'Bearer expired' },
-  });
-  const seenBefore = http.syncAuthorizations.length;
-  await expectRejectsWithCode(handle.sync(), 'sync.auth_required');
+test('the in-worker header source renews after a 401 and a stale source fails after one retry', async () => {
+  const channel = new BroadcastChannel('auth-worker');
+  const asked: (string | null)[] = [];
+  let renewed = 'Bearer fresh';
+  channel.onmessage = (event: MessageEvent<string | null>) => {
+    asked.push(event.data);
+    channel.postMessage(event.data === null ? 'Bearer expired' : renewed);
+  };
+  try {
+    const { handle } = await makeHandle({
+      clientId: 'rpc-auth',
+      autoSync: false,
+      worker: () =>
+        new Worker(new URL('./auth-worker.ts', import.meta.url).href),
+    });
+    const seenBefore = http.syncAuthorizations.length;
+    await handle.sync();
+    expect(asked).toEqual([null, 'Bearer expired']);
+    expect(http.syncAuthorizations.slice(seenBefore)).toEqual([
+      'Bearer expired',
+      'Bearer fresh',
+    ]);
 
-  await handle.setHeaders({ Authorization: 'Bearer fresh' });
-  await handle.sync();
-  expect(http.syncAuthorizations.slice(seenBefore)).toEqual([
-    'Bearer expired',
-    'Bearer fresh',
-  ]);
+    // A source that renews to the refused token: exactly two requests.
+    renewed = 'Bearer expired';
+    const seenStale = http.syncAuthorizations.length;
+    await expectRejectsWithCode(handle.sync(), 'sync.auth_required');
+    expect(http.syncAuthorizations.slice(seenStale)).toEqual([
+      'Bearer expired',
+      'Bearer expired',
+    ]);
+  } finally {
+    channel.close();
+  }
 });
 
 test('offline gate queues, reconnect drains through the worker', async () => {
@@ -1817,19 +1836,11 @@ test('a profiled development worker keeps auth headers current and reports to th
   const { handle } = await makeHandle({
     clientId: 'rpc-profiled',
     autoSync: false,
-    headers: { Authorization: 'Bearer expired' },
     worker: () =>
       new Worker(new URL('./profiler-worker.ts', import.meta.url).href),
   });
   const client = page.client(handle);
-  const seenBefore = http.syncAuthorizations.length;
-  await expectRejectsWithCode(client.sync(), 'sync.auth_required');
-  await client.setHeaders({ Authorization: 'Bearer fresh' });
   await client.sync();
-  expect(http.syncAuthorizations.slice(seenBefore)).toEqual([
-    'Bearer expired',
-    'Bearer fresh',
-  ]);
   await client.querySnapshot({
     sql: 'SELECT 1 AS one',
     owner: { id: 'one', tables: [] },

@@ -64,7 +64,7 @@ pub struct SyncularCore {
 }
 
 impl SyncularCore {
-    /// Build a core from the plugin config JSON (`baseUrl`, `headers`, …). A
+    /// Build a core from the plugin config JSON (`baseUrl`, `wsUrl`, …). A
     /// `baseUrl` under the `native-transport` feature owns a real HTTP+WS
     /// transport; without it the core is client-local only (tests, offline).
     pub fn new(config: &Value) -> Result<Self, String> {
@@ -135,13 +135,6 @@ impl SyncularCore {
             method,
             &params,
         );
-        if result.is_ok() && matches!(method, "activateSecurity" | "setHeaders") {
-            if let Some(headers) = params.get("headers") {
-                self.set_headers(
-                    syncular_command::parse_headers(headers).expect("router validated headers"),
-                );
-            }
-        }
         if method == "create" && result.is_ok() {
             self.progress_subscription = self.client.as_ref().and_then(|client| {
                 self.progress_listener.clone().map(|listener| {
@@ -398,11 +391,10 @@ impl SyncularCore {
         self.queue.drain(..).collect()
     }
 
-    /// Replace the transport's request headers. Rotating
-    /// auth without tearing the plugin down). See
-    /// `HostTransport::set_headers` for the HTTP/WS pickup semantics.
-    pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
-        self.transport.set_headers(headers);
+    /// Install the app's header source on the owned transport (see
+    /// `HostTransport::set_header_source`).
+    pub fn set_header_source(&mut self, source: transport::HeaderSource) {
+        self.transport.set_header_source(source);
     }
 
     /// Release the socket/reader thread. Idempotent.

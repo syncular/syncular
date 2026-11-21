@@ -50,6 +50,8 @@ import type {
   CodecDriver,
   CodecRoundtrip,
   DriverAdminClient,
+  DriverAuth,
+  DriverHeaderContext,
   DriverChangeBatch,
   DriverCommitDelivery,
   DriverCommitOutcome,
@@ -285,6 +287,8 @@ class ShimProcess {
     { resolve: (value: JsonValue) => void; reject: (error: Error) => void }
   >();
   readonly #endpoints: ClientEndpoints | undefined;
+  /** §1.1 header source and authentication stand-in of an `auth` client. */
+  readonly #auth: DriverAuth | undefined;
   #connection:
     | Awaited<ReturnType<ClientEndpoints['connectRealtime']>>
     | undefined;
@@ -302,8 +306,13 @@ class ShimProcess {
   #buffer = '';
   #closed = false;
 
-  constructor(binaryPath: string, endpoints?: ClientEndpoints) {
+  constructor(
+    binaryPath: string,
+    endpoints?: ClientEndpoints,
+    auth?: DriverAuth,
+  ) {
     this.#endpoints = endpoints;
+    this.#auth = auth;
     this.#proc = Bun.spawn({
       cmd: [binaryPath],
       stdin: 'pipe',
@@ -344,6 +353,31 @@ class ShimProcess {
     } catch {
       return; // tolerate garbled lines
     }
+    if (message.method === 'headersNeeded' && this.#auth !== undefined) {
+      // §1.1: the core asks the host's header source; the answer goes back
+      // through provideHeaders, which the shim takes off its stdin thread.
+      const auth = this.#auth;
+      const { requestId, rejected, clientId, round, target } =
+        message.params ?? {};
+      void auth
+        .headers(
+          typeof rejected === 'object' && rejected !== null
+            ? (rejected as Record<string, string>)
+            : undefined,
+          {
+            clientId: String(clientId),
+            round: typeof round === 'number' ? round : null,
+            target: target as DriverHeaderContext['target'],
+          },
+        )
+        .then((headers) =>
+          this.call('provideHeaders', {
+            requestId: requestId ?? null,
+            headers: { ...headers },
+          }),
+        );
+      return;
+    }
     if (typeof message.method === 'string') {
       // A shim → host transport request (the inversion): answer it.
       void this.#handleShimRequest(
@@ -381,6 +415,25 @@ class ShimProcess {
     method: string,
     params: Record<string, JsonValue>,
   ): Promise<void> {
+    // §1.1 authentication stand-in: a refused header set answers HTTP 401.
+    const headers = params.headers;
+    if (
+      this.#auth !== undefined &&
+      typeof headers === 'object' &&
+      headers !== null &&
+      !Array.isArray(headers) &&
+      !this.#auth.accepts(headers as Record<string, string>)
+    ) {
+      this.#write({
+        id,
+        error: {
+          code: 'sync.auth_required',
+          message: 'authentication required',
+          details: { httpStatus: 401, retryable: true },
+        },
+      });
+      return;
+    }
     try {
       const result = await this.#dispatchEndpoint(method, params);
       this.#write({ id, result });
@@ -1560,6 +1613,9 @@ class RustClientInstance implements ClientInstance {
           },
     );
   }
+  async setClock(nowMs: number): Promise<void> {
+    await this.#shim.call('setClock', { nowMs });
+  }
   async addEncryptionKeys(keys: DriverEncryptionConfig['keys']): Promise<void> {
     await this.#shim.call('addEncryptionKeys', {
       keys: Object.fromEntries(
@@ -2058,7 +2114,7 @@ export const rustClientDriver: ClientDriver = {
   name: 'rust-client(rusqlite)',
   async create(options: ClientCreateOptions): Promise<ClientInstance> {
     const binary = ensureRustShim();
-    const shim = new ShimProcess(binary, options.endpoints);
+    const shim = new ShimProcess(binary, options.endpoints, options.auth);
     // RFC 0005: retained context lives in a sibling file, so the feature needs
     // a file-backed replica. Only an enabled scenario gets a temp replica; the
     // default stays the shim's in-memory core.
@@ -2088,6 +2144,7 @@ export const rustClientDriver: ClientDriver = {
       // client clock for the urlExpiresAtMs check.
       signedUrls: options.endpoints.fetchSegmentUrl !== undefined,
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.auth !== undefined ? { auth: true } : {}),
       ...(options.syncClockStepMs !== undefined
         ? { syncClockStepMs: options.syncClockStepMs }
         : {}),

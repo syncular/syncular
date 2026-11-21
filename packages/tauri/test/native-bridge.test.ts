@@ -53,7 +53,11 @@ interface HarnessResponse {
   readonly events: readonly unknown[];
 }
 
-function nativeTauri(baseUrl?: string): {
+/** `headers` stands in for the host app's Rust header source (§1.1). */
+function nativeTauri(
+  baseUrl?: string,
+  headers?: Readonly<Record<string, string>>,
+): {
   readonly api: TauriApi;
   readonly calls: Array<{
     readonly cmd: string;
@@ -62,11 +66,16 @@ function nativeTauri(baseUrl?: string): {
   exec(sql: string): Promise<void>;
   close(): Promise<void>;
 } {
-  const process = Bun.spawn(baseUrl ? [binary, baseUrl] : [binary], {
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'inherit',
-  });
+  const process = Bun.spawn(
+    baseUrl === undefined
+      ? [binary]
+      : [binary, baseUrl, ...(headers ? [JSON.stringify(headers)] : [])],
+    {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'inherit',
+    },
+  );
   const listeners = new Set<(message: unknown) => void>();
   const pending = new Map<
     number,
@@ -117,24 +126,16 @@ function nativeTauri(baseUrl?: string): {
       const actual = args ?? {};
       calls.push({ cmd, args: actual });
       const response = await request(
-        cmd.endsWith('syncular_set_headers')
+        cmd.endsWith('syncular_query_snapshot')
           ? {
-              kind: 'command',
-              command: {
-                method: 'setHeaders',
-                params: { headers: actual.headers },
-              },
+              kind: 'snapshot',
+              sql: actual.sql,
+              params: actual.params,
+              coverage: actual.coverage,
             }
-          : cmd.endsWith('syncular_query_snapshot')
-            ? {
-                kind: 'snapshot',
-                sql: actual.sql,
-                params: actual.params,
-                coverage: actual.coverage,
-              }
-            : cmd.endsWith('syncular_query')
-              ? { kind: 'query', sql: actual.sql, params: actual.params }
-              : { kind: 'command', command: actual.command },
+          : cmd.endsWith('syncular_query')
+            ? { kind: 'query', sql: actual.sql, params: actual.params }
+            : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
         for (const listener of listeners) listener(payload);
@@ -454,7 +455,7 @@ if (!available) {
       }
     });
 
-    test('closed native transport allows security activation and consecutive local writes before fresh bearer resume', async () => {
+    test('closed native transport allows security activation and consecutive local writes before the transport resumes', async () => {
       const source = makeServer(schema);
       source.allowed['actor-1'] = { list_id: ['one'] };
       const calls: string[] = [];
@@ -486,7 +487,9 @@ if (!available) {
           );
         },
       });
-      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`, {
+        authorization: 'Bearer fresh',
+      });
       const client = await createTauriSyncClient({
         schema,
         securityPreflight: true,
@@ -529,7 +532,6 @@ if (!available) {
           code: 'sync.offline',
         });
         expect(calls).toEqual([]);
-        await client.setHeaders({ authorization: 'Bearer fresh' });
         await client.setOffline(false);
         await client.syncUntilIdle();
         expect(await client.pendingCommits()).toEqual([]);
@@ -1587,11 +1589,9 @@ if (!available) {
           replacement.query('SELECT id FROM todos'),
         ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
 
-        // Activation carries the fresh header set atomically and releases
-        // the gate; a plain create behaves as before afterwards.
-        await replacement.activateSecurity({
-          headers: { authorization: 'Bearer post-preflight' },
-        });
+        // Activation releases the gate; a plain create behaves as before
+        // afterwards.
+        await replacement.activateSecurity();
         expect(await replacement.securityLifecycle()).toBe('active');
         expect(await replacement.query('SELECT id FROM todos')).toEqual([]);
         await replacement.close();

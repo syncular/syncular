@@ -9,7 +9,7 @@ import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
 
 /**
- * The FFM (java.lang.foreign, JDK 22+) binding to the five C functions of the
+ * The FFM (java.lang.foreign, JDK 22+) binding to the seven C functions of the
  * syncular-ffi native core (rust/ffi.h). ZERO native-glue code — no JNI C shim,
  * no cbindgen: pure Panama downcalls. This keeps the Kotlin wrapper as thin as
  * the Swift one.
@@ -20,7 +20,7 @@ import java.lang.invoke.MethodHandle
  * is how a packaged app ships it (jniLibs on Android, a bundled resource on the
  * JVM).
  *
- * Marshaling contract: all five functions take/return C strings. We copy Kotlin
+ * Marshaling contract: all seven functions take/return C strings. We copy Kotlin
  * strings into a per-call [Arena] as UTF-8, call, then copy the returned C
  * string back out and free it with `syncular_free_string` — never the platform
  * `free`. Returned strings are heap-owned by the library.
@@ -31,6 +31,8 @@ internal object SyncularFfi {
     private val hNew: MethodHandle
     private val hCommand: MethodHandle
     private val hPollEvent: MethodHandle
+    private val hPollHeaders: MethodHandle
+    private val hProvideHeaders: MethodHandle
     private val hClose: MethodHandle
     private val hFreeString: MethodHandle
 
@@ -50,6 +52,8 @@ internal object SyncularFfi {
         hNew = downcall("syncular_client_new", FunctionDescriptor.of(ptr, ptr))
         hCommand = downcall("syncular_client_command", FunctionDescriptor.of(ptr, ptr, ptr))
         hPollEvent = downcall("syncular_client_poll_event", FunctionDescriptor.of(ptr, ptr, long))
+        hPollHeaders = downcall("syncular_client_poll_headers", FunctionDescriptor.of(ptr, ptr, long))
+        hProvideHeaders = downcall("syncular_client_provide_headers", FunctionDescriptor.of(ptr, ptr, long, ptr))
         hClose = downcall("syncular_client_close", FunctionDescriptor.ofVoid(ptr))
         hFreeString = downcall("syncular_free_string", FunctionDescriptor.ofVoid(ptr))
     }
@@ -82,6 +86,21 @@ internal object SyncularFfi {
     fun clientPollEvent(handle: MemorySegment, timeoutMs: Long): String? {
         val event = hPollEvent.invokeExact(handle, timeoutMs) as MemorySegment
         return takeOwnedString(event)
+    }
+
+    /** `syncular_client_poll_headers(handle, timeoutMs)` → header request JSON (owned; freed here), or null. Takes no core lock. */
+    fun clientPollHeaders(handle: MemorySegment, timeoutMs: Long): String? {
+        val request = hPollHeaders.invokeExact(handle, timeoutMs) as MemorySegment
+        return takeOwnedString(request)
+    }
+
+    /** `syncular_client_provide_headers(handle, requestId, headersJson)` → reply JSON (owned; freed here). Takes no core lock. */
+    fun clientProvideHeaders(handle: MemorySegment, requestId: Long, headersJson: String): String? {
+        Arena.ofConfined().use { arena ->
+            val headers = arena.allocateFrom(headersJson)
+            val reply = hProvideHeaders.invokeExact(handle, requestId, headers) as MemorySegment
+            return takeOwnedString(reply)
+        }
     }
 
     /** `syncular_client_close(handle)`. */

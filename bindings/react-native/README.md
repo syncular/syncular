@@ -64,9 +64,12 @@ import { schema } from './syncular.generated';
 const client = await createNativeSyncClient({
   schema,
   baseUrl: 'https://your.server/sync', // engages the native transport
+  // Required with baseUrl. `rejected` holds the headers a 401 refused;
+  // `context` names the clientId, round and target of the request.
+  headers: async (rejected, context) => ({
+    Authorization: `Bearer ${await auth.token({ refresh: rejected !== undefined })}`,
+  }),
 });
-
-await client.setHeaders({ Authorization: `Bearer ${freshToken}` });
 
 // Every @syncular/react hook works unchanged:
 <SyncProvider client={client}>{/* … */}</SyncProvider>;
@@ -77,6 +80,19 @@ const text = await client.crdtText('notes', 'n1', 'doc');
 await client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 await client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
+
+`headers` is the header source of the native transport, and a client with
+`baseUrl` requires one (`client.headers_required` otherwise). The core asks
+for headers before a host-authenticated HTTP request or realtime handshake,
+one request at a time. The native module polls the core's header channel from
+`create` to `close` (`pause()` included) and emits each request on the
+`syncular::headers` topic; the bridge calls the source on the JS thread and
+hands the result to the native module's `provideHeaders`. After a 401 or a realtime auth close the core asks once
+more with the refused headers as `rejected`; return renewed credentials
+there. A throw or rejection, or no answer within 30 s, fails the request with
+retryable `sync.auth_required`. The native modules run commands on their own
+serial queue, so a command waiting for headers leaves the module's method
+queue free for `provideHeaders`.
 
 To start without a server (SPEC §12), pass `localAuthorityPath` and `baseUrl`.
 `client.localAuthorityState()` resolves to `'local' | 'attaching' | 'attached' | null`;

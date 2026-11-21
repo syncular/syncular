@@ -1,7 +1,7 @@
 # syncular · Kotlin/JVM bindings
 
 An idiomatic Kotlin/JVM wrapper over the **syncular-ffi** C-ABI native core (the
-five functions in [`rust/ffi.h`](../../rust/ffi.h)), via **FFM**
+seven functions in [`rust/ffi.h`](../../rust/ffi.h)), via **FFM**
 (`java.lang.foreign`, JDK 22+). A `SyncularClient` owns the opaque handle,
 marshals JSON commands, offers typed conveniences over the common command set,
 and runs the `poll_event` loop on a background thread delivering to a listener.
@@ -19,7 +19,7 @@ function. See [`SyncularFfi.kt`](src/main/kotlin/dev/syncular/SyncularFfi.kt).
 Why FFM over JNA:
 
 - **Zero native-glue code.** No JNI C shim, no cbindgen, no second build step —
-  the five downcalls are pure Java/Kotlin. JNA would also avoid a C shim but adds
+  the seven downcalls are pure Java/Kotlin. JNA would also avoid a C shim but adds
   a runtime dependency and reflection-based marshaling; FFM is in the JDK and is
   faster (direct downcall handles).
 - **The ONLY runtime surface is the JDK.** No third-party jar. Even the JSON is
@@ -41,6 +41,9 @@ val client = SyncularClient.create(
     schema = schemaJson,                      // JsonValue from your generated schema
     config = SyncularConfig(
         baseUrl = "https://your.server/sync", // engages native transport
+        headers = { rejected, context ->      // required with baseUrl
+            mapOf("Authorization" to "Bearer ${auth.token(refresh = rejected != null)}")
+        },
         dbPath = "$appData/syncular.db",      // file-backed persistence
     ),
 )
@@ -78,9 +81,24 @@ share: `{method, params}` in, `{result|error}` out, bytes as `{"$bytes":"<hex>"}
 `readRows` returns RowState objects (`{rowId, version, values}`; `version == -1`
 = optimistic/offline); `query` returns flat SQL rows.
 
-Call `setHeaders(mapOf("Authorization" to "Bearer $token"))` after credential
-rotation. HTTP requests use the new headers immediately. Reconnect realtime to
-repeat the WebSocket handshake with them.
+`SyncularConfig.headers` is the header source (`SyncularHeaderSource`) of the
+native transport, and a client with `baseUrl` requires one
+(`client.headers_required` otherwise). The core calls it before a
+host-authenticated HTTP request or realtime handshake, one call at a time.
+After a 401 or a realtime auth close it calls the source once more with the
+refused headers as `rejected`; return renewed credentials there. The second
+argument, `SyncularHeaderContext`, carries the `clientId`, the sync `round`
+(the `attempt` progress reports; null outside a round) and the `target` of
+the request: `"sync"`, `"segment"`, `"blob"` or `"realtime"`. The client
+polls the core's header channel (`syncular_client_poll_headers`) on its own
+thread from `create` to `close()`, `pause()` included, and calls the source on
+a further thread while the command that needs the headers blocks, so the
+source may block on a token refresh but must not wait for the thread that
+issued that command. A thrown exception, or no answer within 30 s, fails the request with
+retryable `sync.auth_required`.
+
+`addEncryptionKeys(mapOf("<keyId>" to keyBytes))` adds keys to the active
+encryption keyring and keeps the keys already in it.
 
 ## Local authority
 

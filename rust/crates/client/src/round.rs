@@ -218,6 +218,7 @@ impl PreparedSyncRound {
             }
         }
         transport.set_round_deadline(self.round_deadline_at);
+        transport.set_round(Some(self.attempt));
         transport.set_idle_bound(
             self.idle_bound
                 .map(|(ms, _)| std::time::Duration::from_millis(ms)),
@@ -275,6 +276,7 @@ impl PreparedSyncRound {
                 .expect("the exchange answers its own operation");
         }
         transport.set_round_deadline(None);
+        transport.set_round(None);
         transport.set_idle_bound(None);
         self.finish().expect("the exchange completed the round")
     }
@@ -1206,6 +1208,74 @@ mod tests {
             }
             other => panic!("expected the byteLength cap to fail the round, got {other:?}"),
         }
+    }
+
+    /// Records the round each `set_round` scopes and the one `sync` runs in.
+    #[derive(Default)]
+    struct RoundRecorder {
+        round: Option<u64>,
+        scoped: Vec<Option<u64>>,
+        sync_round: Option<Option<u64>>,
+    }
+
+    impl Transport for RoundRecorder {
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync_round = Some(self.round);
+            Err(TransportError::new("transport.failed", "recorded"))
+        }
+        fn realtime_sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn download_segment(
+            &mut self,
+            _: &SegmentRequest,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn realtime_connect(&mut self, _client_id: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn set_round(&mut self, attempt: Option<u64>) {
+            self.round = attempt;
+            self.scoped.push(attempt);
+        }
+    }
+
+    #[test]
+    fn a_round_names_its_progress_attempt_to_the_transport_and_clears_it() {
+        let schema = serde_json::json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client =
+            SyncClient::new("round-attempt".into(), &schema, Default::default()).unwrap();
+        client
+            .set_meta(crate::client::LOG_EPOCH_KEY, "epoch")
+            .unwrap();
+        client
+            .subscribe(crate::UnitScopes::from([(
+                "project_id".into(),
+                "p1".into(),
+            )]))
+            .unwrap();
+        let mut transport = RoundRecorder::default();
+        for _ in 0..2 {
+            client.sync(&mut transport);
+            let attempt = client.progress().snapshot().unwrap().attempt;
+            assert_eq!(transport.sync_round, Some(Some(attempt)));
+            assert_eq!(transport.scoped.last(), Some(&None));
+        }
+        assert_ne!(
+            transport.scoped[0],
+            transport.scoped[transport.scoped.len() - 2]
+        );
     }
 
     /// Records each single fetch the default batch runs and fails the second.

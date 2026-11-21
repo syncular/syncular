@@ -1,5 +1,5 @@
-// dart:ffi bindings over the syncular-ffi C-ABI native core — the five
-// functions in rust/ffi.h, hand-written (no ffigen; the surface is five
+// dart:ffi bindings over the syncular-ffi C-ABI native core — the seven
+// functions in rust/ffi.h, hand-written (no ffigen; the surface is seven
 // functions of C strings, so codegen would add a dev-time dependency and a
 // generated file for zero clarity). Kept in sync with rust/ffi.h; check.sh
 // diffs the vendored header copy against rust/ffi.h and fails on drift, so
@@ -9,13 +9,16 @@
 //   void*  syncular_client_new(const char* config_json);
 //   char*  syncular_client_command(void* handle, const char* command_json);
 //   char*  syncular_client_poll_event(void* handle, int64_t timeout_ms);
+//   char*  syncular_client_poll_headers(void* handle, int64_t timeout_ms);
+//   char*  syncular_client_provide_headers(void* handle, uint64_t request_id,
+//                                          const char* headers_json);
 //   void   syncular_client_close(void* handle);
 //   void   syncular_free_string(char* ptr);
 //
 // All strings are UTF-8, NUL-terminated. Strings RETURNED by command/
 // poll_event are heap-owned by the library and MUST be released with
-// syncular_free_string (never Dart's free) — SyncularFfi.commandString and
-// pollEventString do exactly this before returning a Dart String.
+// syncular_free_string (never Dart's free); every SyncularFfi method that
+// returns a Dart String does exactly this before returning it.
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show Platform;
@@ -37,6 +40,11 @@ typedef _ClientPollEventNative = Pointer<Utf8> Function(
 typedef _ClientPollEventDart = Pointer<Utf8> Function(
     Pointer<Void> handle, int timeoutMs);
 
+typedef _ClientProvideHeadersNative = Pointer<Utf8> Function(
+    Pointer<Void> handle, Uint64 requestId, Pointer<Utf8> headersJson);
+typedef _ClientProvideHeadersDart = Pointer<Utf8> Function(
+    Pointer<Void> handle, int requestId, Pointer<Utf8> headersJson);
+
 typedef _ClientCloseNative = Void Function(Pointer<Void> handle);
 typedef _ClientCloseDart = void Function(Pointer<Void> handle);
 
@@ -44,7 +52,7 @@ typedef _FreeStringNative = Void Function(Pointer<Utf8> ptr);
 typedef _FreeStringDart = void Function(Pointer<Utf8> ptr);
 
 /// Thin binding over the loaded `libsyncular` dynamic library: it resolves the
-/// five C symbols and marshals Dart `String` <-> C `char*`, freeing every
+/// seven C symbols and marshals Dart `String` <-> C `char*`, freeing every
 /// library-owned return string via `syncular_free_string` (the ownership rule
 /// in rust/ffi.h). Everything above this — JSON, typed conveniences, the poll
 /// loop — lives in [SyncularClient].
@@ -52,6 +60,8 @@ class SyncularFfi {
   final _ClientNewDart _clientNew;
   final _ClientCommandDart _clientCommand;
   final _ClientPollEventDart _clientPollEvent;
+  final _ClientPollEventDart _clientPollHeaders;
+  final _ClientProvideHeadersDart _clientProvideHeaders;
   final _ClientCloseDart _clientClose;
   final _FreeStringDart _freeString;
 
@@ -67,6 +77,11 @@ class SyncularFfi {
         _clientPollEvent = lib
             .lookupFunction<_ClientPollEventNative, _ClientPollEventDart>(
                 'syncular_client_poll_event'),
+        _clientPollHeaders = lib
+            .lookupFunction<_ClientPollEventNative, _ClientPollEventDart>(
+                'syncular_client_poll_headers'),
+        _clientProvideHeaders = lib.lookupFunction<_ClientProvideHeadersNative,
+            _ClientProvideHeadersDart>('syncular_client_provide_headers'),
         _clientClose = lib
             .lookupFunction<_ClientCloseNative, _ClientCloseDart>(
                 'syncular_client_close'),
@@ -139,6 +154,37 @@ class SyncularFfi {
       return eventPtr.toDartString();
     } finally {
       _freeString(eventPtr);
+    }
+  }
+
+  /// `syncular_client_poll_headers(handle, timeout_ms)` → owned header request
+  /// JSON string (freed here), or `null` if none arrived in time. Takes no
+  /// core lock.
+  String? clientPollHeaders(Pointer<Void> handle, int timeoutMs) {
+    final requestPtr = _clientPollHeaders(handle, timeoutMs);
+    if (requestPtr == nullptr) return null;
+    try {
+      return requestPtr.toDartString();
+    } finally {
+      _freeString(requestPtr);
+    }
+  }
+
+  /// `syncular_client_provide_headers(handle, request_id, headers_json)` →
+  /// owned reply JSON string (freed here). Takes no core lock.
+  String? clientProvideHeaders(
+      Pointer<Void> handle, int requestId, String headersJson) {
+    final cHeaders = headersJson.toNativeUtf8();
+    try {
+      final replyPtr = _clientProvideHeaders(handle, requestId, cHeaders);
+      if (replyPtr == nullptr) return null;
+      try {
+        return replyPtr.toDartString();
+      } finally {
+        _freeString(replyPtr);
+      }
+    } finally {
+      malloc.free(cHeaders);
     }
   }
 

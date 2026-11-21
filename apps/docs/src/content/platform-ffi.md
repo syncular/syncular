@@ -66,7 +66,7 @@ void  syncular_free_string(char *ptr);
 `create` opens the authority with the create schema. Give the authority its own file: the client's schema reset drops every replica table outside `_syncular_*`, and `create` refuses a `localAuthorityPath` equal to `dbPath` with `sync.invalid_request`. Until attach completes, every sync round reaches the authority, `connectRealtime` and segment fetches fail with `sync.invalid_request`, and blob and remote-operation requests go to `baseUrl`.
 
 - `localAuthorityState`: returns `{"state": "local"}`, `"attaching"`, or `"attached"`, and `null` when the config names no authority or before `create`.
-- `attachLocalAuthority`: holds the client's rounds, uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, and then routes rounds to `baseUrl`, where the replica rebinds through the log-epoch reset. A stopped attach returns the authority's code and details, for example `sync.attach_rejected` with `details.reason`.
+- `attachLocalAuthority`: holds the client's rounds, uploads the authority's rows to `baseUrl` with the headers its header source answers, and then routes rounds to `baseUrl`, where the replica rebinds through the log-epoch reset. A stopped attach returns the authority's code and details, for example `sync.attach_rejected` with `details.reason`.
 - `abandonLocalAuthorityAttach`: rolls a stopped attach back and returns the client to the authority.
 
 Without a `baseUrl`, attach and abandon fail with `client.local_authority_unconfigured`. After attach the authority file holds only its state. To retire it, remove `localAuthorityPath` from the config and then delete the file; a config that names a deleted file opens an empty authority in the `local` state.
@@ -85,7 +85,7 @@ The methods the router executes. `subscribe` takes `{"scopes": {"list_id": "groc
 | Writes & reads | `mutate`, `patch`, `readRows`, `query`, `querySnapshot`, `snapshotRead`, `pendingCommitIds`, `pendingPayloads` |
 | Authorized local purge | `purgeLocalData`, `rebootstrapLocalData` |
 | Sync | `sync`, `syncUntilIdle` |
-| Transport | `setHeaders`, `setTransportEnabled` |
+| Transport | `setTransportEnabled` |
 | Observation | `localRevision`, `statusSnapshot`, `diagnosticsSnapshot`, `progressSnapshot`, `drainChangeBatches`, `drainSyncIntents` |
 | Divergence & outcomes | `conflicts`, `rejections`, `commitDelivery`, `commitOutcomes`, `resolveCommitOutcome` |
 | Previous-version context | `previousVersionAudit`, `previousVersionSnapshot`, `previousVersionDiscard` |

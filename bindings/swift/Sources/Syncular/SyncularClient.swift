@@ -49,6 +49,21 @@ public struct SyncularError: Error, Sendable, CustomStringConvertible {
     public var description: String { "SyncularError(\(code)): \(message)" }
 }
 
+/// The request a header source answers for: the client, the sync round's
+/// sequence number (the `attempt` progress reports; nil outside a round), and
+/// what the request reaches: `"sync"`, `"segment"`, `"blob"` or `"realtime"`.
+public struct SyncularHeaderContext: Sendable, Equatable {
+    public let clientId: String
+    public let round: Int?
+    public let target: String
+
+    public init(clientId: String, round: Int?, target: String) {
+        self.clientId = clientId
+        self.round = round
+        self.target = target
+    }
+}
+
 /// Configuration for a `SyncularClient`. `baseUrl` engages the native HTTP+WS
 /// transport (only in a `native-transport` build of the core); omit it for the
 /// dependency-lean, offline-first local core. `dbPath` installs a file-backed
@@ -60,8 +75,18 @@ public struct SyncularConfig: Sendable {
     public var baseUrl: String?
     /// Optional explicit realtime socket URL. Derived from `baseUrl` if nil.
     public var wsUrl: String?
-    /// Extra request headers (auth, tenant, …) for the native transport.
-    public var headers: [String: String]
+    /// Produces the request headers (auth, tenant, …) for the native
+    /// transport. The core asks before a host-authenticated request and once
+    /// more after the server refuses them (401 or a realtime auth close),
+    /// passing the refused headers; otherwise `rejected` is nil. `context`
+    /// names the client, round and target of the request. A thrown error
+    /// fails that request with retryable `sync.auth_required`, as does an
+    /// answer later than 30 s. Required with `baseUrl`. The client polls the
+    /// core's header channel on its own queue and runs the source in a `Task`
+    /// while the command that needs the headers blocks, so the source must not
+    /// wait for the thread that issued that command (a blocked main actor, for
+    /// example).
+    public var headers: (@Sendable (_ rejected: [String: String]?, _ context: SyncularHeaderContext) async throws -> [String: String])?
     /// Path to the on-disk SQLite database. Nil → in-memory (no persistence).
     public var dbPath: String?
     /// Silence bound for one HTTP request, in milliseconds: the longest any
@@ -93,7 +118,7 @@ public struct SyncularConfig: Sendable {
     public init(
         baseUrl: String? = nil,
         wsUrl: String? = nil,
-        headers: [String: String] = [:],
+        headers: (@Sendable (_ rejected: [String: String]?, _ context: SyncularHeaderContext) async throws -> [String: String])? = nil,
         dbPath: String? = nil,
         requestTimeoutMs: UInt64? = nil,
         roundDeadlineMs: UInt64? = nil,
@@ -124,9 +149,6 @@ public struct SyncularConfig: Sendable {
         var object: [String: JSONValue] = [:]
         if let baseUrl { object["baseUrl"] = .string(baseUrl) }
         if let wsUrl { object["wsUrl"] = .string(wsUrl) }
-        if !headers.isEmpty {
-            object["headers"] = .object(headers.mapValues { .string($0) })
-        }
         if let requestTimeoutMs { object["requestTimeoutMs"] = .unsigned(requestTimeoutMs) }
         if let roundDeadlineMs { object["roundDeadlineMs"] = .unsigned(roundDeadlineMs) }
         if let maxRequestBytes { object["maxRequestBytes"] = .unsigned(maxRequestBytes) }
@@ -152,6 +174,9 @@ public class SyncularClient {
     private let commandQueue = DispatchQueue(label: "syncular.command")
     /// Runs the blocking `poll_event` loop.
     private let pollQueue = DispatchQueue(label: "syncular.poll")
+    /// Runs the `poll_headers` loop from init to `close()`, `pause()`
+    /// included: a command may need headers at any time.
+    private let headerQueue = DispatchQueue(label: "syncular.headers")
     /// Where delivered events run (default: main).
     private let deliveryQueue: DispatchQueue
     private let pollLock = NSLock()
@@ -162,6 +187,14 @@ public class SyncularClient {
     /// event-queue condvar under a waiter → a use-after-free panic).
     private var pollDone: DispatchSemaphore?
     private var closed = false
+    /// Guarded by `pollLock`; the header loop signals `headersDone` on exit.
+    private var headersRunning = false
+    private var headersDone: DispatchSemaphore?
+    /// Held while `provideHeaders` uses the handle and while `close()` frees
+    /// it. `provideHeaders` cannot take `commandQueue`: the command waiting
+    /// for the headers holds it.
+    private let handleLock = NSLock()
+    private let headerSource: (@Sendable (_ rejected: [String: String]?, _ context: SyncularHeaderContext) async throws -> [String: String])?
 
     /// A closure invoked on `deliveryQueue` (main by default) per event.
     public var onEvent: ((SyncularEvent) -> Void)?
@@ -189,6 +222,13 @@ public class SyncularClient {
         deliveryQueue: DispatchQueue = .main
     ) throws {
         self.deliveryQueue = deliveryQueue
+        self.headerSource = config.headers
+        if config.baseUrl != nil && config.headers == nil {
+            throw SyncularError(
+                code: "client.headers_required",
+                message: "a client with baseUrl needs a headers source"
+            )
+        }
         let configJSON = try config.newConfigJSON().encodedString()
         guard let created = configJSON.withCString({ syncular_client_new($0) }) else {
             throw SyncularError(
@@ -205,6 +245,15 @@ public class SyncularClient {
         _ = try command(method: "create", params: .object(createParams))
 
         startPollLoop()
+        if headerSource != nil {
+            headersRunning = true
+            let done = DispatchSemaphore(value: 0)
+            headersDone = done
+            headerQueue.async { [weak self] in
+                self?.runHeaderLoop()
+                done.signal()
+            }
+        }
     }
 
     deinit {
@@ -331,13 +380,16 @@ public class SyncularClient {
         column: String,
         update: [UInt8]
     ) throws -> String {
-        var hex = ""
-        for b in update { hex += String(format: "%02x", b) }
-        return try crdtCommitId(method: "crdtApplyUpdate", params: [
+        try crdtCommitId(method: "crdtApplyUpdate", params: [
             "table": .string(table), "rowId": .string(rowId),
             "column": .string(column),
-            "update": .object(["$bytes": .string(hex)]),
+            "update": Self.bytes(update),
         ])
+    }
+
+    /// The `{"$bytes":"<hex>"}` driver form of raw bytes.
+    private static func bytes(_ value: [UInt8]) -> JSONValue {
+        .object(["$bytes": .string(value.map { String(format: "%02x", $0) }.joined())])
     }
 
     private func crdtCommitId(method: String, params: [String: JSONValue]) throws -> String {
@@ -440,12 +492,13 @@ public class SyncularClient {
         .object(["variable": .string(variable), "fixedScopes": scopeMap(fixedScopes)])
     }
 
-    /// Replace the full native transport header set. Subsequent HTTP requests
-    /// use it immediately; reconnect realtime to apply it to the handshake.
-    public func setHeaders(_ headers: [String: String]) throws {
+    /// Add keys to the active encryption keyring, keyed by key id. Rows
+    /// encrypted under an added key decrypt from then on; the keys already in
+    /// the keyring stay.
+    public func addEncryptionKeys(_ keys: [String: [UInt8]]) throws {
         _ = try command(
-            method: "setHeaders",
-            params: .object(["headers": .object(headers.mapValues { .string($0) })])
+            method: "addEncryptionKeys",
+            params: .object(["keys": .object(keys.mapValues(Self.bytes))])
         )
     }
 
@@ -478,8 +531,8 @@ public class SyncularClient {
         return parsed
     }
 
-    /// Upload the local authority's live rows to `baseUrl` (with the headers set
-    /// through `setHeaders`) and switch rounds to the server. Throws
+    /// Upload the local authority's live rows to `baseUrl` (with the headers
+    /// from `SyncularConfig.headers`) and switch rounds to the server. Throws
     /// `sync.attach_rejected` (reason in `details`) when the server refuses, and
     /// `client.local_authority_unconfigured` without `localAuthorityPath` or `baseUrl`.
     public func attachLocalAuthority() throws {
@@ -669,7 +722,17 @@ public class SyncularClient {
     /// Idempotent. After close, commands throw `client.closed`.
     public func close() {
         stopPollLoop()
+        pollLock.lock()
+        headersRunning = false
+        let headersDone = self.headersDone
+        self.headersDone = nil
+        pollLock.unlock()
+        // The header loop polls with a 25 ms timeout, so it observes the flag
+        // promptly; the handle is freed only after it left `poll_headers`.
+        headersDone?.wait()
         commandQueue.sync {
+            handleLock.lock()
+            defer { handleLock.unlock() }
             guard !self.closed, let handle = self.handle else { return }
             self.closed = true
             syncular_client_close(UnsafeMutableRawPointer(handle))
@@ -750,5 +813,67 @@ public class SyncularClient {
             self.onEvent?(event)
             self.delegate?.syncularClient(self, didReceive: event)
         }
+    }
+
+    // MARK: - Header channel
+
+    private func runHeaderLoop() {
+        while true {
+            pollLock.lock()
+            let running = headersRunning
+            pollLock.unlock()
+            if !running { return }
+            // `close()` waits for this loop to exit before it frees the handle.
+            guard let handle = self.handle else { return }
+            guard let requestPtr = syncular_client_poll_headers(UnsafeMutableRawPointer(handle), 25) else {
+                continue
+            }
+            let request = String(cString: requestPtr)
+            syncular_free_string(requestPtr)
+            answerHeaders(request)
+        }
+    }
+
+    /// Run the headers source for one
+    /// `{"requestId":n,"rejected":...,"clientId":...,"round":...,"target":...}`
+    /// request in a `Task`, so the loop keeps polling while it runs, and
+    /// provide its result; a thrown error provides nil, and so does a request
+    /// without `clientId` or `target`, at once.
+    func answerHeaders(_ requestString: String) {
+        guard let request = try? JSONValue(decoding: requestString),
+              let requestId = request["requestId"]?.numberValue.flatMap({ UInt64(exactly: $0) }) else {
+            return
+        }
+        guard let clientId = request["clientId"]?.stringValue,
+              let target = request["target"]?.stringValue else {
+            provideHeaders(requestId: requestId, headers: nil)
+            return
+        }
+        let rejected = request["rejected"]?.objectValue?.compactMapValues(\.stringValue)
+        let context = SyncularHeaderContext(
+            clientId: clientId,
+            round: request["round"]?.numberValue.flatMap { Int(exactly: $0) },
+            target: target
+        )
+        let source = headerSource
+        Task { [weak self] in
+            let headers = try? await source?(rejected, context)
+            self?.provideHeaders(requestId: requestId, headers: headers)
+        }
+    }
+
+    /// Hand the headers for `requestId` (nil: none) to the core. A closed
+    /// client drops them; the core's reply carries nothing the source could
+    /// act on.
+    func provideHeaders(requestId: UInt64, headers: [String: String]?) {
+        let value = headers.map { JSONValue.object($0.mapValues(JSONValue.string)) } ?? .null
+        guard let json = try? value.encodedString() else { return }
+        handleLock.lock()
+        defer { handleLock.unlock() }
+        guard !closed, let handle else { return }
+        let reply = json.withCString {
+            syncular_client_provide_headers(UnsafeMutableRawPointer(handle), requestId, $0)
+        }
+        if let reply { syncular_free_string(reply) }
     }
 }

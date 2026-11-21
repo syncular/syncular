@@ -13,10 +13,10 @@ turns the clean-room Rust client into a native library with a small, stable
 over FFM), Flutter (`dart:ffi`), and desktop hosts, and the substrate a React
 Native TurboModule wraps.
 
-## The FFI surface (five functions)
+## The FFI surface (seven functions)
 
-The proven bindings shape: one constructor, one JSON-command dispatch, one
-event poll, and two lifecycle/memory functions. The full C signatures live in
+One constructor, one JSON-command dispatch, one event poll, one header
+question poll and its answer, and two lifecycle/memory functions. The full C signatures live in
 [`rust/ffi.h`](../../ffi.h) (hand-written, dependency-free, kept in sync by the
 `header_matches_symbols` test):
 
@@ -24,6 +24,9 @@ event poll, and two lifecycle/memory functions. The full C signatures live in
 void*  syncular_client_new(const char* config_json);
 char*  syncular_client_command(void* handle, const char* command_json);
 char*  syncular_client_poll_event(void* handle, int64_t timeout_ms);
+char*  syncular_client_poll_headers(void* handle, int64_t timeout_ms);
+char*  syncular_client_provide_headers(void* handle, uint64_t request_id,
+                                       const char* headers_json);
 void   syncular_client_close(void* handle);
 void   syncular_free_string(char* ptr);
 ```
@@ -59,9 +62,29 @@ drain. The reader holds at most 16 MiB of undrained text and delta payload
 buffers a `transport.failed` loss with `causeKind: "inbound_overflow"`, and the
 drain schedules the reconnect and catch-up pull of SPEC §8.8.
 
-The event queue sits outside the mutex that guards the client, so one pump
-thread may block in `poll_event` while another thread issues commands. The
-host serializes commands.
+The transport asks the host for request headers before every
+host-authenticated HTTP request and realtime handshake. `poll_headers` returns
+each question once as `{"requestId": n, "rejected": {name: value} | null,
+"clientId": "...", "round": n | null, "target": "sync" | "segment" | "blob" |
+"realtime"}`, with the same timeout convention as `poll_event`, and null on
+timeout or after close. It skips a question whose request already passed the
+bound. `round` is the progress `attempt` of the sync round the request belongs
+to, `null` outside a round, so a host can attach per-round trace headers;
+`target` names the endpoint (a remote operation is `sync`). Requests of one
+client and round share one question. The request blocks until `provide_headers(handle, requestId,
+headers_json)` answers with a header object, or `null` (or a null pointer)
+when the host has none. `rejected` carries the headers the server just
+answered 401 to; the transport resends that one request once with the answer,
+and a second 401 surfaces `sync.auth_required`. A `null` answer, or none
+within 30 s, fails the request with the retryable `sync.auth_required`
+(`causeKind: "header_source"`); a late answer is ignored. Concurrent requests
+share one question. A config `headers` key is refused.
+
+The event queue and the header channel sit outside the mutex that guards the
+client, so pump threads may block in `poll_event` and `poll_headers` while
+another thread issues commands. The host serializes commands. `close` fails a
+request waiting for headers with `client.closed` and releases a blocked
+`poll_headers` before it shuts the client down.
 
 ### One command surface, conformance-locked
 
@@ -89,7 +112,8 @@ them. A native app has no such host loop — so this crate **owns** the network:
   transport the core drives itself. `ureq` for blocking HTTP (`POST /sync`,
   `GET /segments/{id}`, `PUT`/`GET /blobs/{id}`, bare signed-URL fetches) and
   `tungstenite` for the realtime socket, with a reader thread buffering inbound
-  frames. Config: `{"baseUrl": "https://host/mount", "headers": {...}}`.
+  frames. Config: `{"baseUrl": "https://host/mount"}`; request headers come
+  from `poll_headers`/`provide_headers`.
 - **default (no feature)**: the dependency-lean build. Network commands fail
   loudly with `transport.unavailable`; client-local commands (create,
   subscribe, mutate, readRows, …) still run. This is the build the C smoke test
@@ -196,7 +220,7 @@ JSON-command-shaped: `command_json` in, `{result|error}` JSON out, bytes as
 **follow-up** for latency; the C ABI here is the stable substrate underneath it.
 
 **Swift, Kotlin and Flutter wrappers** (`bindings/swift`, `bindings/kotlin`,
-`bindings/flutter`) bind the five functions and add typed conveniences over the
+`bindings/flutter`) bind the seven functions and add typed conveniences over the
 command set.
 
 ## Repository read measurements
@@ -204,7 +228,7 @@ command set.
 The private `syncular-bench` driver enables `bench-internals` to borrow the
 handle's client between sequential calls. This Rust-only hook gives its raw
 SQLite comparison the same connection as the exported C query. Default builds
-omit the hook. The five C functions and public command surface stay unchanged.
+omit the hook. The seven C functions and public command surface stay unchanged.
 
 Run `bun run bench --workload read --core rust --lane socket --boundary ffi
 --storage file --iterations 100` from the repository root on one line. Read

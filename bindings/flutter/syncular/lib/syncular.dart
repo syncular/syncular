@@ -1,5 +1,5 @@
 /// syncular — an idiomatic Dart/Flutter wrapper over the syncular-ffi C-ABI
-/// native core (the five functions in `rust/ffi.h`), via `dart:ffi`.
+/// native core (the seven functions in `rust/ffi.h`), via `dart:ffi`.
 ///
 /// It is the Flutter sibling of `bindings/swift` (`SyncularClient`) and
 /// `bindings/kotlin` (`SyncularClient` via FFM): one JSON command surface
@@ -20,7 +20,12 @@
 library syncular;
 
 export 'src/client.dart'
-    show SyncularClient, SyncularConfig, SyncularEvent, SyncularError;
+    show
+        SyncularClient,
+        SyncularConfig,
+        SyncularEvent,
+        SyncularError,
+        SyncularHeaderContext;
 export 'src/connectivity.dart'
     show FlutterConnectivitySignal, SyncularConnectivityAdapter;
 export 'src/ffi.dart' show SyncularFfi;

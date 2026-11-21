@@ -73,7 +73,6 @@ the conformance shim and the C-ABI FFI use, so the surface is conformance-locked
 | `syncular_command(command)` | The whole surface in one command. `command` is `{ "method": "...", "params": {...} }` (create, subscribe, mutate, sync, syncUntilIdle, resetClientId, conflicts, presence, setPresence, and more). The reply is `{ "result": ... }` or `{ "error": { "code", "message" } }`. |
 | `syncular_query(sql, params)` | The raw read-only SQL fast path. |
 | `syncular_query_snapshot(sql, params, coverage)` | One IPC read for rows, window completeness, and the exact local revision. |
-| `syncular_set_headers(headers)` | Replaces the native transport's request headers at runtime. |
 | `events` channel | Exact revisioned `change` batches plus `presence` and lifecycle events. A `presence` event carries `error` (`presence.too_large` or `presence.forbidden`) when the server refuses this client's publish. The bridge passes a Tauri IPC `Channel` in the `create` params. |
 
 The plugin runs one native client per app. Only the webview whose `create`
@@ -226,9 +225,9 @@ const client = await createTauriSyncClient({
 // The app verifies its signed offline lease and device authentication first.
 await client.activateSecurity({ encryption: acceptedKeyring });
 // Authorized local queries and mutations now work; commits queue durably.
+// Keys that arrive later: await client.addEncryptionKeys(keys), see /concepts-encryption/#adding-a-key-while-the-client-runs
 
-// After online authentication returns a fresh bearer:
-await client.setHeaders({ authorization: `Bearer ${freshBearer}` });
+// The Rust `header_source` answers the fresh bearer on the next request.
 await client.setTransportEnabled(true);
 ```
 
@@ -237,7 +236,7 @@ presence sends, and uncached blob downloads with `sync.offline`. Cached blob
 reads and staged uploads stay local. `setOffline(true)` is the bridge's alias
 for browser parity. Automatic sync and retry intents stay suspended; reopening
 emits one interactive wake, and queued commits flush in FIFO order with their own
-pull. Header replacement and security activation never reopen the gate.
+pull. Security activation never reopens the gate.
 
 An already-started round finishes its captured network exchange and atomic apply,
 including acknowledgement and revocation checks; closing the gate does not

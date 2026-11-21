@@ -314,6 +314,79 @@ fallback.
 its result supplies `actorId` and the partition. The protocol carries no
 credential fields. (Auth-lease replay is a reserved extension, §7.3.)
 
+**The transport asks, the host answers.** A client transport reads the
+host's credentials from a **header source** the host provides, at the moment
+it needs them. It asks before every host-authenticated HTTP request (sync,
+remote operation, direct segment download, blob upload, download and upload
+grant) and before every WebSocket handshake of a transport that sends headers
+on the upgrade. A signed URL (§5.4, §5.9.3, §5.9.5) is the whole grant and
+never asks and carries no host headers. The source answers with the full
+header set for that request; the client never caches it across requests. No
+host pushes headers into a running client: there is no header-replacement call
+on any host.
+
+- **Context.** Every question carries `{ clientId, round, target }`:
+  the replica's `clientId`; `round`, the sequence number of the round the
+  request serves, which is the `attempt` that progress snapshots and the
+  `lastRound` diagnostics report for that round (§7.6), or `null` for a
+  request outside a round (an application blob transfer, a realtime connect,
+  a remote operation); and `target`, one of `sync`, `segment`, `blob` and
+  `realtime` (a remote operation counts as `sync`). A host uses it to attach
+  per-round headers such as trace context.
+- **Single flight.** Concurrent requests of one `(clientId, round)` that need
+  headers share one in-flight question; the shared question carries the
+  context of the request that started it. Different rounds and different
+  replicas never share one. A question after a refusal (below) is a flight
+  of its own, so a renewal never joins an ordinary question that started
+  before the refusal.
+- **One retry on 401.** An HTTP 401, or a WebSocket upgrade refused with 401
+  (§8.1 authenticates at the upgrade), makes the transport ask once more with
+  the same context, passing the refused headers, and repeat that one
+  request with the answer. The retry count is one and not configurable. A
+  second refusal surfaces `sync.auth_required` (retryable, §10.2). The
+  round that fails with it retries on the normal schedule (§7.7), and every
+  attempt asks the source again, so no host resends unchanged headers in a
+  loop.
+- **A failed answer.** A source that fails, or answers no headers, fails the
+  request with the retryable `sync.auth_required` and `causeKind`
+  `header_source`. The message is static; the source's own error never
+  reaches the message or the details.
+
+Each host provides the source where its credentials live:
+
+- **Browser and direct TypeScript.** The `headers` option of the HTTP
+  transports (`httpSyncTransport`, `httpSegmentDownloader`,
+  `httpBlobTransport`, `httpRemoteOperationTransport`) is a fixed header set
+  or a function `(rejected?) => headers | Promise<headers>`. Transports built
+  on one function share its flights. A fixed set is never asked again, so a
+  401 surfaces `sync.auth_required` at once. Browser WebSockets carry no
+  headers; their realtime authenticates through `realtimeUrl` (cookie or
+  ticket).
+- **Worker-hosted clients.** The source runs inside the worker: the app's
+  worker entry passes it as `startSyncWorker({ headers })`, and every
+  transport the worker builds asks it. The page passes no headers, so a
+  hidden tab's throttled page never delays a renewal. A source that needs
+  state from a page asks that page itself, only when a request needs it.
+- **Tauri.** The host app's Rust code provides the source in the plugin
+  configuration (`SyncularConfig`); the native transport calls it on the
+  request thread. No JavaScript runs on this path.
+- **FFI hosts** (Swift, Kotlin, Flutter, React Native). The questions go
+  through a header channel of their own, apart from the `poll_event` stream.
+  `syncular_client_poll_headers(handle, timeout_ms)` returns the next
+  question, `{"requestId":n,"rejected":headers|null,"clientId":…,"round":n|null,"target":…}`, and
+  `syncular_client_provide_headers(handle, request_id, headers_json)` answers
+  it with a header object, or `null` when the host has none. Neither entry
+  point takes the client lock, so the host answers while a command waits on
+  the transport. The wait is bounded by a fixed 30-second limit that is not
+  configurable. Past it the request fails with the retryable
+  `sync.auth_required` and `causeKind` `header_source`; an answer that
+  arrives later, or names an unknown `requestId`, is ignored, and the next
+  request asks again. Closing the client ends every wait and every
+  `poll_headers`. Swift, Kotlin and React Native poll the channel on a pump
+  thread of their own; Flutter polls it in an auth isolate that runs the
+  app's source, because a Dart command blocks the isolate that issued it for
+  the whole call.
+
 The result MAY also carry an **authentication context**: an opaque host
 string of at most 256 UTF-8 bytes (for example `kiosk:facility-a`) that
 names what this session was authenticated for. One actor can hold several
@@ -821,9 +894,9 @@ observable behavior is contractual:
   `causeKind` `round_deadline` when the whole-round deadline expired first.
 - **Redirect refusal.** The `deny` default refuses every 3xx. Under the
   `follow` policy the transport follows a redirect only for a request that
-  carries no configured headers, no base-URL userinfo, and no signed
+  carries no host headers, no base-URL userinfo, and no signed
   capability URL; a credential-bearing request is still refused, because
-  the configured headers or URL userinfo would replay to the redirect
+  the host headers or URL userinfo would replay to the redirect
   target. The WebSocket handshake never follows a redirect, whatever the
   policy (§8.8); a 3xx upgrade response surfaces `transport.redirect`. A
   refused HTTP redirect surfaces the same code.
@@ -879,7 +952,9 @@ retryable `sync.transport_failed` with `network` (the fetch rejected; a
 browser reports a missing connection, DNS, TLS, and CORS failure alike),
 `timeout`, `aborted`, `body` (the body failed after the headers arrived),
 `status` (with `httpStatus`, when the server sent no JSON error code), or
-`unknown`. A host detects a missing connection from `code` and
+`unknown`. Every transport raises `sync.auth_required` with
+`header_source` when the header source failed, gave no headers, or (FFI)
+did not answer within its bound. A host detects a missing connection from `code` and
 `causeKind`: `network` or `timeout` from a browser transport, and
 `connect`, `tls`, or `transport.timeout` from the native transport.
 
@@ -4529,9 +4604,6 @@ code, message and retryability, a conflict's `table`, `rowId` and
 `serverVersion`, with an empty `serverRow` and no `conflictColumns`. It
 loses the `operations` collection, every nested `operation` and rejection
 `details`.
-In particular, runtime transport-header replacement is an active-session
-operation; native bridges MUST gate it independently rather than relying only
-on a JavaScript wrapper.
 **Preflight authority snapshot.** `defineAuthorityReads(declarations)` creates
 an immutable opt-in policy for `authorityReads` at client creation. The
 TypeScript factory lives at `@syncular/client/authority`. Ordinary client and
@@ -8884,7 +8956,7 @@ poll it replaced took half of production's coordinator time.
 (native Rust: `set_transport_enabled`) independently of security preflight.
 Construction accepts `transportEnabled: false` before startup can schedule work.
 The gate defaults open on each new client instance and is never persisted.
-Security activation, header replacement, owner-loop rounds and schema resets MUST
+Security activation, header-source answers, owner-loop rounds and schema resets MUST
 NOT reopen it. A closed gate keeps authorized local reads, keys, units,
 mutations and staged blob uploads available. Commits remain durable and ordered.
 New sync rounds, realtime connects, presence sends and uncached blob downloads
@@ -8898,7 +8970,7 @@ Closure MUST NOT cancel that reply or start a follow-up round. The host releases
 the socket when that round settles and sends no queued realtime controls while
 closed. Security preflight still invalidates an in-flight authorization context.
 
-Reopening emits one interactive wake after the host installs fresh headers;
+Reopening emits one interactive wake, and its round asks the header source (§1.1);
 the existing automatic scheduler drains queued work and performs its own pull.
 Realtime reconnect uses the host's existing lifecycle policy. Repeating either
 state is idempotent. The browser worker's `setOffline(value)` sets the same gate

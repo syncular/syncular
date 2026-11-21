@@ -44,7 +44,7 @@ Set `SyncularConfig.localAuthorityPath` to start without a server (SPEC §12). T
 | Call | Returns | Effect |
 |---|---|---|
 | `localAuthorityState()` | `String?` | `local`, `attaching` or `attached`; null without a `localAuthorityPath` |
-| `attachLocalAuthority()` | `void` | Uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, then syncs with that server |
+| `attachLocalAuthority()` | `void` | Uploads the authority's rows to `baseUrl` with the headers its header source answers, then syncs with that server |
 | `abandonLocalAuthorityAttach()` | `void` | Deletes the rows a stopped attach uploaded, then syncs locally |
 
 `attachLocalAuthority` throws `sync.attach_rejected` with `details['reason']` when the server refuses an upload commit. Both attach calls throw `client.local_authority_unconfigured` without a `localAuthorityPath` or a `baseUrl`.

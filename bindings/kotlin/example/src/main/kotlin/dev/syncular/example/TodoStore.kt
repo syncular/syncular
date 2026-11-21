@@ -30,6 +30,8 @@ class TodoStore(clientId: String, baseUrl: String?) : AutoCloseable {
         schema = SyncularSchema.schema,
         config = SyncularConfig(
             baseUrl = baseUrl,
+            // The quickstart server authenticates every request without headers.
+            headers = { _, _ -> emptyMap() },
         ),
     )
 

@@ -107,7 +107,7 @@ Call `client.set_transport_enabled(&mut transport, false)` before releasing star
 
 - Local queries, mutations, and staged blobs continue.
 - New rounds, realtime connects, presence sends, and uncached blob downloads fail with `sync.offline` before the transport is invoked.
-- Reopening emits one interactive sync intent. Update the transport's headers first, then reopen, and let the host scheduler drain the queued commits.
+- Reopening emits one interactive sync intent. Make sure the transport's header source (`HostTransport::set_header_source`) answers a fresh credential, then reopen, and let the host scheduler drain the queued commits.
 - The gate defaults open on each new core and is never persisted. Security activation, header changes, and schema resets keep its value.
 - A round whose network exchange already started finishes its captured exchange and applies it. A split-round host then calls `set_transport_enabled(&mut transport, false)` again to release the socket. The core sends no returned control frames and starts no follow-up round while closed.
 

@@ -6,6 +6,17 @@
  */
 
 /**
+ * Which replica and round a request serves (§1.1): the client core passes it
+ * to its transports, and the HTTP transports hand it to the header source.
+ * `round` is the round's `attempt` in progress and `lastRound`
+ * diagnostics; `null` outside a round.
+ */
+export interface TransportContext {
+  readonly clientId: string;
+  readonly round: number | null;
+}
+
+/**
  * One combined push+pull round trip: SSP2 request bytes → response bytes.
  * `signal` aborts when the `syncUntilIdle` deadline elapses (§7.8); a
  * transport that honors it releases the round instead of holding it open.
@@ -13,11 +24,13 @@
 export type SyncTransport = (
   request: Uint8Array,
   signal?: AbortSignal,
+  context?: TransportContext,
 ) => Promise<Uint8Array>;
 
 /** One registered authoritative query or command request. */
 export type RemoteOperationTransport = (
   request: Uint8Array,
+  context?: TransportContext,
 ) => Promise<Uint8Array>;
 
 export interface RemoteOperationRealtimeHandlers {
@@ -47,6 +60,7 @@ export interface SegmentFetchRequest {
   readonly onProgress?: (bytesReceived: number) => void;
   /** Aborts with the round when the `syncUntilIdle` deadline elapses (§7.8). */
   readonly signal?: AbortSignal;
+  readonly context?: TransportContext;
 }
 
 /**

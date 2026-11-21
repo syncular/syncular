@@ -309,6 +309,8 @@ export class SyncRemoteClient {
               },
             ],
           }),
+          undefined,
+          { clientId: this.#clientId, round: null },
         ),
       );
       const acquisitionHeader = acquisition.frames[0];
@@ -409,7 +411,12 @@ export class SyncRemoteClient {
         'SyncRemoteClient has no sync transport for ordinary commits',
       );
     }
-    const response = decodeResponse(await this.#transport(prepared.bytes));
+    const response = decodeResponse(
+      await this.#transport(prepared.bytes, undefined, {
+        clientId: this.#clientId,
+        round: null,
+      }),
+    );
     const error = response.frames.find((frame) => frame.type === 'ERROR');
     if (error?.type === 'ERROR') {
       throw new ClientSyncError(error.code, error.message, error.retryable);
@@ -472,6 +479,7 @@ export class SyncRemoteClient {
           operationId: descriptor.id,
           params: params ?? null,
         }),
+        { clientId: this.#clientId, round: null },
       ),
     );
     if (response.kind === 'error') throw operationError(response);
@@ -518,6 +526,7 @@ export class SyncRemoteClient {
           requestId,
           params: input ?? null,
         }),
+        { clientId: this.#clientId, round: null },
       ),
     );
     if (response.kind === 'error') throw operationError(response);

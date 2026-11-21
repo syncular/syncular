@@ -48,7 +48,8 @@ Native errors keep `code`, `retryable`, and structured `details`.
 `client.purgeLocalData({ purgeId, targets })` forwards the same bounded purge
 plan to the Rust core as Tauri and the C FFI do. For quarantine before data,
 create the client with `securityPreflight: true`, apply the validated local
-purge, then call `activateSecurity({ encryption })`. See
+purge, then call `activateSecurity({ encryption })`. `addEncryptionKeys(keys)` adds a key that arrives later without a preflight; see
+[Adding a key while the client runs](/concepts-encryption/#adding-a-key-while-the-client-runs). See
 [Authorized local purge](/concepts-local-data-purge/). `securityPreflight` and
 `encryption` in the create config are mutually exclusive.
 
@@ -59,7 +60,7 @@ Pass `localAuthorityPath` to `createNativeSyncClient` to start without a server 
 | Call | Resolves to | Effect |
 |---|---|---|
 | `localAuthorityState()` | `'local' \| 'attaching' \| 'attached' \| null` | `null` without a `localAuthorityPath` |
-| `attachLocalAuthority()` | `void` | Uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, then syncs with that server |
+| `attachLocalAuthority()` | `void` | Uploads the authority's rows to `baseUrl` with the headers its header source answers, then syncs with that server |
 | `abandonLocalAuthorityAttach()` | `void` | Deletes the rows a stopped attach uploaded, then syncs locally |
 
 `attachLocalAuthority` rejects with a `NativeSyncError` whose `code` is `sync.attach_rejected` and whose `details.reason` names the cause. Both attach calls reject with `client.local_authority_unconfigured` without a `localAuthorityPath` or a `baseUrl`. `localAuthorityState()` also works during security preflight.

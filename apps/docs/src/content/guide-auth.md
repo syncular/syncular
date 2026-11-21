@@ -17,14 +17,14 @@ its URL.
 - **Actor**: The authenticated user or service. The server records it as the author of every commit it pushes.
 - **Partition**: The tenant whose data a request touches.
 - **Context**: An optional opaque string `authenticate` returns beside the actor, naming what this session was signed in for.
-- **Header set**: The full record of host headers a client attaches to sync, segment, and blob requests.
+- **Header source**: The function a client's transport asks for the host headers of each sync, segment, and blob request.
 - **Ticket**: A short-lived signed value on the realtime socket URL, minted from a normal bearer.
 :::
 
 :::figure{title="Two doors, one identity" note="HTTP carries headers; the socket cannot" ticks}
 <div class="d-row">
 <div class="d-stack">
-<div class="node hot"><span class="t">HTTP: sync, segments, blobs</span>Authorization header from the client's header set</div>
+<div class="node hot"><span class="t">HTTP: sync, segments, blobs</span>Authorization header from the client's header source</div>
 <div class="node cool"><span class="t">Realtime socket</span>Same-origin cookie, or a ticket on the URL</div>
 </div>
 <span class="d-arrow"></span>
@@ -197,82 +197,106 @@ On Cloudflare Workers the same function goes into
 ::checkpoint[Two users in different lists each receive only their own list's rows.]
 ::::
 
-::::step{title="Browser: send and rotate the header" time="5 min"}
-`createSyncClientHandle` takes a `headers` record. The worker attaches it to
-every sync, segment, and blob request:
+::::step{title="Browser: give the worker a header source" time="5 min"}
+The worker asks a header source before every sync, segment, and blob request.
+Pass it to `startSyncWorker` in your worker entry, so it runs inside the
+worker and a hidden tab's throttled page never delays a renewal:
 
-```ts title="src/sync.ts"
-import { createSyncClientHandle } from '@syncular/client';
+```ts title="src/worker.ts"
+import { startSyncWorker } from '@syncular/client/worker';
 
-const handle = await createSyncClientHandle({
-  worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
-  schema,
-  database: { mode: 'persistent', name: 'my-app' },
-  endpoints: {
-    syncUrl: 'https://api.example.com/sync',
-    segmentsUrl: 'https://api.example.com/segments',
-  },
-  headers: { Authorization: `Bearer ${await auth.getAccessToken()}` },
-});
-handle.onSynced(async ({ error }) => {
-  if (error?.code !== 'sync.auth_required') return;
-  await handle.setHeaders({
-    Authorization: `Bearer ${await auth.refreshAccessToken()}`,
-  });
-  await handle.sync();
+startSyncWorker({
+  headers: async (rejected) => ({
+    Authorization: `Bearer ${rejected ? await auth.refreshAccessToken() : await auth.getAccessToken()}`,
+  }),
 });
 ```
 
-`setHeaders` replaces the whole header set, and the next request uses it. Call
-it whenever your auth library rotates the token, before the old token expires,
-so sync rounds never see a 401. The `onSynced` listener covers a token that
-expired first: `sync.auth_required` is retryable, so the worker keeps retrying
-with backoff, and `sync()` after the refresh runs the next round without waiting
-for the backoff.
+The worker calls the source with no argument for an ordinary request. After a
+401 it calls it once more with the refused headers and resends that one
+request; a second 401 surfaces `sync.auth_required`, which is retryable, and
+the next attempt asks again. Concurrent requests share one call. A source that
+throws fails the request with `sync.auth_required` and `causeKind`
+`header_source`.
 
-With multi-tab on, `setHeaders` on a follower tab forwards to the leader worker.
-Each tab also keeps its latest set, and a follower that becomes leader starts
-its worker with that set. Rotate the token in every tab that holds a handle; the
-most recent call wins. [Browser: realtime & lifecycle](/platform-web-realtime/)
-covers the rest of the handle lifecycle.
+The source runs in the worker, so it reads its token from worker-side storage
+(IndexedDB, a `fetch` to your token endpoint with the session cookie) or asks a
+page itself when a request needs it. With multi-tab on, the leader tab's worker
+asks its own source; follower tabs pass no headers.
 
-::checkpoint[After `setHeaders`, the next request in the network panel carries the new `Authorization` value.]
+::checkpoint[An expired token shows two `/sync` requests in the network panel: a 401, then the resend with the renewed `Authorization` value.]
 ::::
 
-::::step{title="Native and headless: send and rotate the header" time="5 min"}
-The Swift, Kotlin, Flutter, React Native, Tauri, and Rust clients take a headers
-map in their config and replace the full set at runtime. Their native WebSocket
-sends the headers on the handshake, so realtime needs no ticket. A live socket
-keeps its handshake credentials until you reconnect it.
+::::step{title="Native and headless: give the client a header source" time="5 min"}
+The Swift, Kotlin, Flutter, React Native, Tauri, and Rust clients take a header
+source in their config. The transport asks it before every sync, segment, and
+blob request and before every native WebSocket handshake, so realtime needs no
+ticket. After a 401 it asks once more, passing the refused headers, and resends
+that one request; a second 401 surfaces the retryable `sync.auth_required`, and
+the next attempt asks again. Concurrent requests share one question. A source
+that fails, or answers no headers, fails the request with `sync.auth_required`
+and `causeKind` `header_source`. A client with a `baseUrl` and no source throws
+`client.headers_required`. No host has a call that pushes headers into a running
+client. A live socket keeps its handshake headers; a reconnect asks the source.
+Every question also carries a context, `{ clientId, round, target }`, covered in
+[Trace context per round](#trace-context-per-round).
 
 :::tabs
 ```swift sdk=swift title="Auth.swift"
-try client.setHeaders(["Authorization": "Bearer \(token)"])
-// A live socket keeps the old handshake headers: pause(), then resume().
+let config = SyncularConfig(
+  baseUrl: baseUrl,
+  wsUrl: wsUrl,
+  headers: { rejected, _context in
+    ["Authorization": "Bearer \(try await auth.token(refresh: rejected != nil))"]
+  }
+  // ...
+)
 ```
 ```kotlin sdk=kotlin title="Auth.kt"
-client.setHeaders(mapOf("Authorization" to "Bearer $token"))
+val config = SyncularConfig(
+    baseUrl, wsUrl,
+    headers = SyncularHeaderSource { rejected, _ ->
+        mapOf("Authorization" to "Bearer ${auth.token(refresh = rejected != null)}")
+    },
+    // ...
+)
 ```
 ```dart sdk=flutter title="lib/auth.dart"
-client.setHeaders({'Authorization': 'Bearer $token'});
+// Top-level or static: it runs in an auth isolate the client spawns, so its
+// token state lives there and it cannot read main-isolate state.
+Future<Map<String, String>> authHeaders(
+  Map<String, String>? rejected,
+  SyncularHeaderContext context,
+) async =>
+    {'Authorization': 'Bearer ${await readToken(refresh: rejected != null)}'};
+
+final config = SyncularConfig(headers: authHeaders /* ... */);
 ```
 ```ts sdk=react-native title="src/auth.ts"
-await client.setHeaders({ authorization: `Bearer ${token}` });
-// A live socket keeps the old handshake headers: pause(), then resume().
+const client = await createNativeSyncClient({
+  // ...
+  headers: async (rejected) => ({
+    authorization: `Bearer ${await auth.token({ refresh: rejected !== undefined })}`,
+  }),
+});
 ```
-```ts sdk=tauri title="src/auth.ts"
-await client.setHeaders({ authorization: `Bearer ${token}` });
-// Apply it to the live socket now: disconnectRealtime(), then connectRealtime().
+```rust sdk=tauri title="src-tauri/src/lib.rs"
+// In SyncularConfig, in the host app's Rust code:
+header_source: Some(HeaderSource::new(|_context, rejected| {
+    Some(vec![("authorization".into(), format!("Bearer {}", token(rejected)))])
+})),
 ```
 ```rust sdk=rust title="src/auth.rs"
-transport.set_headers(vec![("authorization".into(), format!("Bearer {token}"))]);
+transport.set_header_source(HeaderSource::new(|_context, rejected| {
+    Some(vec![("authorization".into(), format!("Bearer {}", token(rejected)))])
+}));
 ```
 :::
 
 A headless TypeScript process passes `headers` as a record or as a function to
 `httpSyncTransport`, `httpSegmentDownloader`, and `httpBlobTransport`. The
-transport calls the function on every request, so a long-running process rotates
-its credential without rebuilding the client:
+function takes the refused headers after a 401 and may return a promise. A
+long-running process rotates its credential without rebuilding the client:
 
 ```ts title="src/service.ts"
 import { httpSegmentDownloader, httpSyncTransport, SyncClient } from '@syncular/client';
@@ -297,17 +321,54 @@ The per-SDK calls are on [Swift](/platform-swift/), [Kotlin](/platform-kotlin/),
 surface is on [Native client API](/native-client-api/). The rest of the headless
 setup is on [Server-side sync clients](/guide-server-clients/).
 
-::checkpoint[The next HTTP request from the client carries the new header, and a reconnected socket sends it in its handshake.]
+::checkpoint[An expired token shows a 401 and then a resend that carries the answer of the header source; a reconnected socket sends the same answer in its handshake.]
 ::::
 :::::
+
+## Trace context per round
+
+Each question to the header source names the replica (`clientId`), the round
+(`round`, or `null` for a request outside a round), and the request
+(`target`: `sync`, `segment`, `blob`, or `realtime`). Requests of one
+`(clientId, round)` share a question; two replicas, or two rounds, never do.
+
+The header source owns each round's trace parent. On the first question for a
+`(clientId, round)` it creates that round's parent, or looks it up, and
+returns its `sentry-trace` and `baggage` headers. Later questions of the same
+round, the round's segment downloads and a WebSocket handshake that retries
+included, return the same parent:
+
+```ts title="src/worker.ts"
+const parents = new Map<string, TraceParent>();
+
+startSyncWorker({
+  headers: async (rejected, context) => {
+    const key = `${context?.clientId}:${context?.round}`;
+    let parent = parents.get(key);
+    if (parent === undefined) parents.set(key, (parent = startRoundTrace(context)));
+    return {
+      Authorization: `Bearer ${rejected ? await auth.refresh() : await auth.token()}`,
+      'sentry-trace': parent.sentryTrace,
+      baggage: parent.baggage,
+    };
+  },
+});
+```
+
+The `round` number is the `attempt` that progress snapshots and
+`diagnosticsSnapshot().lastRound.attempt` report for that round, so the app's
+UI or webview correlates a round it shows with its trace by that number and asks
+its host for the round's parent. It never sets headers from JavaScript, and
+nothing waits on a JavaScript timer. Signed segment and blob URLs carry no
+headers at all, so trace propagation ends at your own server.
 
 ## Realtime tickets
 
 ### Browser: authenticate the realtime socket
 
 The browser `WebSocket` constructor cannot send headers, so the realtime socket
-authenticates by cookie or by a value on its URL. `setHeaders` never reaches it,
-and a live socket keeps the credentials from its handshake. Native sockets send
+authenticates by cookie or by a value on its URL. The header source never
+reaches it, and a live socket keeps the credentials from its handshake. Native sockets send
 headers and skip this section.
 
 :::figure{title="Ticket flow, once per connection attempt" note="The long-lived bearer never reaches a URL"}
@@ -467,18 +528,19 @@ A 60-second ticket outlives one connection attempt and no more. The built-in
 `webSocketRealtimeConnector` takes a fixed URL, so a rotating flow supplies a
 custom connector that fetches a fresh ticket for each attempt. In the browser
 worker, `startSyncWorker({ createRealtime })` installs that connector and passes
-it the current header set, so the ticket request carries the same bearer the sync
-rounds use:
+it the worker's header source, so the ticket request carries the same bearer the
+sync rounds use:
 
 ```ts title="src/worker.ts"
 import { ClientSyncError, webSocketRealtimeConnector } from '@syncular/client';
 import { startSyncWorker } from '@syncular/client/worker';
 
 startSyncWorker({
+  headers: async () => ({ Authorization: `Bearer ${await auth.getAccessToken()}` }),
   createRealtime: (_config, clientId, headers) => async (handlers) => {
     const response = await fetch('https://api.example.com/realtime-ticket', {
       method: 'POST',
-      headers: headers(),
+      headers: await headers(),
     });
     if (!response.ok) {
       throw new ClientSyncError(

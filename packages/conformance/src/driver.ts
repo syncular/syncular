@@ -1035,6 +1035,28 @@ export interface DriverEncryptionConfig {
   readonly keyIdColumns?: Readonly<Record<string, string>>;
 }
 
+/** §1.1 the request a header question serves. */
+export interface DriverHeaderContext {
+  readonly clientId: string;
+  readonly round: number | null;
+  readonly target: 'sync' | 'segment' | 'blob' | 'realtime';
+}
+
+/**
+ * §1.1 "The transport asks, the host answers" for a driver client. The
+ * client's transport asks `headers` before each sync request and once more
+ * with the refused headers after a refusal; the harness's stand-in for HTTP
+ * authentication calls `accepts` with the presented headers (lowercase
+ * names) and answers a refused request with HTTP 401 `sync.auth_required`.
+ */
+export interface DriverAuth {
+  headers(
+    rejected: Readonly<Record<string, string>> | undefined,
+    context: DriverHeaderContext,
+  ): Promise<Readonly<Record<string, string>>>;
+  accepts(headers: Readonly<Record<string, string>>): boolean;
+}
+
 /**
  * RFC 0005 previous-version context config. `enabled` is a feature flag and
  * the only required key; it is NOT a security control. Absent or
@@ -1181,6 +1203,8 @@ export interface ClientCreateOptions {
   readonly encryption?: DriverEncryptionConfig;
   /** RFC 0005 previous-version context; absent ⇒ feature off. */
   readonly previousVersionContext?: ClientPreviousVersionContextOptions;
+  /** §1.1 header source and authentication stand-in; absent ⇒ no auth. */
+  readonly auth?: DriverAuth;
 }
 
 /** §4.8 window base: the variable whose values are the window units, plus
@@ -1264,6 +1288,12 @@ export interface ClientInstance {
   activateSecurity(encryption?: DriverEncryptionConfig): Promise<void>;
   /** §5.11: extend the active keyring; reveals the rows sealed under the new keys. */
   addEncryptionKeys(keys: DriverEncryptionConfig['keys']): Promise<void>;
+  /**
+   * §1.1 FFI hosts: set the pinned client clock (`nowMs`) while a request may
+   * wait on the header source, so the 30 s bound runs without a real wait.
+   * Absent on hosts without a bounded header wait; scenarios needing it skip.
+   */
+  setClock?(nowMs: number): Promise<void>;
   /** §4.1: register one unit; returns its derived id. */
   subscribe(scopes: DriverUnitScopes): Promise<string>;
   /** Register several units in one local transaction; returns their ids. */

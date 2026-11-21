@@ -97,7 +97,7 @@ tauri::Builder::default()
 |---|---|
 | `base_url` | Server base URL for the native HTTP and WebSocket transport. Absent: client-local only. |
 | `ws_url` | Realtime WebSocket URL. Derived from `base_url` when absent. |
-| `headers` | Extra request headers (auth, actor and project ids) as name and value pairs. |
+| `header_source` | `Option<HeaderSource>`: the function the transport asks for request headers (auth, actor and project ids) before every host-authenticated request and realtime handshake. It receives the refused headers after a 401. See [Authentication](/guide-auth/#native-and-headless-give-the-client-a-header-source). |
 | `request_timeout_ms` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it. Absent: unbounded. |
 | `round_deadline_ms` | One monotonic deadline for the total time of a sync round (uploads, continuations, the main request, every segment fetch); it also fails a slow transfer that is still progressing. Absent: unbounded. |
 | `max_request_bytes` | Largest request body the transport sends. Absent: unbounded. |

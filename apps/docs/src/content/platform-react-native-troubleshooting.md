@@ -12,7 +12,7 @@ errors, and missing native artifacts.
 |---|---|---|
 | Rows, the client id, and the outbox vanish on restart | The client has no persistent `dbPath`. | Pass a file path under the app-data directory in [Client config](/platform-react-native-install/#client-config). |
 | No network traffic and no realtime socket | `createNativeSyncClient` ran without `baseUrl`, so the core is offline-only. | Pass `baseUrl`. |
-| A rotated token fails on the open socket | The WebSocket keeps the headers from its handshake. | Call `pause()` and `resume()` after `setHeaders`. See [Realtime & lifecycle](/platform-react-native-realtime/#rotate-credentials). |
+| A rotated token fails on the open socket | The WebSocket keeps the headers from its handshake. | Call `pause()` and `resume()`; the reconnect asks the `headers` source. See [Realtime & lifecycle](/platform-react-native-realtime/#rotate-credentials). |
 | `sync.realtime_unavailable` | `realtimePolicy: 'required'` is set and the socket is down. | Restore the socket, or use the `optional` policy. See [Realtime](/concepts-realtime/#required-realtime). |
 | `sync.invalid_request` on create | `securityPreflight` and `encryption` were both set. | Create with `securityPreflight: true`, then call `activateSecurity({ encryption })`. |
 | `client.identity_mismatch` | An explicit `clientId` differs from the database's. | Omit `clientId` and let the core restore the stored one. |

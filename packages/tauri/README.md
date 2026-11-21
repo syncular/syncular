@@ -127,8 +127,7 @@ const client = await createTauriSyncClient({
 await client.activateSecurity({ encryption: acceptedKeyring });
 // Authorized local queries and mutations now work; commits queue durably.
 
-// After online authentication returns a fresh bearer:
-await client.setHeaders({ authorization: `Bearer ${freshBearer}` });
+// The Rust `header_source` answers the fresh bearer on the next request.
 await client.setTransportEnabled(true);
 ```
 
@@ -137,7 +136,7 @@ presence sends and uncached blob downloads with `sync.offline`. Cached blob
 reads and staged uploads remain local. `setOffline(true)` is the bridge's
 browser-parity alias. Automatic sync and retry intents stay suspended; reopening
 emits one interactive wake and queued commits flush in FIFO order with own pull.
-Header replacement and security activation never reopen the gate.
+Security activation never reopens the gate.
 
 An already-started round finishes its captured network exchange and atomic apply,
 including acknowledgement and revocation checks. Closure does not cancel its
@@ -180,11 +179,7 @@ detaching listeners, so disposing a resource does not leave a key-bearing core
 behind. The Rust core overwrites owned key buffers on replacement/drop; the app
 still owns OS secure-store deletion and any key buffers it supplied.
 
-Runtime `setHeaders()` is an active-session operation and is rejected during
-preflight at both the JavaScript and native command boundaries. Supply bootstrap
-headers through trusted plugin configuration or `activateSecurity({ headers })`;
-the latter installs the current bearer before the startup round. Rotate them
-with `setHeaders()` only after successful activation. Closed clients reject data
+The webview has no call that sets headers: the host's Rust `header_source` supplies them, and `activateSecurity` takes none. `addEncryptionKeys(keys)` adds keys to the active keyring ([Encryption](https://syncular.dev/concepts-encryption/#adding-a-key-while-the-client-runs)). Closed clients reject data
 and control calls with `client.closed` before testing preflight; listener
 registration and local progress reads throw that code. `close()` is idempotent.
 

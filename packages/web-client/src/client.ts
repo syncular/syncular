@@ -283,6 +283,7 @@ import type {
   RealtimeSocket,
   SegmentDownloader,
   SyncTransport,
+  TransportContext,
 } from './transport';
 import {
   deletePendingEviction,
@@ -1754,6 +1755,15 @@ export class SyncClient {
     });
   }
 
+  /** §1.1: the replica and round a request serves; `round` is the
+   * `attempt` of the round in flight. */
+  get #transportContext(): TransportContext {
+    return {
+      clientId: this.#clientId,
+      round: this.#syncOutstanding ? this.#progressAttempt : null,
+    };
+  }
+
   /** Persisted work an opened or activated replica owes one round (§8.4). */
   #hasStartupWork(): boolean {
     return (
@@ -2615,7 +2625,11 @@ export class SyncClient {
       // arm the client MUST NOT attach host auth and MUST NOT fall through:
       // failure => re-request, the caller's next fetchBlob mints a fresh url.
       this.#requireTransport();
-      const response = await transport.download(blobId, ref?.byteLength);
+      const response = await transport.download(
+        blobId,
+        ref?.byteLength,
+        this.#transportContext,
+      );
       let bytes: Uint8Array;
       if (response.kind === 'url') {
         if (transport.fetchUrl === undefined) {
@@ -2762,6 +2776,7 @@ export class SyncClient {
         bytes.length,
         mediaType,
         signal,
+        this.#transportContext,
       );
       if (grant.kind === 'present') return; // idempotent §5.9.3 — no PUT needed
       if (grant.kind === 'url') {
@@ -2786,7 +2801,13 @@ export class SyncClient {
       // grant.kind === 'none' (no presign store) or a failed/expired grant:
       // stream through the direct host-authenticated endpoint.
     }
-    await transport.upload(blobId, bytes, mediaType, signal);
+    await transport.upload(
+      blobId,
+      bytes,
+      mediaType,
+      signal,
+      this.#transportContext,
+    );
   }
 
   conflicts(): readonly ConflictRecord[] {
@@ -5160,7 +5181,9 @@ export class SyncClient {
       );
     }
     return Promise.resolve()
-      .then(() => this.#config.transport(request, signal))
+      .then(() =>
+        this.#config.transport(request, signal, this.#transportContext),
+      )
       .catch((error: unknown) => {
         if (
           error instanceof ClientSyncError ||
@@ -6600,6 +6623,7 @@ export class SyncClient {
         ),
         byteLength: frame.byteLength,
         onProgress,
+        context: this.#transportContext,
         ...definedObject({ signal }),
       });
     }

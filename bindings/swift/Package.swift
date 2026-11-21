@@ -1,7 +1,7 @@
 // swift-tools-version:5.9
 //
 // SyncularSwift — an idiomatic Swift wrapper over the syncular-ffi C-ABI native
-// core (the five functions in rust/ffi.h). This is a SEPARATE SwiftPM package,
+// core (the seven functions in rust/ffi.h). This is a SEPARATE SwiftPM package,
 // isolated from the main workspaces exactly like bindings/tauri: it never joins
 // `bun run check` / the main cargo gate. Its own gate is `./check.sh`.
 //

@@ -142,12 +142,15 @@ function makeStatefulNative(): {
       return JSON.stringify({ result: { rows: rows() } });
     },
     close: async () => {},
+    provideHeaders: () => {},
     startEvents: () => {},
     stopEvents: () => {},
   };
 
   const eventEmitter: SyncularEventEmitter = {
-    addListener: (_event, handler) => {
+    // Only the event topic carries traffic here; header requests never come.
+    addListener: (event, handler) => {
+      if (event !== 'syncular::event') return { remove: () => {} };
       handlers.add(handler);
       return { remove: () => handlers.delete(handler) };
     },

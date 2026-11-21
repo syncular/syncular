@@ -13,13 +13,19 @@
  * surface in one `{method, params}` envelope); `query` uses the `query` fast
  * path. Exact revisioned `change` batches and `presence` events arrive on the
  * `syncular::event` NativeEventEmitter topic. The bridge never reconstructs
- * changes from counters.
+ * changes from counters. Header requests of the native transport arrive on
+ * the `syncular::headers` topic and are answered from the config's `headers`
+ * source through `provideHeaders`.
  *
  * The native module is INJECTABLE (`createNativeSyncClient({ nativeModule })`),
  * so the bridge is unit-tested with a NativeModule double and never needs a
  * device. In an app it auto-resolves the codegen module from `NativeSyncular`.
  */
-import type { SecurityLifecycle } from '@syncular/client';
+import type {
+  HeaderContext,
+  HeaderSource,
+  SecurityLifecycle,
+} from '@syncular/client';
 import {
   NativeBridgeClient,
   type NativeCreateConfig,
@@ -47,6 +53,8 @@ export interface SyncularNativeModule {
   command(commandJson: string): Promise<string>;
   query(sql: string, paramsJson: string): Promise<string>;
   close(): Promise<void>;
+  /** Answer header request `requestId`; `headersJson` is a JSON object or `null`. */
+  provideHeaders(requestId: number, headersJson: string): void;
   startEvents(): void;
   stopEvents(): void;
 }
@@ -63,6 +71,9 @@ export interface SyncularEventEmitter {
 /** The native event topic — mirror of the iOS/Android shims. */
 export const SYNCULAR_EVENT = 'syncular::event';
 
+/** The native header-request topic: `{requestId, rejected}` JSON per request. */
+export const SYNCULAR_HEADERS = 'syncular::headers';
+
 /** Config for {@link createNativeSyncClient}. */
 export interface NativeSyncClientConfig extends NativeCreateConfig {
   /** Base URL of the sync server mount (engages the native transport). */
@@ -76,8 +87,16 @@ export interface NativeSyncClientConfig extends NativeCreateConfig {
   readonly localAuthorityPath?: string;
   /** On-disk SQLite path; the native side may override with an app-data path. */
   readonly dbPath?: string;
-  /** Extra transport headers (auth, tenant, …). */
-  readonly headers?: Record<string, string>;
+  /**
+   * The header source of the native transport; required with `baseUrl`. The
+   * core asks before a host-authenticated request and once more after the
+   * server refuses them (401 or a realtime auth close), passing the refused
+   * headers as `rejected`. A throw or rejection, or no answer within 30 s,
+   * fails that request with retryable `sync.auth_required`. The native
+   * modules poll the core's header channel from `create` to `close`,
+   * `pause` included.
+   */
+  readonly headers?: HeaderSource;
   /** Silence bound for one HTTP request, in milliseconds: no step or wait between body bytes may exceed it. */
   readonly requestTimeoutMs?: number;
   /** One monotonic deadline for the total time of a sync round, in milliseconds; it also fails a slow transfer that is still progressing. */
@@ -196,12 +215,6 @@ export class NativeSyncClient extends NativeBridgeClient {
     return this.send('querySnapshot', params);
   }
 
-  protected override sendHeaders(
-    headers: Readonly<Record<string, string>>,
-  ): Promise<NativeReply> {
-    return this.send('setHeaders', { headers });
-  }
-
   protected override shutdown(): Promise<void> {
     this.#clearRetry();
     this.#native.stopEvents();
@@ -317,7 +330,7 @@ export class NativeSyncClient extends NativeBridgeClient {
 
   /**
    * SPEC §12.3: upload the local authority's rows to `baseUrl` with the
-   * headers set through `setHeaders`, then sync with that server. Rejects with
+   * headers from the config's `headers` source, then sync with that server. Rejects with
    * `sync.attach_rejected` (`details.reason`) when the server refuses an upload
    * commit, and with `client.local_authority_unconfigured` without a
    * `localAuthorityPath` or `baseUrl`.
@@ -368,6 +381,12 @@ export class NativeSyncClient extends NativeBridgeClient {
 export async function createNativeSyncClient(
   config: NativeSyncClientConfig,
 ): Promise<NativeSyncClient> {
+  if (config.baseUrl !== undefined && config.headers === undefined) {
+    throw new NativeSyncError(
+      'client.headers_required',
+      'a client with baseUrl needs a headers source',
+    );
+  }
   const createParams = {
     ...nativeCreateParams(config, NativeSyncError),
     ...(config.dbPath !== undefined ? { dbPath: config.dbPath } : {}),
@@ -377,7 +396,6 @@ export async function createNativeSyncClient(
     ...(config.localAuthorityPath !== undefined
       ? { localAuthorityPath: config.localAuthorityPath }
       : {}),
-    ...(config.headers !== undefined ? { headers: config.headers } : {}),
     ...(config.requestTimeoutMs !== undefined
       ? { requestTimeoutMs: config.requestTimeoutMs }
       : {}),
@@ -399,16 +417,49 @@ export async function createNativeSyncClient(
 
   // Wire the event stream BEFORE create so no early change batch is missed.
   let client: NativeSyncClient | undefined;
-  const subscription = eventEmitter.addListener(SYNCULAR_EVENT, (payload) =>
+  const events = eventEmitter.addListener(SYNCULAR_EVENT, (payload) =>
     client?.__dispatchEvent(
       typeof payload === 'string'
         ? (JSON.parse(payload) as SyncularEvent)
         : payload,
     ),
   );
+  // The command that needs these headers blocks natively; `provideHeaders`
+  // takes no core lock, so the answer reaches the core while it waits.
+  const headerRequests = eventEmitter.addListener(
+    SYNCULAR_HEADERS,
+    (payload) => {
+      const request = (
+        typeof payload === 'string' ? JSON.parse(payload) : payload
+      ) as HeaderContext & {
+        requestId: number;
+        rejected: Record<string, string> | null;
+      };
+      void (async () => {
+        let headers: Readonly<Record<string, string>> | null = null;
+        try {
+          if (config.headers !== undefined)
+            headers = await config.headers(request.rejected ?? undefined, {
+              clientId: request.clientId,
+              round: request.round,
+              target: request.target,
+            });
+        } catch {
+          // A failed source answers null; the core fails the request with
+          // retryable sync.auth_required.
+        }
+        nativeModule.provideHeaders(request.requestId, JSON.stringify(headers));
+      })();
+    },
+  );
   client = new NativeSyncClient(
     nativeModule,
-    subscription,
+    {
+      remove: () => {
+        events.remove();
+        headerRequests.remove();
+      },
+    },
     config.autoSync ?? true,
     config.securityPreflight === true ? 'preflight' : 'active',
   );

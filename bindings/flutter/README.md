@@ -1,7 +1,7 @@
 # syncular · flutter/dart binding
 
 An idiomatic **Dart/Flutter** wrapper over the syncular native core — the
-C-ABI `syncular-ffi` (the five functions in [`rust/ffi.h`](../../rust/ffi.h)),
+C-ABI `syncular-ffi` (the seven functions in [`rust/ffi.h`](../../rust/ffi.h)),
 bound via `dart:ffi`. It is the Flutter sibling of [`bindings/swift`](../swift)
 (`SyncularClient`) and [`bindings/kotlin`](../kotlin) (`SyncularClient` via FFM):
 the SAME one JSON command surface (`{method, params}` in, `{result|error}` out,
@@ -23,10 +23,16 @@ Like every binding here, this is its **own isolated build** — its gate is
 ```dart
 import 'package:syncular/syncular.dart';
 
+// A top-level function: it runs in the client's auth isolate.
+Future<Map<String, String>> authHeaders(
+        Map<String, String>? rejected, SyncularHeaderContext context) async =>
+    {'Authorization': 'Bearer ${await tokenStore.token(refresh: rejected != null)}'};
+
 final client = SyncularClient.create(
   schema: todoSchema,                          // the generated schema JSON (Map)
   config: SyncularConfig(
     baseUrl: 'http://localhost:8787',          // omit → offline-only lean core
+    headers: authHeaders,                      // required with baseUrl
     dbPath: '/path/to/todos.db',               // omit → in-memory
   ),
 );
@@ -63,9 +69,31 @@ client.resume();  // reconnect + restart poll
 client.close();   // release DB/transport/socket; idempotent
 ```
 
-Call `client.setHeaders({'Authorization': 'Bearer $token'})` after credential
-rotation. HTTP requests use the new headers immediately. Reconnect realtime to
-repeat the WebSocket handshake with them. `FlutterConnectivitySignal` and
+`SyncularConfig.headers` is the header source of the native transport, and a
+client with `baseUrl` requires one (`client.headers_required` otherwise). The
+core asks for headers before a host-authenticated HTTP request or realtime
+handshake, one request at a time. After a 401 or a realtime auth close it asks
+once more with the refused headers as `rejected`; return renewed credentials
+there. The second argument, `SyncularHeaderContext`, carries the `clientId`,
+the sync `round` (the `attempt` progress reports; null outside a round) and the
+`target` of the request: `'sync'`, `'segment'`, `'blob'` or `'realtime'`. A throw, or no answer within 30 s, fails the request with retryable
+`sync.auth_required`.
+
+A command such as `syncUntilIdle()` blocks the owning isolate while the
+transport waits for headers, so the source cannot run there. `create` spawns
+an auth isolate (`syncular-auth`) with the handle address; it polls the core's
+header channel (`syncular_client_poll_headers`), runs the source and answers
+through `syncular_client_provide_headers`, and both calls skip the core lock.
+The source therefore has to be a top-level or static function, and its token
+state (secure storage, its own refresh logic) lives in the auth isolate; it
+cannot read variables the owning isolate updates. `close()` kills the auth
+isolate and frees the core once that isolate has exited, a few event-loop
+turns after `close()` returns.
+
+`addEncryptionKeys({'<keyId>': keyBytes})` adds keys to the active encryption
+keyring and keeps the keys already in it.
+
+`FlutterConnectivitySignal` and
 `SyncularConnectivityAdapter` bind a boolean reachability stream to
 `pause()`/`resume()`; close the adapter during client teardown.
 
@@ -81,8 +109,8 @@ Swift/Kotlin wrappers): `mutate` / `subscribe` / `subscribeMany` /
 `readRows` / `query` / `pendingCommitIds` / `statusSnapshot` /
 `conflicts` / `presence` / `setPresence` / `setWindow` /
 `windowState` / `connectRealtime` / `disconnectRealtime` / `crdtText` /
-`crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` / `setHeaders` (native
-CRDT is specified in §5.10.5).
+`crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` / `addEncryptionKeys`
+(native CRDT is specified in §5.10.5).
 Anything not lifted is
 reachable via the raw `command(method, params)`.
 
@@ -99,10 +127,11 @@ immediately. This is deliberate:
   in-flight command — the core is thread-affine, and here there is exactly one
   thread. `close()` cancels the Timer synchronously, so the handle is never
   freed under an in-flight poll.
-- A background isolate would need `Isolate.spawn` + a `SendPort` and could not
-  share the non-`Sendable` opaque handle without a second core — pure overhead
-  for a callback-free FFI. A blocking poll (`timeout_ms < 0`) on the main
-  isolate would freeze the UI. Non-blocking-on-the-owner is the one good path.
+- Polling events in a background isolate would add an `Isolate.spawn` and a
+  `SendPort` hop per event to a callback-free FFI. Only the header channel
+  runs in an isolate of its own (the auth isolate above), because a blocked
+  command would otherwise starve it. A blocking poll (`timeout_ms < 0`) on
+  the main isolate would freeze the UI. Non-blocking-on-the-owner is the one good path.
 
 The poll interval (default 40 ms) is a `SyncularClient.create` parameter.
 
