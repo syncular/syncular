@@ -43,6 +43,7 @@
  *   bumping `manifestVersion`), except inside `extensions`, the reserved
  *   WP-49 passthrough slot copied verbatim into the IR.
  */
+import type { IrLocalProjection } from './ir';
 import { TypegenError } from './errors';
 import { isRustKeyword, type NamingMode } from './naming';
 
@@ -72,6 +73,7 @@ export interface ManifestTable {
    * encrypted column) are enforced at generate time.
    */
   readonly serverColumns: readonly string[];
+  readonly localProjections?: readonly Omit<IrLocalProjection, 'generation'>[];
 }
 
 export interface ManifestSubscription {
@@ -291,12 +293,112 @@ function parseRustOutput(value: unknown): RustOutput {
   };
 }
 
+function parseLocalProjection(
+  value: unknown,
+): Omit<IrLocalProjection, 'generation'> {
+  const spec = asObject(value, 'local projection');
+  const name = asString(spec.name, 'local projection name');
+  const invalid = (column?: string): never => {
+    throw new TypegenError(
+      SOURCE,
+      'invalid local projection declaration',
+      'client.schema_invalid',
+      { name, ...(column === undefined ? {} : { column }) },
+    );
+  };
+  if (
+    Object.keys(spec).some(
+      (key) => !['name', 'columns', 'fts', 'dependencies'].includes(key),
+    )
+  )
+    invalid();
+  if (!Array.isArray(spec.columns) || spec.columns.length === 0)
+    return invalid();
+  const columns = spec.columns.map(
+    (entry: unknown): IrLocalProjection['columns'][number] => {
+      const column = asObject(entry, 'local projection column');
+      const columnName = asString(column.name, 'local projection column name');
+      const type = column.declaredType;
+      if (
+        Object.keys(column).some(
+          (key) => key !== 'name' && key !== 'declaredType',
+        )
+      )
+        return invalid(columnName);
+      if (
+        type !== 'string' &&
+        type !== 'integer' &&
+        type !== 'real' &&
+        type !== 'boolean' &&
+        type !== 'json'
+      )
+        return invalid(columnName);
+      return { name: columnName, declaredType: type };
+    },
+  );
+  let fts: IrLocalProjection['fts'];
+  if (spec.fts !== undefined) {
+    const options = asObject(spec.fts, 'local projection FTS5');
+    if (
+      Object.keys(options).some(
+        (key) => key !== 'tokenize' && key !== 'columns',
+      ) ||
+      !Array.isArray(options.columns) ||
+      !options.columns.length
+    )
+      return invalid();
+    fts = {
+      tokenize: asString(options.tokenize, 'local projection tokenizer'),
+      columns: options.columns.map((column: unknown) =>
+        typeof column === 'string' ? column : invalid(),
+      ),
+    };
+  }
+  let dependencies: IrLocalProjection['dependencies'];
+  if (spec.dependencies !== undefined) {
+    if (!Array.isArray(spec.dependencies)) return invalid();
+    dependencies = spec.dependencies.map((entry: unknown) => {
+      const dependency = asObject(entry, 'local projection dependency');
+      if (
+        Object.keys(dependency).some(
+          (key) => !['table', 'column', 'sourceColumn'].includes(key),
+        )
+      )
+        invalid();
+      return {
+        table: asString(dependency.table, 'local projection dependency table'),
+        column: asString(
+          dependency.column,
+          'local projection dependency column',
+        ),
+        sourceColumn: asString(
+          dependency.sourceColumn,
+          'local projection source column',
+        ),
+      };
+    });
+  }
+  return {
+    name,
+    columns,
+    ...(fts ? { fts } : {}),
+    ...(dependencies?.length ? { dependencies } : {}),
+  };
+}
+
 function parseTable(value: unknown, index: number): ManifestTable {
   const context = `tables[${index}]`;
   const obj = asObject(value, context);
   rejectUnknownKeys(
     obj,
-    ['name', 'scopes', 'extensions', 'encryptedColumns', 'serverColumns'],
+    [
+      'name',
+      'scopes',
+      'extensions',
+      'encryptedColumns',
+      'serverColumns',
+      'localProjections',
+    ],
     context,
   );
   const name = asString(obj.name, `${context}.name`);
@@ -339,6 +441,11 @@ function parseTable(value: unknown, index: number): ManifestTable {
       seen.add(col);
     }
   }
+  if (
+    obj.localProjections !== undefined &&
+    !Array.isArray(obj.localProjections)
+  )
+    fail('localProjections must be an array');
   return {
     name,
     scopes: obj.scopes.map((spec, i) =>
@@ -347,6 +454,9 @@ function parseTable(value: unknown, index: number): ManifestTable {
     extensions: parseExtensions(obj.extensions, `table ${name}`),
     encryptedColumns,
     serverColumns,
+    ...(Array.isArray(obj.localProjections) && obj.localProjections.length
+      ? { localProjections: obj.localProjections.map(parseLocalProjection) }
+      : {}),
   };
 }
 

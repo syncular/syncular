@@ -1,0 +1,6 @@
+query patientDisplay(term) {
+  select _syncular_source_id as patient_id, display_name, display_order
+  from patient_display
+  where patient_display match :term
+  order by _syncular_source_id;
+}

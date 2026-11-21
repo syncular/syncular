@@ -768,6 +768,15 @@ export interface SqlRelations {
   readonly scopeAt: (offset: number) => string;
 }
 
+export function ftsRelationNames(table: IrTable): string[] {
+  return [
+    ...table.ftsIndexes.map((index) => index.name),
+    ...(table.localProjections ?? [])
+      .filter((projection) => projection.fts)
+      .map((projection) => projection.name),
+  ];
+}
+
 export function scanTableRefs(
   sql: string,
   ir: IrDocument,
@@ -787,16 +796,19 @@ export function scanRelations(
   const known = new Map(
     ir.tables.flatMap((table) => [
       [table.name.toLowerCase(), table.name] as const,
-      ...table.ftsIndexes.map(
-        (index) => [index.name.toLowerCase(), index.name] as const,
+      ...ftsRelationNames(table).map(
+        (name) => [name.toLowerCase(), name] as const,
       ),
+      ...(table.localProjections ?? [])
+        .filter((projection) => !projection.fts)
+        .map(({ name }) => [name.toLowerCase(), name] as const),
     ]),
   );
   const mappings = new Set(
     lowered
       ? ir.tables.flatMap((table) =>
-          table.ftsIndexes.map((index) =>
-            ftsMappingTable(index.name).toLowerCase(),
+          ftsRelationNames(table).map((name) =>
+            ftsMappingTable(name).toLowerCase(),
           ),
         )
       : [],
@@ -1349,17 +1361,44 @@ interface ResolvedSource {
   readonly nullableByJoin: boolean;
 }
 
-function declaredFtsProjection(ir: IrDocument, tableName: string): boolean {
-  return ir.tables.some((table) =>
-    table.ftsIndexes.some((index) => index.name === tableName),
-  );
-}
-
 const FTS_SOURCE_ID_IR_COLUMN: IrTable['columns'][number] = {
   name: FTS_SOURCE_ID_COLUMN,
   type: 'string',
   nullable: false,
 };
+
+function relationColumn(
+  ir: IrDocument,
+  table: string,
+  name: string,
+): IrColumn | undefined {
+  const source = ir.tables.find((entry) => entry.name === table);
+  if (source)
+    return source.columns.find((column) => column.name.toLowerCase() === name);
+  for (const entry of ir.tables) {
+    if (
+      name === FTS_SOURCE_ID_COLUMN &&
+      ftsRelationNames(entry).includes(table)
+    )
+      return FTS_SOURCE_ID_IR_COLUMN;
+    const projection = entry.localProjections?.find(
+      (spec) => spec.name === table,
+    );
+    if (projection) {
+      if (name === FTS_SOURCE_ID_COLUMN) return FTS_SOURCE_ID_IR_COLUMN;
+      const column = projection.columns.find(
+        (field) => field.name.toLowerCase() === name,
+      );
+      if (column)
+        return {
+          name: column.name,
+          type: column.declaredType === 'real' ? 'float' : column.declaredType,
+          nullable: true,
+        };
+    }
+  }
+  return undefined;
+}
 
 /** Resolve a SELECT item's expression to an IR column, if it is a plain ref. */
 function resolveSource(
@@ -1370,64 +1409,19 @@ function resolveSource(
   const m = PLAIN_REF_RE.exec(item.expr);
   if (m === null) return null;
   const qualifier = m[1];
-  const columnName = m[2] as string;
-  const byName = new Map(ir.tables.map((t) => [t.name, t] as const));
-  if (qualifier !== undefined) {
-    const ref = refs.find(
-      (candidate) => candidate.alias.toLowerCase() === qualifier.toLowerCase(),
-    );
-    if (ref === undefined) return null;
-    const table = byName.get(ref.table);
-    const col = table?.columns.find(
-      (candidate) => candidate.name.toLowerCase() === columnName.toLowerCase(),
-    );
-    if (col !== undefined) {
-      return {
-        table: ref.table,
-        column: col,
-        nullableByJoin: ref.nullable,
-      };
-    }
-    if (
-      columnName === FTS_SOURCE_ID_COLUMN &&
-      declaredFtsProjection(ir, ref.table)
-    ) {
-      return {
-        table: ref.table,
-        column: FTS_SOURCE_ID_IR_COLUMN,
-        nullableByJoin: ref.nullable,
-      };
-    }
-    return null;
-  }
-  // Unqualified: search every FROM/JOIN table (SQLite already resolved
-  // ambiguity; a single-table query is the common case). A USING/NATURAL
-  // coalesced name can have more than one physical origin, so keep it on the
-  // honest nullable fallback path instead of guessing one side.
-  const matches: ResolvedSource[] = [];
-  for (const ref of refs) {
-    const table = byName.get(ref.table);
-    const col = table?.columns.find(
-      (candidate) => candidate.name.toLowerCase() === columnName.toLowerCase(),
-    );
-    if (col !== undefined) {
-      matches.push({
-        table: ref.table,
-        column: col,
-        nullableByJoin: ref.nullable,
-      });
-    }
-    if (
-      columnName === FTS_SOURCE_ID_COLUMN &&
-      declaredFtsProjection(ir, ref.table)
-    ) {
-      matches.push({
-        table: ref.table,
-        column: FTS_SOURCE_ID_IR_COLUMN,
-        nullableByJoin: ref.nullable,
-      });
-    }
-  }
+  const columnName = m[2]!.toLowerCase();
+  const candidates =
+    qualifier === undefined
+      ? refs
+      : refs
+          .filter((ref) => ref.alias.toLowerCase() === qualifier.toLowerCase())
+          .slice(0, 1);
+  const matches = candidates.flatMap((ref) => {
+    const column = relationColumn(ir, ref.table, columnName);
+    return column
+      ? [{ table: ref.table, column, nullableByJoin: ref.nullable }]
+      : [];
+  });
   return matches.length === 1 ? (matches[0] as ResolvedSource) : null;
 }
 
@@ -1734,10 +1728,41 @@ export function synthesizeDdl(ir: IrDocument): string {
         `CREATE ${unique}INDEX ${index.name} ON ${table.name} (${index.columns.join(', ')});`,
       );
     }
-    for (const index of table.ftsIndexes) {
+    const fullText = table.ftsIndexes.map((index) => ({
+      name: index.name,
+      tokenize: index.tokenize,
+      columns: index.columns,
+    }));
+    for (const projection of table.localProjections ?? []) {
+      const name = `"${projection.name}"`;
+      if (projection.fts) {
+        fullText.push({
+          name: projection.name,
+          tokenize: projection.fts.tokenize,
+          columns: projection.columns.map(
+            (column) =>
+              `"${column.name}"${projection.fts!.columns.includes(column.name) ? '' : ' UNINDEXED'}`,
+          ),
+        });
+      } else {
+        const columns = projection.columns.map(
+          (column) =>
+            `"${column.name}" ${SQL_TYPE[column.declaredType === 'real' ? 'float' : column.declaredType]}`,
+        );
+        lines.push(
+          `CREATE TABLE ${name} (${FTS_SOURCE_ID_COLUMN} TEXT PRIMARY KEY, ${columns.join(', ')});`,
+        );
+      }
+    }
+    for (const index of fullText) {
       const tokenize = index.tokenize.replaceAll("'", "''");
+      const name = table.ftsIndexes.some(
+        (builtIn) => builtIn.name === index.name,
+      )
+        ? index.name
+        : `"${index.name}"`;
       lines.push(
-        `CREATE VIRTUAL TABLE ${index.name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
+        `CREATE VIRTUAL TABLE ${name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
         `CREATE TABLE ${ftsMappingTable(index.name)} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE);`,
       );
     }
@@ -1795,9 +1820,7 @@ const SELECT_LIST_BOUNDARIES = new Set([
  * reading the projection; both read the same value.
  */
 export function lowerFtsSourceIds(sql: string, ir: IrDocument): string {
-  const ftsNames = new Set(
-    ir.tables.flatMap((table) => table.ftsIndexes.map((index) => index.name)),
-  );
+  const ftsNames = new Set(ir.tables.flatMap(ftsRelationNames));
   const relations = scanRelations(sql, ir);
   if (!relations.tables.some((ref) => ftsNames.has(ref.table))) return sql;
   const { tokens, depths, closes } = sqlStructure(sql);

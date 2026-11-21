@@ -128,6 +128,7 @@ import {
   RealtimeUnavailableError,
   transportFailed,
   localStateCorrupt,
+  projectionUnknown,
 } from './errors';
 import {
   ChangeAccumulator,
@@ -224,6 +225,14 @@ import {
   writePreviousVersionAudit,
   writePreviousVersionRefusal,
 } from './previous-version';
+import type {
+  ProjectionStore,
+  ProjectionInput,
+  ProjectionPending,
+  ProjectionPendingEvent,
+  ProjectionWriteResult,
+  compileLocalProjections,
+} from './projection';
 import {
   bytesToHex,
   type ClientSchema,
@@ -544,6 +553,7 @@ export interface SyncClientConfig {
    */
   readonly securityPreflight?: boolean;
   readonly authorityReads?: AuthorityReadPolicy;
+  readonly createProjections?: typeof compileLocalProjections;
   /**
    * RFC 0005 previous-version context. A feature flag, default off: when
    * absent or `enabled: false`, a schema bump behaves exactly as 0.22.0 did
@@ -1154,7 +1164,7 @@ export class SyncClient {
     }
     this.#retainFailedCommits = config.retainFailedCommits === true;
     this.#db = config.database;
-    this.#schema = compileClientSchema(config.schema);
+    this.#schema = compileClientSchema(config.schema, config.createProjections);
     this.#authorityReads = config.authorityReads;
     this.#authorityReads?.validate(this.#schema);
     const realtimePolicy = config.realtimePolicy ?? 'optional';
@@ -1163,9 +1173,7 @@ export class SyncClient {
       realtimePolicy !== 'optional' &&
       realtimePolicy !== 'off'
     ) {
-      throw invalidRequest(
-        "realtimePolicy must be 'required', 'optional', or 'off'",
-      );
+      throw invalidRequest('invalid realtimePolicy');
     }
     if (realtimePolicy === 'required' && config.realtime === undefined) {
       throw invalidRequest(
@@ -1718,9 +1726,7 @@ export class SyncClient {
   async activateSecurity(options: SecurityActivation = {}): Promise<void> {
     this.#requireStarted();
     if (this.#securityLifecycle === 'active') {
-      throw invalidRequest(
-        'activateSecurity requires the client to be in security preflight',
-      );
+      throw invalidRequest('activation requires security preflight');
     }
     const encryption = options.encryption && installKeys(options.encryption);
     await (this.#preflightBarrier ?? this.#opChain);
@@ -2049,7 +2055,7 @@ export class SyncClient {
     const table = record.tables.find((entry) => entry.name === spec.table);
     if (table === undefined) {
       throw invalidRequest(
-        `previousVersionSnapshot names unknown previous table ${JSON.stringify(spec.table)}`,
+        `unknown previous table ${JSON.stringify(spec.table)}`,
       );
     }
     const read = withPreviousVersionContainer(this.#db, (container) =>
@@ -2319,7 +2325,7 @@ export class SyncClient {
       }),
       securityLifecycle: this.#securityLifecycle,
       schema: definedObject({
-        currentVersion: this.#config.schema.version,
+        currentVersion: this.#schema.version,
         upgrading: !!this.#upgrading,
         requiredVersion: this.#schemaFloor?.requiredSchemaVersion,
         latestVersion: this.#schemaFloor?.latestSchemaVersion,
@@ -2440,7 +2446,7 @@ export class SyncClient {
     // RFC 0005 A2: previous-version presence, without creating the file.
     const record = this.#readPreviousVersionRecord();
     return {
-      currentSchemaVersion: this.#config.schema.version,
+      currentSchemaVersion: this.#schema.version,
       outbox: outboxCount ?? countOutbox(this.#db),
       upgrading: !!this.#upgrading,
       upgradeKeptTables: this.#upgrading === 'kept',
@@ -2472,10 +2478,11 @@ export class SyncClient {
     let status: SyncStatusSnapshot | undefined;
     let result!: T;
     try {
-      this.#db.transaction(() => {
+      this.#observedTransaction(() => {
         this.#batch = batch;
         try {
           result = fn(batch);
+          this.#schema.projections?.changes(batch);
           if (
             this.#db
               .query(
@@ -2493,7 +2500,7 @@ export class SyncClient {
         } finally {
           this.#batch = undefined;
         }
-      });
+      }, this.#held !== undefined);
     } catch (error) {
       this.#batch = undefined;
       onRollback?.(error);
@@ -2501,7 +2508,7 @@ export class SyncClient {
     }
     const publish = () => {
       const event = batch.finish(revision!, status);
-      const tables = [...new Set(event.tables.map((entry) => entry.table))];
+      const tables = event.tables.map((entry) => entry.table);
       const windows = [
         ...new Set(event.windows.map((entry) => entry.baseKey.split('\0')[0]!)),
       ];
@@ -2526,6 +2533,17 @@ export class SyncClient {
     if (revision !== undefined)
       if (this.#held) this.#held.push(publish);
       else publish();
+    return result;
+  }
+
+  #observedTransaction<T>(fn: () => T, held = false): T {
+    let pending: (() => void) | undefined;
+    const result = this.#db.transaction(() => {
+      const value = fn();
+      if (!held) pending = this.#schema.projections?.pendingEvents(this.#db);
+      return value;
+    });
+    pending?.();
     return result;
   }
 
@@ -2576,9 +2594,7 @@ export class SyncClient {
   ): Promise<BlobRef> {
     const owned = bytes.slice();
     return this.#runProtectedAsync(async () => {
-      if (this.#config.blobs === undefined) {
-        throw invalidRequest('uploadBlob requires a blob transport');
-      }
+      this.#blobTransport();
       const blobId = await computeBlobId(owned);
       const nowMs = this.#now();
       this.#db.transaction(() => {
@@ -2616,10 +2632,7 @@ export class SyncClient {
       const blobId = ref?.blobId ?? blobIdOrRef;
       const cached = getCachedBlob(this.#db, blobId);
       if (cached !== undefined) return cached;
-      const transport = this.#config.blobs;
-      if (transport === undefined) {
-        throw invalidRequest('fetchBlob requires a blob transport');
-      }
+      const transport = this.#blobTransport();
       // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
       // presign configured) a signed url the client fetches directly. On a url
       // arm the client MUST NOT attach host auth and MUST NOT fall through:
@@ -2633,7 +2646,7 @@ export class SyncClient {
       let bytes: Uint8Array;
       if (response.kind === 'url') {
         if (transport.fetchUrl === undefined) {
-          throw invalidRequest('blob transport cannot fetch urls');
+          throw invalidRequest('blob transport has no URL fetcher');
         }
         if (
           response.urlExpiresAtMs !== undefined &&
@@ -2668,6 +2681,12 @@ export class SyncClient {
       }
       return stored;
     });
+  }
+
+  #blobTransport(): NonNullable<SyncClientConfig['blobs']> {
+    const transport = this.#config.blobs;
+    if (!transport) throw invalidRequest('blob transport required');
+    return transport;
   }
 
   /** §5.9.7 B1: trim the blob cache to the configured cap (no-op if unset). */
@@ -2997,13 +3016,11 @@ export class SyncClient {
         replacement === input.clientCommitId
       ) {
         throw invalidRequest(
-          'superseded outcomes require a distinct replacementClientCommitId',
+          'supersession requires a distinct replacement commit',
         );
       }
     } else if (replacement !== undefined) {
-      throw invalidRequest(
-        'replacementClientCommitId is valid only for superseded outcomes',
-      );
+      throw invalidRequest('only supersession takes a replacement commit');
     }
     const allowed =
       ((current.status === 'conflict' || current.status === 'rejected') &&
@@ -3034,7 +3051,7 @@ export class SyncClient {
     )
       throw replacementPending();
     if (!provable(current, input.sequence))
-      throw invalidRequest('the outcome holds no complete retained aggregate');
+      throw invalidRequest('the retained outcome is incomplete');
     // Envelope operation i belongs to retained row i, so keep mine finds
     // every operation's row; a payload names no version for one.
     const operations = (
@@ -3373,7 +3390,7 @@ export class SyncClient {
     )
       throw new ClientSyncError(
         'sync.invalid_subscription',
-        'a unit names one non-wildcard value per variable and covers a table',
+        'a unit needs values and a covered table',
       );
     const id = unitId(scopes);
     const existing = getUnit(this.#db, id);
@@ -3631,7 +3648,7 @@ export class SyncClient {
       if (mutation.op === 'delete') {
         // §2.4: the server rejects a rowId holding U+0000.
         if (mutation.rowId.includes('\u0000'))
-          throw invalidRequest('rowId holds U+0000');
+          throw invalidRequest('rowId contains U+0000');
         staged.set(`${table.name} ${mutation.rowId}`, null);
         return definedObject({
           table: mutation.table,
@@ -3889,6 +3906,42 @@ export class SyncClient {
     ]);
   }
 
+  onProjectionPending(
+    listener: (event: ProjectionPendingEvent) => void,
+  ): () => void {
+    return this.#schema.projections?.onPending(listener) ?? (() => {});
+  }
+
+  #projections(name: string): ProjectionStore {
+    this.#requireActive();
+    return this.#schema.projections ?? projectionUnknown(name);
+  }
+
+  projectionPending(name: string, limit: number): ProjectionPending {
+    return this.#projections(name).pending(this.#db, name, limit);
+  }
+
+  writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly ProjectionInput[],
+  ): ProjectionWriteResult {
+    const projections = this.#projections(name);
+    return this.#applyBatch((batch) => {
+      const result = projections.write(this.#db, name, epoch, rows);
+      if (result.written.length) batch.table(name);
+      return result;
+    });
+  }
+
+  invalidateProjection(name: string, sourceIds?: readonly string[]): void {
+    const projections = this.#projections(name);
+    this.#applyBatch((batch) => {
+      projections.invalidate(this.#db, name, sourceIds);
+      batch.table(name);
+    });
+  }
+
   /**
    * Apply one host-authorized local security purge. The host must stop/gate
    * protected subscriptions before calling this method; this operation owns
@@ -3924,127 +3977,137 @@ export class SyncClient {
     let result: LocalDataPurgeResult;
     try {
       result = this.#applyBatch((batch) => {
-        const targetsByTable = new Map<
-          string,
-          CompiledLocalDataPurgeTarget[]
-        >();
-        for (const target of purge.targets)
-          targetsByTable.set(target.table.name, [
-            ...(targetsByTable.get(target.table.name) ?? []),
-            target,
-          ]);
-        restoreFailedBases(this.#db, this.#schema);
-        this.#dropRetainedRows(batch, (table, values) =>
-          (targetsByTable.get(table) ?? []).some((target) =>
-            target.selectors.every((selector) =>
-              selector.values.includes(String(values[selector.column])),
-            ),
-          ),
-        );
-        // Doomed detection runs to fixpoint, matching the Rust core's rule:
-        // a commit is doomed when any of its ops touches a base-matching
-        // row. Base values only become visible here as rollbacks restore
-        // before-images and rebase later commits' images onto them (a
-        // stacked edit over a moved row initially shows the moved values),
-        // so each pass rolls back what it caught — newest-first, so an
-        // older doomed write never reappears — and re-scans until the
-        // outbox is stable.
-        const doomed: OutboxCommit[] = [];
-        let rowIds = this.#localPurgeRowIds(purge);
-        for (;;) {
-          const caught = listOutbox(this.#db)
-            .filter((commit) => {
-              const images = new Map(
-                listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
-                  (image) => [image.opIndex, image],
-                ),
-              );
-              return commit.operations.some((operation, opIndex) => {
-                const targets = targetsByTable.get(operation.table);
-                if (targets === undefined) return false;
-                if (
-                  rowIds.get(operation.table)?.has(operation.rowId) === true
-                ) {
-                  return true;
-                }
-                if (
-                  operation.values !== undefined &&
-                  targets.some((target) =>
-                    localDataPurgeTargetMatches(target, operation.values ?? {}),
-                  )
-                ) {
-                  return true;
-                }
-                const beforeValues = images.get(opIndex)?.values;
-                return (
-                  beforeValues !== undefined &&
-                  targets.some((target) =>
-                    localDataPurgeTargetMatches(target, beforeValues),
-                  )
-                );
-              });
-            })
-            .sort((a, b) => b.seq - a.seq);
-          if (caught.length === 0) break;
-          for (const commit of caught) {
-            this.#rollbackFailedCommit(commit, batch);
-          }
-          doomed.push(...caught);
-          // Rollback may reveal a target row hidden by an optimistic delete
-          // or move; the re-selected set drives both the next scan and the
-          // final row deletion below.
-          rowIds = this.#localPurgeRowIds(purge);
-        }
-
         let purgedRows = 0;
-        for (const [tableName, ids] of rowIds) {
-          if (ids.size === 0) continue;
-          const table = this.#table(tableName);
-          const values = [...ids];
-          purgedRows += values.length;
-          batch.table(tableName);
-          for (let offset = 0; offset < values.length; offset += 400) {
-            const chunk = values.slice(offset, offset + 400);
-            this.#db.exec(
-              `DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(table.primaryKey)} IN(${chunk.map(() => '?').join(', ')})`,
-              chunk,
-            );
-          }
+        for (const name of purge.projections) {
+          purgedRows += this.#schema.projections!.invalidate(this.#db, name);
+          batch.table(name);
         }
-        if (
-          scrubPurgedOutcomes(this.#db, (table, rowId, values) =>
-            (targetsByTable.get(table) ?? []).some(
-              (target) =>
-                rowIds.get(table)?.has(rowId) === true ||
-                (values !== undefined &&
-                  localDataPurgeTargetMatches(target, values)),
+        let droppedCommits = 0;
+        if (purge.targets.length) {
+          const targetsByTable = new Map<
+            string,
+            CompiledLocalDataPurgeTarget[]
+          >();
+          for (const target of purge.targets)
+            targetsByTable.set(target.table.name, [
+              ...(targetsByTable.get(target.table.name) ?? []),
+              target,
+            ]);
+          restoreFailedBases(this.#db, this.#schema);
+          this.#dropRetainedRows(batch, (table, values) =>
+            (targetsByTable.get(table) ?? []).some((target) =>
+              target.selectors.every((selector) =>
+                selector.values.includes(String(values[selector.column])),
+              ),
             ),
-          )
-        )
-          batch.outcomes();
-
-        // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
-        // never its operations, so no purged value survives in it.
-        for (const { clientCommitId, operations } of doomed)
-          this.#journalDrop(
-            batch,
-            clientCommitId,
-            operations.map((_operation, opIndex) => ({
-              clientCommitId,
-              opIndex,
-              code: 'client.local_data_purged',
-              message:
-                'the commit was dropped by an application-authorized local data purge',
-              retryable: false,
-            })),
           );
-        this.#replayOutbox();
-        this.#deleteUnreferencedBlobs();
+          // Doomed detection runs to fixpoint, matching the Rust core's rule:
+          // a commit is doomed when any of its ops touches a base-matching
+          // row. Base values only become visible here as rollbacks restore
+          // before-images and rebase later commits' images onto them (a
+          // stacked edit over a moved row initially shows the moved values),
+          // so each pass rolls back what it caught — newest-first, so an
+          // older doomed write never reappears — and re-scans until the
+          // outbox is stable.
+          const doomed: OutboxCommit[] = [];
+          let rowIds = this.#localPurgeRowIds(purge);
+          for (;;) {
+            const caught = listOutbox(this.#db)
+              .filter((commit) => {
+                const images = new Map(
+                  listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
+                    (image) => [image.opIndex, image],
+                  ),
+                );
+                return commit.operations.some((operation, opIndex) => {
+                  const targets = targetsByTable.get(operation.table);
+                  if (targets === undefined) return false;
+                  if (
+                    rowIds.get(operation.table)?.has(operation.rowId) === true
+                  ) {
+                    return true;
+                  }
+                  if (
+                    operation.values !== undefined &&
+                    targets.some((target) =>
+                      localDataPurgeTargetMatches(
+                        target,
+                        operation.values ?? {},
+                      ),
+                    )
+                  ) {
+                    return true;
+                  }
+                  const beforeValues = images.get(opIndex)?.values;
+                  return (
+                    beforeValues !== undefined &&
+                    targets.some((target) =>
+                      localDataPurgeTargetMatches(target, beforeValues),
+                    )
+                  );
+                });
+              })
+              .sort((a, b) => b.seq - a.seq);
+            if (caught.length === 0) break;
+            for (const commit of caught) {
+              this.#rollbackFailedCommit(commit, batch);
+            }
+            doomed.push(...caught);
+            // Rollback may reveal a target row hidden by an optimistic delete
+            // or move; the re-selected set drives both the next scan and the
+            // final row deletion below.
+            rowIds = this.#localPurgeRowIds(purge);
+          }
+
+          for (const [tableName, ids] of rowIds) {
+            if (ids.size === 0) continue;
+            const table = this.#table(tableName);
+            const values = [...ids];
+            purgedRows += values.length;
+            batch.table(tableName);
+            for (let offset = 0; offset < values.length; offset += 400) {
+              const chunk = values.slice(offset, offset + 400);
+              this.#db.exec(
+                `DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(table.primaryKey)} IN(${chunk.map(() => '?').join(', ')})`,
+                chunk,
+              );
+            }
+          }
+          if (
+            scrubPurgedOutcomes(this.#db, (table, rowId, values) =>
+              (targetsByTable.get(table) ?? []).some(
+                (target) =>
+                  rowIds.get(table)?.has(rowId) === true ||
+                  (values !== undefined &&
+                    localDataPurgeTargetMatches(target, values)),
+              ),
+            )
+          )
+            batch.outcomes();
+
+          // §5.11 purge erasure: the journal keeps a dropped commit's identity and codes,
+          // never its operations, so no purged value survives in it.
+          for (const { clientCommitId, operations } of doomed)
+            this.#journalDrop(
+              batch,
+              clientCommitId,
+              operations.map((_operation, opIndex) => ({
+                clientCommitId,
+                opIndex,
+                code: 'client.local_data_purged',
+                message: 'local purge dropped the commit',
+                retryable: false,
+              })),
+            );
+          this.#replayOutbox();
+          this.#deleteUnreferencedBlobs();
+          droppedCommits = doomed.length;
+        }
         setMeta(this.#db, metaKey, purge.canonicalPlan);
         return {
           alreadyApplied: false,
           purgedRows,
-          droppedCommits: doomed.length,
+          droppedCommits,
         };
       });
     } catch (error) {
@@ -4068,7 +4131,12 @@ export class SyncClient {
     this.#db.exec('PRAGMA secure_delete = ON');
     try {
       this.#db.exec('VACUUM');
-      this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      if (this.#db.query('PRAGMA wal_checkpoint(TRUNCATE)')[0]?.busy)
+        throw new ClientSyncError(
+          'client.storage_busy',
+          'WAL checkpoint is busy',
+          true,
+        );
     } finally {
       this.#db.exec('PRAGMA secure_delete = OFF');
     }
@@ -4100,7 +4168,7 @@ export class SyncClient {
       };
     }
     if (this.#schemaFloor !== undefined) {
-      throw invalidRequest('local rebootstrap needs a schema-floor update');
+      throw invalidRequest('rebootstrap requires the current schema');
     }
 
     const pending = listOutbox(this.#db);
@@ -6118,7 +6186,7 @@ export class SyncClient {
           const rejections = this.#rejections.length;
           let failure: { error: unknown } | undefined;
           try {
-            failure = this.#db.transaction(() => {
+            failure = this.#observedTransaction(() => {
               try {
                 for (let rows = work; ;) {
                   step = steps.next();
@@ -6516,7 +6584,7 @@ export class SyncClient {
       ? pairScopes(unit.scopes, tableName, section.start.fenced)
       : undefined;
     if (effective === undefined)
-      throw invalidRequest('a segment names no active pair of its unit');
+      throw invalidRequest('segment has no active unit pair');
     // §3.3 owners matter only for rows the clear would reach, so a pair
     // with no matching local or retained row never reads the unit list.
     let owners: readonly ScopeMap[] | undefined;
@@ -6592,9 +6660,7 @@ export class SyncClient {
         fetchUrl === undefined ||
         (this.#acceptMask() & ACCEPT_SIGNED_URLS) === 0
       ) {
-        throw invalidRequest(
-          'SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)',
-        );
+        throw invalidRequest('a signed segment URL requires accept bit 3');
       }
       if (
         frame.urlExpiresAtMs !== undefined &&
@@ -6815,8 +6881,7 @@ export class SyncClient {
             clientCommitId,
             opIndex,
             code: 'sync.scope_revoked',
-            message:
-              'the commit was dropped because its effective scope was revoked',
+            message: 'scope revocation dropped the commit',
             retryable: false,
             operation,
           })),
@@ -7273,10 +7338,8 @@ export class SyncClient {
 
   #requireStarted(): void {
     if (this.#closed)
-      throw new ClientSyncError('client.closed', 'the sync client is closed');
-    if (!this.#started) {
-      throw invalidRequest('call start() first');
-    }
+      throw new ClientSyncError('client.closed', 'client is closed');
+    if (!this.#started) throw invalidRequest('call start() first');
   }
 
   #requireActive(): void {
@@ -7294,5 +7357,5 @@ function requireRowId(value: unknown): string {
   if (typeof value === 'string' && value.length > 0) return value;
   if (Number.isSafeInteger(value) || typeof value === 'boolean')
     return String(value);
-  throw invalidRequest('a mutation requires a non-empty primary key');
+  throw invalidRequest('mutation requires a primary key');
 }

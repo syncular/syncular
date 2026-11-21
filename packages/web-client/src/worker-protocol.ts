@@ -1,3 +1,9 @@
+import type {
+  ProjectionInput,
+  ProjectionPending,
+  ProjectionPendingEvent,
+  ProjectionWriteResult,
+} from './projection';
 import type { SyncProgress } from './progress';
 /**
  * The worker RPC protocol: the whole
@@ -196,6 +202,13 @@ export interface WorkerApi extends Omit<
     partial: Readonly<Record<string, unknown>>,
     options?: { readonly baseVersion?: number },
   ): string;
+  projectionPending(name: string, limit: number): ProjectionPending;
+  writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly ProjectionInput[],
+  ): ProjectionWriteResult;
+  invalidateProjection(name: string, sourceIds?: readonly string[]): void;
   /** Application-authorized, idempotent local security purge. */
   purgeLocalData(input: LocalDataPurgeInput): LocalDataPurgeResult;
   /** Application-authorized, outbox-preserving projection recovery. */
@@ -284,6 +297,10 @@ export interface WorkerErrorShape {
 }
 
 export type SyncWorkerEvent =
+  | {
+      readonly kind: 'projectionPending';
+      readonly event: ProjectionPendingEvent;
+    }
   | { readonly kind: 'progress'; readonly progress: SyncProgress }
   | {
       readonly kind: 'sync-needed';

@@ -29,6 +29,8 @@ pub struct TableIr {
     /// Client-local FTS5 projections; absent for tables without local search.
     #[serde(default, rename = "ftsIndexes")]
     pub fts_indexes: Vec<FtsIndexIr>,
+    #[serde(default)]
+    pub local_projections: Vec<LocalProjection>,
     /// §7.4.3 table generation (typegen); absent for hand-written schemas.
     #[serde(default)]
     pub generation: Option<String>,
@@ -67,6 +69,61 @@ pub struct FtsIndexIr {
     pub name: String,
     pub columns: Vec<String>,
     pub tokenize: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalProjection {
+    pub name: String,
+    pub generation: String,
+    pub columns: Vec<ProjectionColumn>,
+    pub fts: Option<ProjectionFts>,
+    #[serde(default)]
+    pub dependencies: Vec<ProjectionDependency>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectionColumn {
+    pub name: String,
+    pub declared_type: ProjectionType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectionType {
+    String,
+    Integer,
+    Real,
+    Boolean,
+    Json,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionFts {
+    pub tokenize: String,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectionDependency {
+    pub table: String,
+    pub column: String,
+    pub source_column: String,
+}
+
+fn fts_tokenizer(tokenizer: &str) -> bool {
+    matches!(
+        tokenizer,
+        "unicode61"
+            | "unicode61 remove_diacritics 0"
+            | "unicode61 remove_diacritics 1"
+            | "unicode61 remove_diacritics 2"
+            | "porter unicode61"
+            | "trigram"
+    )
 }
 
 /// One compiled local secondary index — created on the base + visible tables.
@@ -128,6 +185,7 @@ pub struct TableSchema {
     pub indexes: Vec<IndexSchema>,
     /// Client-local FTS5 projections, in declaration order.
     pub fts_indexes: Vec<FtsIndexSchema>,
+    pub local_projections: Vec<LocalProjection>,
     /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
     pub encrypted_columns: Vec<EncryptedColumn>,
     /// §6.7: indices of server-owned columns. Empty ⇒ every column is authored.
@@ -374,15 +432,7 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                     ));
                 }
             }
-            if !matches!(
-                index.tokenize.as_str(),
-                "unicode61"
-                    | "unicode61 remove_diacritics 0"
-                    | "unicode61 remove_diacritics 1"
-                    | "unicode61 remove_diacritics 2"
-                    | "porter unicode61"
-                    | "trigram"
-            ) {
+            if !fts_tokenizer(&index.tokenize) {
                 return Err(format!(
                     "table {:?}: FTS projection {:?} tokenizer {:?} is not allowlisted",
                     table.name, index.name, index.tokenize
@@ -410,9 +460,86 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
             scope_variables,
             indexes,
             fts_indexes,
+            local_projections: table.local_projections.clone(),
             encrypted_columns,
             server_owned_columns,
         });
+    }
+    let mut names: BTreeSet<_> = schema_object_names
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    for source in &tables {
+        for spec in &source.local_projections {
+            let invalid =
+                || "client.schema_invalid: invalid local projection declaration".to_owned();
+            let valid_ident = |name: &str| {
+                let lower = name.to_ascii_lowercase();
+                name.len() <= 63
+                    && !lower.starts_with("_sync")
+                    && !lower.starts_with("sync_")
+                    && !lower.starts_with("sqlite_")
+                    && name
+                        .bytes()
+                        .next()
+                        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            };
+            let lower = spec.name.to_ascii_lowercase();
+            if !valid_ident(&spec.name)
+                || !names.insert(lower.clone())
+                || spec.generation.is_empty()
+                || spec.columns.is_empty()
+                || spec.fts.as_ref().is_some_and(|fts| {
+                    !fts_tokenizer(&fts.tokenize)
+                        || fts.columns.is_empty()
+                        || fts.columns.iter().collect::<BTreeSet<_>>().len() != fts.columns.len()
+                        || !fts.columns.iter().all(|field| {
+                            spec.columns.iter().any(|col| {
+                                col.name == *field && col.declared_type == ProjectionType::String
+                            })
+                        })
+                })
+            {
+                return Err(invalid());
+            }
+            let mut columns = BTreeSet::new();
+            if spec.fts.is_some() {
+                columns.extend([lower, "rank".to_owned(), "rowid".to_owned()]);
+            }
+            for column in &spec.columns {
+                if !valid_ident(&column.name) || !columns.insert(column.name.to_ascii_lowercase()) {
+                    return Err(invalid());
+                }
+            }
+            for dependency in &spec.dependencies {
+                let dep = tables
+                    .iter()
+                    .find(|table| table.name == dependency.table)
+                    .ok_or_else(invalid)?;
+                let plaintext = |table: &TableSchema, name: &str| {
+                    table
+                        .columns
+                        .iter()
+                        .position(|col| col.name == name)
+                        .is_some_and(|index| {
+                            !table.encrypted_columns.iter().any(|col| col.index == index)
+                        })
+                };
+                if !plaintext(dep, &dependency.column)
+                    || !plaintext(source, &dependency.source_column)
+                    || (dependency.source_column != source.primary_key
+                        && !source
+                            .indexes
+                            .iter()
+                            .any(|index| index.columns.first() == Some(&dependency.source_column)))
+                {
+                    return Err(invalid());
+                }
+            }
+        }
     }
     Ok(ClientSchema {
         version: ir.version,
@@ -436,8 +563,23 @@ pub fn parse_schema_json(json: &serde_json::Value) -> Result<ClientSchema, Strin
                 .to_owned(),
         );
     }
-    let ir: SchemaIr =
-        serde_json::from_value(json.clone()).map_err(|e| format!("bad schema IR: {e}"))?;
+    let ir: SchemaIr = serde_json::from_value(json.clone()).map_err(|e| {
+        if json
+            .get("tables")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|tables| {
+                tables.iter().any(|table| {
+                    table.get("localProjections").is_some_and(|projections| {
+                        serde_json::from_value::<Vec<LocalProjection>>(projections.clone()).is_err()
+                    })
+                })
+            })
+        {
+            "client.schema_invalid: invalid local projection declaration".to_owned()
+        } else {
+            format!("bad schema IR: {e}")
+        }
+    })?;
     compile_schema(&ir)
 }
 

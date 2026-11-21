@@ -1414,10 +1414,15 @@ pub struct RowState {
 /// one input are OR-combined. Selector columns must compile to plaintext
 /// strings; values are bounded code-like routing identifiers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LocalDataPurgeTarget {
-    pub table: String,
-    pub selectors: BTreeMap<String, Vec<String>>,
+#[serde(untagged, deny_unknown_fields)]
+pub enum LocalDataPurgeTarget {
+    Table {
+        table: String,
+        selectors: BTreeMap<String, Vec<String>>,
+    },
+    Projection {
+        projection: String,
+    },
 }
 
 /// Durable local idempotency key plus exact routing targets. The host owns

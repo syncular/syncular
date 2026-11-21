@@ -62,6 +62,35 @@
           "unique": false
         }
       ],
+      "localProjections": [
+        {
+          "name": "patient_display",
+          "generation": "42a16f427d257788e549325674263fa5",
+          "columns": [
+            {
+              "name": "display_name",
+              "declaredType": "string"
+            },
+            {
+              "name": "display_order",
+              "declaredType": "integer"
+            }
+          ],
+          "fts": {
+            "tokenize": "unicode61",
+            "columns": [
+              "display_name"
+            ]
+          },
+          "dependencies": [
+            {
+              "table": "patients",
+              "column": "clinic_id",
+              "sourceColumn": "clinic_id"
+            }
+          ]
+        }
+      ],
       "extensions": {}
     }
   ],

@@ -40,6 +40,18 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         192000,
       ],
       [
+        'projection-client',
+        `import { SyncClient } from '${root}/packages/web-client/src/client.ts'; import { compileLocalProjections } from '${root}/packages/web-client/src/projection.ts'; export const create = config => new SyncClient({ ...config, createProjections: compileLocalProjections });`,
+        false,
+        Infinity,
+      ],
+      [
+        'projection-worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { compileLocalProjections } from '${root}/packages/web-client/src/projection.ts'; startSyncWorker({ createProjections: compileLocalProjections });`,
+        false,
+        Infinity,
+      ],
+      [
         'authority-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { defineAuthorityReads } from '${root}/packages/web-client/src/authority.ts'; startSyncWorker({ createAuthorityReads: defineAuthorityReads });`,
         true,
@@ -116,6 +128,9 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       const code = new TextDecoder().decode(bytes);
       // No production entry imports `@syncular/client/dev`.
       expect(code).not.toContain('client.profiler_in_production');
+      expect(code.includes('_syncular_projection_pending')).toBe(
+        lane.startsWith('projection-'),
+      );
       for (const method of [
         'localAuthorityState',
         'attachLocalAuthority',

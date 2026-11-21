@@ -36,7 +36,7 @@ const freshSource = makeServer(OPFS_SCHEMA, {
     },
   },
 });
-freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+freshSource.allowed['actor-1'] = { project_id: ['p1', 'projection-handover'] };
 freshSource.allowed.seed = { project_id: ['p1'] };
 let deferFreshPulls = 0;
 scopeSource.allowed['actor-1'] = { calendar_theatre_id: ['p1'] };
@@ -1424,7 +1424,9 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
 }, 60000);
 
 test('OPFS worker keeps a decision recorded before a reload and writes it', async () => {
-  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+  freshSource.allowed['actor-1'] = {
+    project_id: ['p1', 'projection-handover'],
+  };
   const seed = await makeClient(freshSource, {
     actorId: 'seed',
     clientId: 'decide-seed',
@@ -1512,7 +1514,9 @@ test('OPFS worker keeps a decision recorded before a reload and writes it', asyn
 }, 60000);
 
 test('OPFS live query refused in preflight reads again on activation', async () => {
-  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+  freshSource.allowed['actor-1'] = {
+    project_id: ['p1', 'projection-handover'],
+  };
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -1532,7 +1536,9 @@ test('OPFS live query refused in preflight reads again on activation', async () 
 
 test('OPFS purge leaves no purged value in any file of the pool', async () => {
   const marker = 'PURGEMARKER-OPFS-51c2';
-  freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+  freshSource.allowed['actor-1'] = {
+    project_id: ['p1', 'projection-handover'],
+  };
   const seed = await makeClient(freshSource, {
     actorId: 'seed',
     clientId: 'purge-seed',
@@ -2117,6 +2123,112 @@ test('OPFS leader and follower observe network and HTTP failure evidence and rec
         await context.close();
       }
     }
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS follower resumes projection pending work after leader handover', async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext();
+  try {
+    const schema = {
+      ...OPFS_SCHEMA,
+      tables: [
+        {
+          ...OPFS_SCHEMA.tables[0]!,
+          localProjections: [
+            {
+              name: 'local_titles',
+              generation: '1',
+              columns: [{ name: 'title', declaredType: 'string' as const }],
+              fts: { tokenize: 'unicode61', columns: ['title'] },
+            },
+          ],
+        },
+      ],
+    };
+    const url = new URL('/?fresh', server.url).href;
+    const owner = await context.newPage();
+    await owner.goto(url);
+    await owner.evaluate((input) => window.opfsTest.open(false, input), schema);
+    const follower = await context.newPage();
+    await follower.goto(url);
+    await follower.evaluate(
+      (input) => window.opfsTest.open(false, input),
+      schema,
+    );
+    const before = await follower.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({ project_id: 'projection-handover' });
+      const pending = Promise.withResolvers<string>();
+      const unlisten = client.onProjectionPending((event) =>
+        pending.resolve(event.name),
+      );
+      await client.mutate(
+        ['projection-handover-1', 'projection-handover-2'].map((id) => ({
+          table: 'catalogue',
+          op: 'upsert' as const,
+          values: {
+            id,
+            project_id: 'projection-handover',
+            title: `sealed value ${id}`,
+          },
+        })),
+      );
+      const pendingName = await pending.promise;
+      unlisten();
+      await client.syncUntilIdle();
+      const batch = await client.projectionPending('local_titles', 10000);
+      const entries = batch.entries.filter((entry) =>
+        entry.sourceId.startsWith('projection-handover-'),
+      );
+      await client.writeProjection('local_titles', batch.epoch, [
+        { ...entries[0]!, values: null },
+      ]);
+      return {
+        pendingName,
+        role: client.role,
+        epoch: batch.epoch,
+        remaining: entries.slice(1),
+      };
+    });
+    expect(before.role).toBe('follower');
+    expect(before.pendingName).toBe('local_titles');
+    expect(before.remaining.map((entry) => entry.sourceId)).toEqual([
+      'projection-handover-2',
+    ]);
+    expect(follower.workers()).toHaveLength(0);
+    await owner.close();
+    await follower.waitForFunction(
+      async () => (await window.opfsTest.ready).role === 'leader',
+    );
+    const after = await follower.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const batch = await client.projectionPending('local_titles', 10000);
+      const remaining = batch.entries.filter((entry) =>
+        entry.sourceId.startsWith('projection-handover-'),
+      );
+      const result = await client.writeProjection(
+        'local_titles',
+        batch.epoch,
+        remaining.map((entry) => ({
+          ...entry,
+          values: { title: 'derived handover' },
+        })),
+      );
+      const hits = await client.query(
+        "SELECT title FROM local_titles WHERE local_titles MATCH 'handover'",
+      );
+      await client.close();
+      return { epoch: batch.epoch, remaining, result, hits };
+    });
+    expect(after).toEqual({
+      epoch: before.epoch,
+      remaining: before.remaining,
+      result: { written: ['projection-handover-2'], stale: [] },
+      hits: [{ title: 'derived handover' }],
+    });
   } finally {
     await browser.close();
   }

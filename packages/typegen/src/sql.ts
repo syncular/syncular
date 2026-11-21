@@ -550,7 +550,7 @@ function parseCreate(
   );
 }
 
-const ALLOWED_FTS_TOKENIZERS = new Set([
+export const ALLOWED_FTS_TOKENIZERS = new Set([
   'unicode61',
   'unicode61 remove_diacritics 0',
   'unicode61 remove_diacritics 1',

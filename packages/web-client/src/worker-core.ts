@@ -14,6 +14,7 @@
  * the core owns exactly one loop.
  */
 import { definedObject } from '@syncular/core';
+import type { compileLocalProjections } from './projection';
 import type { defineAuthorityReads } from './authority';
 import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { SyncClient } from './client';
@@ -68,6 +69,7 @@ export interface SyncWorkerOverrides {
   readonly headers?: HeaderSource;
   /** Explicit authority reader factory. Required when init declares authorityReads. */
   readonly createAuthorityReads?: typeof defineAuthorityReads;
+  readonly createProjections?: typeof compileLocalProjections;
   /** Database factory indirection: tests inject bun:sqlite here. */
   readonly openDatabase?: (
     config: WorkerInitConfig,
@@ -452,6 +454,7 @@ export function startSyncWorkerCore(
         realtimePolicy: config.realtimePolicy,
         realtimeHeartbeatMs: config.realtimeHeartbeatMs,
         encryption: config.encryption,
+        createProjections: overrides.createProjections,
         authorityReads:
           config.authorityReads &&
           overrides.createAuthorityReads!(config.authorityReads),
@@ -496,6 +499,9 @@ export function startSyncWorkerCore(
     started.onChange((batch) => {
       emit({ kind: 'change', batch });
     });
+    started.onProjectionPending((event) =>
+      emit({ kind: 'projectionPending', event }),
+    );
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
@@ -525,6 +531,9 @@ export function startSyncWorkerCore(
     'subscribeMany',
     'unsubscribe',
     'windowState',
+    'projectionPending',
+    'writeProjection',
+    'invalidateProjection',
     'purgeLocalData',
     'rebootstrapLocalData',
     'previousVersionSnapshot',

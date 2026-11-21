@@ -58,6 +58,15 @@ export class ClientSyncError extends Error {
 }
 
 /** `sync.local_corrupt`: persisted local state this client cannot read. */
+export function projectionUnknown(name: string): never {
+  throw new ClientSyncError(
+    'client.projection_unknown',
+    'unknown local projection',
+    false,
+    { name },
+  );
+}
+
 export function localStateCorrupt(message: string): ClientSyncError {
   return new ClientSyncError('sync.local_corrupt', message);
 }
@@ -138,6 +147,13 @@ export class RealtimeUnavailableError extends ClientSyncError {
   }
 }
 
+function sqliteRollbackFailure(error: unknown) {
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    sqliteCode: classifySqliteFailure(error).sqliteCode,
+  };
+}
+
 /**
  * SPEC §7.5: classify a local SQLite read failure by the numeric result code
  * the driver exposes (bun:sqlite `errno`, node:sqlite `errcode`, sqlite-wasm
@@ -171,11 +187,7 @@ export function classifySqliteFailure(error: unknown): {
         error.retryable,
         {
           ...error.details,
-          rollbackFailure: {
-            message:
-              rollback instanceof Error ? rollback.message : String(rollback),
-            sqliteCode: classifySqliteFailure(rollback).sqliteCode,
-          },
+          rollbackFailure: sqliteRollbackFailure(rollback),
         },
         error.recommendedAction,
       );
@@ -250,11 +262,7 @@ export function classifySqliteFailure(error: unknown): {
       ...(vfsErrorName !== undefined ? { vfsErrorName } : {}),
       ...(rollback !== undefined
         ? {
-            rollbackFailure: {
-              message:
-                rollback instanceof Error ? rollback.message : String(rollback),
-              sqliteCode: classifySqliteFailure(rollback).sqliteCode,
-            },
+            rollbackFailure: sqliteRollbackFailure(rollback),
           }
         : {}),
     },

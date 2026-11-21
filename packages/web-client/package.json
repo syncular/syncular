@@ -90,6 +90,14 @@
         "default": "./dist/authority.js"
       }
     },
+    "./projections": {
+      "bun": "./src/projection.ts",
+      "browser": "./dist/projection.js",
+      "import": {
+        "types": "./dist/projection.d.ts",
+        "default": "./dist/projection.js"
+      }
+    },
     "./native-bridge": {
       "bun": "./src/native-bridge.ts",
       "browser": "./dist/native-bridge.js",

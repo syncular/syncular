@@ -1,5 +1,33 @@
 # Syncular release notes
 
+## 0.101.0 release notes
+
+### App-filled local projections
+
+Declare `localProjections` on a synced table to store values your app
+derives from its rows. Pending work survives restarts. When a write affects
+a source row or a matching dependency, the client clears the derived row in
+the same transaction.
+
+Use `projectionPending` to fetch work and `writeProjection` to submit the
+results. The client uses the batch epoch and each row's token to skip stale
+results. Call `invalidateProjection` to clear selected rows and invalidate
+outstanding batches for the projection. List the string columns to index in
+`fts.columns`.
+
+Direct TypeScript clients and browser workers register the projection
+implementation from `@syncular/client/projections`. The Rust client loads
+the projection from the generated schema. Derived values stay in local
+SQLite as plaintext.
+
+The `projectionPending` event names a projection with newly queued work.
+In a Tauri Rust host, use `app.syncular()` to read sealed source rows and
+fill projections in Rust. During security preflight, pass a projection
+target to `purgeLocalData` to erase derived plaintext from the replica file
+and WAL. The purge preserves source rows and pending commits.
+
+[App-filled local projections](https://syncular.dev/tooling-local-search/#app-filled-local-projections)
+
 ## 0.100.0 release notes
 
 ### Add an encryption key while the client runs

@@ -1740,3 +1740,81 @@ test.skipIf(!available)(
     }
   },
 );
+
+test.skipIf(!available)(
+  'native Tauri owner serves revisioned projection commands',
+  async () => {
+    const harness = nativeTauri();
+    try {
+      const client = await createTauriSyncClient({
+        schema: {
+          ...schema,
+          tables: [
+            {
+              ...schema.tables[0]!,
+              localProjections: [
+                {
+                  name: 'local_titles',
+                  generation: '1',
+                  columns: [{ name: 'display_title', declaredType: 'string' }],
+                  fts: { tokenize: 'unicode61', columns: ['display_title'] },
+                },
+              ],
+            },
+          ],
+        },
+        tauri: harness.api,
+        transportEnabled: false,
+      });
+      await client.mutate([
+        {
+          table: 'todos',
+          op: 'upsert',
+          values: { id: 'one', list_id: 'l1', title: 'sealed' },
+        },
+      ]);
+      const { epoch, entries } = await client.projectionPending(
+        'local_titles',
+        10,
+      );
+      expect(entries.map((entry) => entry.sourceId)).toEqual(['one']);
+      const before = await client.localRevision();
+      await expect(
+        client.writeProjection(
+          'local_titles',
+          epoch,
+          entries.map((entry) => ({
+            ...entry,
+            values: { unexpected: 'name' },
+          })),
+        ),
+      ).rejects.toMatchObject({
+        code: 'client.projection_invalid',
+        details: { name: 'local_titles', column: 'unexpected' },
+      });
+      const rows = entries.map((entry) => ({
+        ...entry,
+        values: { display_title: 'derived title' },
+      }));
+      expect(await client.writeProjection('local_titles', epoch, rows)).toEqual(
+        { written: ['one'], stale: [] },
+      );
+      expect(await client.localRevision()).toBe(before + 1n);
+      expect(
+        await client.query(
+          "SELECT display_title FROM local_titles WHERE local_titles MATCH 'derived'",
+        ),
+      ).toEqual([{ display_title: 'derived title' }]);
+      await client.invalidateProjection('local_titles', ['one']);
+      expect(await client.writeProjection('local_titles', epoch, rows)).toEqual(
+        { written: [], stale: ['one'] },
+      );
+      expect(
+        await client.query('SELECT display_title FROM local_titles'),
+      ).toEqual([]);
+      await client.close();
+    } finally {
+      await harness.close();
+    }
+  },
+);

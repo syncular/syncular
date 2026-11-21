@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-21',
+    title: 'App-filled local projections',
+    body: 'Store and search values your app derives on the device. Pending work survives restarts. The client clears derived rows when a write affects their source or a declared dependency.',
+    links: [
+      {
+        href: '/tooling-local-search/#app-filled-local-projections',
+        label: 'App-filled local projections',
+      },
+    ],
+  },
+  {
+    date: '2026-11-21',
     title: 'The transport asks for headers',
     body: "A hidden Mac app sent native `/sync` requests with an expired bearer for 4 minutes, because the page pushed renewed headers through a throttled webview. No host has a call that pushes headers into a running client. The host now gives the client a header source, and the transport asks it before every sync, segment, blob, and remote-operation request and every native WebSocket handshake. A signed URL never asks, and concurrent requests share one question. A 401 asks once more with the refused headers and resends once; a second 401 surfaces the retryable `sync.auth_required`, and the next attempt asks again. A source that fails, or answers no headers, fails the request with `sync.auth_required` and `causeKind` `header_source`. The browser worker takes `startSyncWorker({ headers })`; Swift, Kotlin, Flutter and React Native take `headers` in their config; Tauri takes `header_source` in the host's Rust `SyncularConfig`; a binding with a `baseUrl` and no source throws `client.headers_required`.",
     links: [

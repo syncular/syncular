@@ -76,6 +76,43 @@ export interface DriverScopePattern {
   readonly column?: string;
 }
 
+interface DriverLocalProjection {
+  readonly name: string;
+  readonly generation: string;
+  readonly columns: readonly {
+    readonly name: string;
+    readonly declaredType: 'string' | 'integer' | 'real' | 'boolean' | 'json';
+  }[];
+  readonly fts?: {
+    readonly tokenize: string;
+    readonly columns: readonly string[];
+  };
+  readonly dependencies?: readonly {
+    readonly table: string;
+    readonly column: string;
+    readonly sourceColumn: string;
+  }[];
+}
+
+export interface DriverProjectionInput {
+  readonly sourceId: string;
+  readonly token: number;
+  readonly values: Record<string, JsonValue> | null;
+}
+
+export interface DriverProjectionPending {
+  readonly epoch: number;
+  readonly entries: readonly {
+    readonly sourceId: string;
+    readonly token: number;
+  }[];
+}
+
+export interface DriverProjectionWriteResult {
+  readonly written: readonly string[];
+  readonly stale: readonly string[];
+}
+
 export interface DriverTable {
   readonly name: string;
   /** §7.4.3 table generation; a bump keeps the table while it is equal. */
@@ -98,6 +135,7 @@ export interface DriverTable {
     readonly parentTable: string;
     readonly onDelete?: 'RESTRICT' | 'CASCADE' | 'SET NULL';
   }[];
+  readonly localProjections?: readonly DriverLocalProjection[];
   readonly ftsIndexes?: readonly {
     readonly name: string;
     readonly columns: readonly string[];
@@ -1282,6 +1320,34 @@ export interface DriverSyncProgress {
 }
 
 export interface ClientInstance {
+  projectionPending(
+    name: string,
+    limit: number,
+  ): Promise<DriverProjectionPending>;
+  writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly DriverProjectionInput[],
+  ): Promise<DriverProjectionWriteResult>;
+  invalidateProjection(
+    name: string,
+    sourceIds?: readonly string[],
+  ): Promise<void>;
+  drainProjectionPending(): Promise<
+    readonly { type: 'projectionPending'; name: string }[]
+  >;
+  purgeLocalData(
+    purgeId: string,
+    targets: readonly (
+      | { table: string; selectors: Record<string, string[]> }
+      | { projection: string }
+    )[],
+  ): Promise<{
+    alreadyApplied: boolean;
+    purgedRows: number;
+    droppedCommits: number;
+  }>;
+  rebootstrapLocalData(rebootstrapId: string): Promise<void>;
   authoritySnapshot(): Promise<DriverAuthoritySnapshot>;
   beginSecurityPreflight(): Promise<void>;
   /** §5.11: `encryption` installs that keyring on activation. */

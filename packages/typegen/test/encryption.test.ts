@@ -285,3 +285,120 @@ describe('§5.11 sealed apply in generated read types', () => {
     );
   });
 });
+
+test('app-filled projection generation is independent of the source table generation', () => {
+  const base = manifest([]);
+  const [notes] = base.tables;
+  const project = (name: string) =>
+    buildIr(
+      {
+        ...base,
+        tables: [
+          {
+            ...notes!,
+            localProjections: [
+              {
+                name: 'local_notes',
+                columns: [{ name, declaredType: 'string' }],
+              },
+            ],
+          },
+        ],
+      },
+      MIGRATIONS,
+    ).tables[0]!;
+  const a = project('summary');
+  const b = project('caption');
+  expect(a.generation).toBe(buildIr(base, MIGRATIONS).tables[0]?.generation);
+  expect(b.generation).toBe(a.generation);
+  expect(b.localProjections?.[0]?.generation).not.toBe(
+    a.localProjections?.[0]?.generation,
+  );
+});
+
+test.each([
+  { table: 'missing', column: 'id', sourceColumn: 'id' },
+  { table: 'notes', column: 'body', sourceColumn: 'id' },
+  { table: 'notes', column: 'id', sourceColumn: 'body' },
+  { table: 'notes', column: 'id', sourceColumn: 'amount' },
+])('app-filled projection refuses an invalid dependency %o', (dependency) => {
+  const base = manifest(['body']);
+  const [notes] = base.tables;
+  expect(() =>
+    buildIr(
+      {
+        ...base,
+        tables: [
+          {
+            ...notes!,
+            localProjections: [
+              {
+                name: 'local_notes',
+                columns: [{ name: 'summary', declaredType: 'string' }],
+                dependencies: [dependency],
+              },
+            ],
+          },
+        ],
+      },
+      MIGRATIONS,
+    ),
+  ).toThrow(expect.objectContaining({ code: 'client.schema_invalid' }));
+});
+
+test('typegen refuses source columns mixed into an app-filled projection', () => {
+  expect(() =>
+    parseManifest({
+      manifestVersion: 1,
+      schemaVersions: [{ version: 1, through: '0001_initial' }],
+      tables: [
+        {
+          name: 'notes',
+          scopes: ['project:{project_id}'],
+          localProjections: [
+            {
+              name: 'local_notes',
+              columns: [
+                { name: 'summary', declaredType: 'string' },
+                { name: 'copied', declaredType: 'string', source: 'body' },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+  ).toThrow(expect.objectContaining({ code: 'client.schema_invalid' }));
+});
+
+test.each([
+  { tokenize: 'unicode61' },
+  { tokenize: 'unicode61', columns: [] },
+  { tokenize: 'unicode61', columns: ['missing'] },
+  { tokenize: 'unicode61', columns: ['weight'] },
+])('projection FTS refuses invalid column selection %o', (fts) => {
+  expect(() =>
+    buildIr(
+      parseManifest({
+        manifestVersion: 1,
+        schemaVersions: [{ version: 1, through: '0001_initial' }],
+        tables: [
+          {
+            name: 'notes',
+            scopes: ['project:{project_id}'],
+            localProjections: [
+              {
+                name: 'local_notes',
+                columns: [
+                  { name: 'summary', declaredType: 'string' },
+                  { name: 'weight', declaredType: 'integer' },
+                ],
+                fts,
+              },
+            ],
+          },
+        ],
+      }),
+      MIGRATIONS,
+    ),
+  ).toThrow(expect.objectContaining({ code: 'client.schema_invalid' }));
+});

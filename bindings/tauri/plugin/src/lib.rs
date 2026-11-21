@@ -259,9 +259,45 @@ struct SyncularState {
     /// The IPC channel of the webview whose `create` opened the client. Only
     /// that webview receives the client's events.
     events: Arc<Mutex<Option<Channel<Value>>>>,
+    host_events: Arc<Mutex<Vec<Sender<Value>>>>,
     /// The label of the webview whose `create` succeeded last. The app has one
     /// client, so every other command from another webview is refused.
-    owner: Mutex<Option<String>>,
+    owner: Mutex<Option<Option<String>>>,
+}
+
+/// Access the plugin's owner thread from the Rust host.
+pub trait SyncularExt<R: Runtime> {
+    fn syncular(&self) -> SyncularHost;
+}
+
+impl<R: Runtime, M: Manager<R>> SyncularExt<R> for M {
+    fn syncular(&self) -> SyncularHost {
+        SyncularHost(Arc::clone(&self.state::<Arc<SyncularState>>()))
+    }
+}
+
+/// Commands and events for the replica owned by the Tauri plugin.
+#[derive(Clone)]
+pub struct SyncularHost(Arc<SyncularState>);
+
+impl SyncularHost {
+    /// Run a command on the owner thread and wait for its JSON reply.
+    pub fn command(&self, command: &Value) -> Value {
+        self.0
+            .command(command.clone(), None)
+            .unwrap_or_else(|error| client_error(&error))
+    }
+
+    /// Read the same events delivered to the owning webview.
+    pub fn subscribe(&self) -> Receiver<Value> {
+        let (send, receive) = std::sync::mpsc::channel();
+        self.0
+            .host_events
+            .lock()
+            .expect("syncular event readers")
+            .push(send);
+        receive
+    }
 }
 
 struct SecurityGateState {
@@ -347,8 +383,8 @@ impl SyncularState {
             .owner
             .lock()
             .map_err(|_| client_error("syncular owner poisoned"))?;
-        match owner.as_deref() {
-            Some(owner) if owner != label => Err(json!({ "error": {
+        match owner.as_ref() {
+            Some(owner) if owner.as_deref() != Some(label) => Err(json!({ "error": {
                 "code": "sync.client_owned_by_another_webview",
                 "message": "the native client belongs to another webview"
             } })),
@@ -1059,7 +1095,10 @@ async fn syncular_command<R: Runtime>(
         .unwrap_or("")
         .to_owned();
     if method != "create" {
-        if let Err(reply) = app.state::<SyncularState>().require_owner(webview.label()) {
+        if let Err(reply) = app
+            .state::<Arc<SyncularState>>()
+            .require_owner(webview.label())
+        {
             return Ok(reply);
         }
     }
@@ -1103,28 +1142,8 @@ async fn syncular_command<R: Runtime>(
         )
         .await;
     }
-    let state = app.state::<SyncularState>();
-    if method == "create" || method == "beginSecurityPreflight" || method == "shutdown" {
-        // Gate fast reads and wait for already-started sidecar snapshots before
-        // the owner-thread barrier is enqueued.
-        state.security_gate.begin_preflight()?;
-    }
-    // Taken after the gate drained, so no admitted read still waits for it.
-    let mut reader = if method == "create" || method == "shutdown" {
-        Some(
-            state
-                .reader
-                .lock()
-                .map_err(|_| "syncular read mailbox poisoned".to_owned())?,
-        )
-    } else {
-        None
-    };
-    let mut database = None;
-    let mut events = None;
-    if method == "create" {
-        // An app-wide emit reaches every webview allowed to `listen`, so the
-        // events travel on the creating webview's own IPC channel.
+    let state = app.state::<Arc<SyncularState>>();
+    let owner = if method == "create" {
         let channel = command
             .get_mut("params")
             .and_then(Value::as_object_mut)
@@ -1134,116 +1153,152 @@ async fn syncular_command<R: Runtime>(
             .and_then(Value::as_str)
             .map(JavaScriptChannelId::from_str)
         {
-            Some(Ok(id)) => events = Some(id.channel_on(webview)),
+            Some(Ok(id)) => Some((label, id.channel_on(webview))),
             _ => {
                 return Ok(invalid_request(
                     "sync.invalid_request: create requires an events channel",
                 ))
             }
         }
-        if let Some(reads) = command.pointer("/params/authorityReads") {
-            let declarations: Vec<syncular_client::AuthorityReadDeclaration> =
-                match serde_json::from_value(reads.clone()) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return Ok(
-                            json!({"error": {"code": "client.authority_read_forbidden", "message": "invalid authority declaration"}}),
-                        )
-                    }
+    } else {
+        None
+    };
+    state.command(command, owner)
+}
+
+impl SyncularState {
+    fn command(
+        &self,
+        mut command: Value,
+        webview: Option<(String, Channel<Value>)>,
+    ) -> Result<Value, String> {
+        let method = command
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        if method == "create" || method == "beginSecurityPreflight" || method == "shutdown" {
+            // Gate fast reads and wait for already-started sidecar snapshots before
+            // the owner-thread barrier is enqueued.
+            self.security_gate.begin_preflight()?;
+        }
+        // Taken after the gate drained, so no admitted read still waits for it.
+        let mut reader = if method == "create" || method == "shutdown" {
+            Some(
+                self.reader
+                    .lock()
+                    .map_err(|_| "syncular read mailbox poisoned".to_owned())?,
+            )
+        } else {
+            None
+        };
+        let mut database = None;
+        if method == "create" {
+            if let Some(reads) = command.pointer("/params/authorityReads") {
+                let declarations: Vec<syncular_client::AuthorityReadDeclaration> =
+                    match serde_json::from_value(reads.clone()) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            return Ok(
+                                json!({"error": {"code": "client.authority_read_forbidden", "message": "invalid authority declaration"}}),
+                            )
+                        }
+                    };
+                if !declarations.iter().all(|read| {
+                    self.config
+                        .authority_columns
+                        .get(&read.table)
+                        .is_some_and(|columns| read.columns.iter().all(|c| columns.contains(c)))
+                }) {
+                    return Ok(
+                        json!({"error": {"code": "client.authority_read_forbidden", "message": "authority declaration exceeds the native app policy"}}),
+                    );
+                }
+            }
+            database =
+                match resolve_database(&self.config, command.get("params").unwrap_or(&Value::Null))
+                {
+                    Ok(path) => path,
+                    Err(reply) => return Ok(reply),
                 };
-            if !declarations.iter().all(|read| {
-                state
-                    .config
-                    .authority_columns
-                    .get(&read.table)
-                    .is_some_and(|columns| read.columns.iter().all(|c| columns.contains(c)))
-            }) {
-                return Ok(
-                    json!({"error": {"code": "client.authority_read_forbidden", "message": "authority declaration exceeds the native app policy"}}),
-                );
-            }
-        }
-        database =
-            match resolve_database(&state.config, command.get("params").unwrap_or(&Value::Null)) {
-                Ok(path) => path,
-                Err(reply) => return Ok(reply),
-            };
-        if let Some(path) = &database {
-            match command.get_mut("params").and_then(Value::as_object_mut) {
-                Some(params) => {
-                    params.insert("dbPath".to_owned(), Value::from(path.clone()));
-                }
-                None => {
-                    if let Some(object) = command.as_object_mut() {
-                        object.insert("params".to_owned(), json!({ "dbPath": path }));
+            if let Some(path) = &database {
+                match command.get_mut("params").and_then(Value::as_object_mut) {
+                    Some(params) => {
+                        params.insert("dbPath".to_owned(), Value::from(path.clone()));
+                    }
+                    None => {
+                        if let Some(object) = command.as_object_mut() {
+                            object.insert("params".to_owned(), json!({ "dbPath": path }));
+                        }
                     }
                 }
             }
         }
-    }
-    let create_preflight = method == "create"
-        && command
-            .pointer("/params/securityPreflight")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-    // Installed before the create runs, so its first events reach the channel.
-    let previous_events = match events {
-        Some(channel) => Some(
-            state
+        let create_preflight = method == "create"
+            && command
+                .pointer("/params/securityPreflight")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        // Installed before the create runs, so its first events reach the channel.
+        let previous_events = if method == "create" {
+            Some(std::mem::replace(
+                &mut *self
+                    .events
+                    .lock()
+                    .map_err(|_| "syncular event channel poisoned".to_owned())?,
+                webview.as_ref().map(|(_, channel)| channel.clone()),
+            ))
+        } else {
+            None
+        };
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.send(Request::Command {
+            command,
+            reply: reply_tx,
+        })?;
+        let reply = reply_rx
+            .recv()
+            .map_err(|_| "the syncular core dropped the reply".to_owned())?;
+        let succeeded = reply.get("error").is_none();
+        // A refused create leaves the previous client, and its webview, in place.
+        if let (false, Some(previous)) = (succeeded, previous_events) {
+            *self
                 .events
                 .lock()
-                .map_err(|_| "syncular event channel poisoned".to_owned())?
-                .replace(channel),
-        ),
-        None => None,
-    };
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    state.send(Request::Command {
-        command,
-        reply: reply_tx,
-    })?;
-    let reply = reply_rx
-        .recv()
-        .map_err(|_| "the syncular core dropped the reply".to_owned())?;
-    let succeeded = reply.get("error").is_none();
-    // A refused create leaves the previous client, and its webview, in place.
-    if let (false, Some(previous)) = (succeeded, previous_events) {
-        *state
-            .events
-            .lock()
-            .map_err(|_| "syncular event channel poisoned".to_owned())? = previous;
-    }
-    if succeeded && method == "create" {
-        *state
-            .owner
-            .lock()
-            .map_err(|_| "syncular owner poisoned".to_owned())? = Some(label);
-    }
-    if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
-        let next = match database.filter(|path| path.as_str() != ":memory:") {
-            Some(path) => Some(spawn_reader(
-                path,
-                state
-                    .sender
-                    .lock()
-                    .map_err(|_| "syncular mailbox poisoned".to_owned())?
-                    .clone(),
-            )?),
-            None => None,
-        };
-        if let Some(previous) = std::mem::replace(&mut **slot, next) {
-            let _ = previous.send(ReadRequest::Shutdown);
+                .map_err(|_| "syncular event channel poisoned".to_owned())? = previous;
         }
-    }
-    drop(reader);
-    if succeeded && method == "create" {
-        if !create_preflight {
-            state.security_gate.activate()?;
+        if succeeded && method == "create" {
+            *self
+                .owner
+                .lock()
+                .map_err(|_| "syncular owner poisoned".to_owned())? =
+                Some(webview.map(|(label, _)| label));
         }
-    } else if succeeded && method == "activateSecurity" {
-        state.security_gate.activate()?;
+        if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
+            let next = match database.filter(|path| path.as_str() != ":memory:") {
+                Some(path) => Some(spawn_reader(
+                    path,
+                    self.sender
+                        .lock()
+                        .map_err(|_| "syncular mailbox poisoned".to_owned())?
+                        .clone(),
+                )?),
+                None => None,
+            };
+            if let Some(previous) = std::mem::replace(&mut **slot, next) {
+                let _ = previous.send(ReadRequest::Shutdown);
+            }
+        }
+        drop(reader);
+        if succeeded && method == "create" {
+            if !create_preflight {
+                self.security_gate.activate()?;
+            }
+        } else if succeeded && method == "activateSecurity" {
+            self.security_gate.activate()?;
+        }
+        Ok(reply)
     }
-    Ok(reply)
 }
 
 #[tauri::command]
@@ -1253,7 +1308,7 @@ async fn syncular_query<R: Runtime>(
     sql: String,
     params: Option<Value>,
 ) -> Result<Value, String> {
-    let state = app.state::<SyncularState>();
+    let state = app.state::<Arc<SyncularState>>();
     if let Err(reply) = state.require_owner(webview.label()) {
         return Ok(reply);
     }
@@ -1284,7 +1339,7 @@ async fn syncular_query_snapshot<R: Runtime>(
     coverage: Option<Value>,
     owner: Option<Value>,
 ) -> Result<Value, String> {
-    let state = app.state::<SyncularState>();
+    let state = app.state::<Arc<SyncularState>>();
     if let Err(reply) = state.require_owner(webview.label()) {
         return Ok(reply);
     }
@@ -1362,7 +1417,7 @@ async fn syncular_snapshot_read<R: Runtime>(
     commit_ids: Option<Value>,
     owner: Option<Value>,
 ) -> Result<Value, String> {
-    let state = app.state::<SyncularState>();
+    let state = app.state::<Arc<SyncularState>>();
     let _read_guard = match state.security_gate.enter_read() {
         Ok(guard) => guard,
         Err(reply) => return Ok(reply),
@@ -1424,7 +1479,9 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
             let events = Arc::new(Mutex::new(None::<Channel<Value>>));
             let emit_events = Arc::clone(&events);
-            app.manage(SyncularState {
+            let host_events = Arc::new(Mutex::new(Vec::<Sender<Value>>::new()));
+            let emit_host_events = Arc::clone(&host_events);
+            app.manage(Arc::new(SyncularState {
                 sender: Mutex::new(tx.clone()),
                 reader: Mutex::new(None),
                 config: config.clone(),
@@ -1432,9 +1489,13 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
                 // whether this process starts active or in preflight.
                 security_gate: SecurityGate::new_preflight(),
                 events,
+                host_events,
                 owner: Mutex::new(None),
-            });
+            }));
             let emit = move |value: &Value| {
+                if let Ok(mut readers) = emit_host_events.lock() {
+                    readers.retain(|reader| reader.send(value.clone()).is_ok());
+                }
                 // Best-effort: a webview that has gone away must not crash the
                 // owning thread.
                 if let Some(channel) = emit_events.lock().ok().and_then(|slot| slot.clone()) {
@@ -1449,8 +1510,11 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         })
         .on_event(|app, event| {
             if let RunEvent::Exit = event {
-                if let Some(state) = app.try_state::<SyncularState>() {
+                if let Some(state) = app.try_state::<Arc<SyncularState>>() {
                     let _ = state.send(Request::Shutdown);
+                    if let Ok(mut readers) = state.host_events.lock() {
+                        readers.clear();
+                    }
                     if let Ok(Some(reader)) = state.reader() {
                         let _ = reader.send(ReadRequest::Shutdown);
                     }
@@ -1528,6 +1592,68 @@ mod tests {
         assert_eq!(json["maxResponseBytes"], 2048);
         assert_eq!(json["redirects"], "deny");
         assert_eq!(json["realtimeHeartbeatMs"], 15000);
+    }
+
+    #[test]
+    fn rust_host_uses_the_replica_owner_and_receives_projection_events() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let host = app.syncular();
+        let events = host.subscribe();
+        let command = |method, params| host.command(&json!({ "method": method, "params": params }));
+        let unopened = command(
+            "projectionPending",
+            json!({"name": "local_names", "limit":1}),
+        );
+        assert_eq!(unopened["error"]["message"], "no client instance created");
+        let created = run_command(app.handle(), json!({"method": "create", "params": {
+            "schema": {"version": 1, "tables": [{
+                "name": "records", "primaryKey": "id", "scopes": [{"pattern":"workspace:{workspace_id}"}],
+                "columns": [
+                    {"name":"id","type":"string","nullable":false},
+                    {"name":"workspace_id","type":"string","nullable":false},
+                    {"name":"sealed","type":"bytes","nullable":false}
+                ],
+                "localProjections":[{"name":"local_names","generation":"1","columns":[{"name":"display_name","declaredType":"string"}]}]
+            }]},
+            "securityPreflight": true
+        }})).unwrap();
+        assert!(created.get("result").is_some(), "{created}");
+        let refused = command(
+            "writeProjection",
+            json!({"name":"local_names", "epoch":0, "rows":[]}),
+        );
+        assert_eq!(
+            refused["error"]["code"],
+            "client.security_preflight_required"
+        );
+        assert!(command("activateSecurity", json!({}))
+            .get("result")
+            .is_some());
+        let inserted = command(
+            "mutate",
+            json!({"mutations":[{
+                "table":"records","op":"upsert","values":{"id":"one","workspace_id":"p1","sealed":{"$bytes":"ab12"}}
+            }]}),
+        );
+        assert!(inserted.get("result").is_some(), "{inserted}");
+        let queried = command("query", json!({"sql":"SELECT sealed FROM records"}));
+        assert_eq!(queried["result"]["rows"][0]["sealed"]["$bytes"], "ab12");
+        let pending: Vec<_> = events
+            .try_iter()
+            .filter(|event| event["type"] == "projectionPending")
+            .collect();
+        assert_eq!(
+            pending,
+            [json!({"type":"projectionPending", "name":"local_names"})]
+        );
     }
 
     #[test]
@@ -1730,7 +1856,7 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("build mock app");
         let command = |value: Value| run_command(app.handle(), value).expect("command reply");
-        let state = app.state::<SyncularState>();
+        let state = app.state::<Arc<SyncularState>>();
         // Both requests sit in the owner mailbox before either runs.
         let queue = |method: &str, params: Value| {
             let (reply, receiver) = std::sync::mpsc::channel();

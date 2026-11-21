@@ -103,6 +103,24 @@ export interface IrFtsIndex {
   readonly tokenize: string;
 }
 
+export interface IrLocalProjection {
+  readonly name: string;
+  readonly generation: string;
+  readonly columns: readonly {
+    readonly name: string;
+    readonly declaredType: 'string' | 'integer' | 'real' | 'boolean' | 'json';
+  }[];
+  readonly fts?: {
+    readonly tokenize: string;
+    readonly columns: readonly string[];
+  };
+  readonly dependencies?: readonly {
+    readonly table: string;
+    readonly column: string;
+    readonly sourceColumn: string;
+  }[];
+}
+
 export interface IrTable {
   readonly name: string;
   /** §7.4.3 table generation: an opaque string that changes whenever the
@@ -122,6 +140,7 @@ export interface IrTable {
   readonly indexes: readonly IrIndex[];
   /** Client-local FTS5 projections, in migration declaration order. */
   readonly ftsIndexes: readonly IrFtsIndex[];
+  readonly localProjections?: readonly IrLocalProjection[];
   /** Reserved per-table hook slot (WP-49); empty object for now. */
   readonly extensions: Readonly<Record<string, unknown>>;
 }
@@ -261,6 +280,16 @@ export function tableGeneration(
     .slice(0, 32);
 }
 
+export function projectionGeneration(
+  table: string,
+  projection: Omit<IrLocalProjection, 'generation'>,
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ table, projection }), 'utf8')
+    .digest('hex')
+    .slice(0, 32);
+}
+
 /** Serialize with a fixed key order — byte-deterministic for equal IRs. */
 export function serializeIr(ir: IrDocument): string {
   const doc = {
@@ -279,6 +308,9 @@ export function serializeIr(ir: IrDocument): string {
           column: scope.column,
         })),
       ),
+      ...(table.localProjections?.length
+        ? { localProjections: table.localProjections }
+        : {}),
       extensions: canonicalizeExtensions(table.extensions),
     })),
     subscriptions: ir.subscriptions.map((sub) => ({
@@ -303,15 +335,18 @@ export function serializeSchema(ir: IrDocument): string {
   return JSON.stringify(
     {
       version: ir.schemaVersion,
-      tables: ir.tables.map((table) =>
-        serializeTableShape(
+      tables: ir.tables.map((table) => ({
+        ...serializeTableShape(
           table,
           table.scopes.map((scope) => ({
             pattern: scope.pattern,
             column: scope.column,
           })),
         ),
-      ),
+        ...(table.localProjections?.length
+          ? { localProjections: table.localProjections }
+          : {}),
+      })),
     },
     null,
     2,

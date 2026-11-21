@@ -98,6 +98,120 @@
       }
     },
     {
+      "name": "patientDisplay",
+      "file": "patient-display.syql",
+      "sourceSql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid\n  where patient_display match :term\n  order by __syql_fts_1.__syql_fts_source_1",
+      "sql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid\n  where patient_display match :term\n  order by __syql_fts_1.__syql_fts_source_1",
+      "positionalSql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid where patient_display match ? order by __syql_fts_1.__syql_fts_source_1",
+      "relations": [
+        {
+          "table": "patient_display",
+          "start": 124,
+          "end": 139
+        }
+      ],
+      "params": [
+        {
+          "name": "term",
+          "langName": "term",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "patient_id",
+          "langName": "patientId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patient_display",
+            "column": "_syncular_source_id"
+          }
+        },
+        {
+          "name": "display_name",
+          "langName": "displayName",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patient_display",
+            "column": "display_name"
+          }
+        },
+        {
+          "name": "display_order",
+          "langName": "displayOrder",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patient_display",
+            "column": "display_order"
+          }
+        }
+      ],
+      "tables": [
+        "patient_display"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "patient_display",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "patientId"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "term",
+            "langName": "term",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid\n  where patient_display match :term\n  order by __syql_fts_1.__syql_fts_source_1",
+              "positionalSql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid where patient_display match ? order by __syql_fts_1.__syql_fts_source_1",
+              "relations": [
+                {
+                  "table": "patient_display",
+                  "start": 124,
+                  "end": 139
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "term",
+                  "type": "string",
+                  "input": "term"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "patientId"
+        ]
+      }
+    },
+    {
       "name": "readablePatients",
       "file": "readable-patients.syql",
       "sourceSql": "select patients.id, patients.given_names AS \"givenNames\" from patients\n  where patients.clinic_id = :clinicId and patients._sync_sealed_key is null\n  order by patients.id",

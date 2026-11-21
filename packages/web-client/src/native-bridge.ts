@@ -1,3 +1,9 @@
+import type {
+  ProjectionInput,
+  ProjectionPending,
+  ProjectionPendingEvent,
+  ProjectionWriteResult,
+} from './projection';
 /**
  * The command bridge shared by the native hosts: `@syncular/tauri` (the Tauri
  * plugin over IPC) and the React Native binding (the C-ABI core behind a
@@ -308,6 +314,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   readonly #release: () => void;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #pendingProjections = new Set<
+    (event: ProjectionPendingEvent) => void
+  >();
   readonly #progress = new ProgressEmitter();
   readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   readonly #presenceListeners = new Set<
@@ -568,6 +577,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       }
     };
     switch (event.type) {
+      case 'projectionPending':
+        if (typeof event.name === 'string')
+          fanOut(this.#pendingProjections, {
+            type: 'projectionPending',
+            name: event.name,
+          });
+        break;
       case 'progress':
         this.#progress.emit(event.progress as SyncProgress);
         break;
@@ -835,6 +851,44 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         : {}),
     })) as { clientCommitId: string };
     return result.clientCommitId;
+  }
+
+  onProjectionPending(
+    listener: (event: ProjectionPendingEvent) => void,
+  ): () => void {
+    this.#pendingProjections.add(listener);
+    return () => {
+      this.#pendingProjections.delete(listener);
+    };
+  }
+
+  async projectionPending(
+    name: string,
+    limit: number,
+  ): Promise<ProjectionPending> {
+    return (await this.command('projectionPending', {
+      name,
+      limit,
+    })) as ProjectionPending;
+  }
+
+  async writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly ProjectionInput[],
+  ): Promise<ProjectionWriteResult> {
+    return (await this.command('writeProjection', {
+      name,
+      epoch,
+      rows,
+    })) as ProjectionWriteResult;
+  }
+
+  async invalidateProjection(
+    name: string,
+    sourceIds?: readonly string[],
+  ): Promise<void> {
+    await this.command('invalidateProjection', { name, sourceIds });
   }
 
   async purgeLocalData(
@@ -1214,6 +1268,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         this.#release();
         this.#invalidationListeners.clear();
         this.#progress.clear();
+        this.#pendingProjections.clear();
         this.#changeListeners.clear();
         this.#diagnosticsListeners.clear();
         this.#presenceListeners.clear();

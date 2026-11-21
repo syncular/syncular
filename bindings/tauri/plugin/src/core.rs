@@ -460,8 +460,12 @@ impl SyncularCore {
         let batches = client.drain_change_batches();
         let intents = client.drain_sync_intents();
         let scopes_changed = client.drain_scopes_changed();
+        let projections = client.drain_projection_pending();
         for batch in batches {
             self.push(json!({ "type": "change", "batch": batch }));
+        }
+        for name in projections {
+            self.push(syncular_command::projection_pending_event(name));
         }
         for _ in 0..scopes_changed {
             self.push(json!({ "type": "scopes-changed" }));

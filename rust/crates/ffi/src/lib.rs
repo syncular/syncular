@@ -375,6 +375,11 @@ impl Core {
                 json: json!({ "type": "change", "batch": batch }),
             });
         }
+        for name in client.drain_projection_pending() {
+            self.queue.push(Event {
+                json: syncular_command::projection_pending_event(name),
+            });
+        }
         for intent in client.drain_sync_intents() {
             self.queue.push(Event {
                 json: json!({ "type": "sync-intent", "intent": intent }),

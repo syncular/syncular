@@ -57,6 +57,9 @@ use crate::previous_version::{
     sweep_previous_version_container, PendingCommitAudit, PreviousVersionContextConfig,
     PreviousVersionLifecycle, PreviousVersionReadSpec, PreviousVersionSnapshot,
 };
+mod projection;
+pub use projection::ProjectionInput;
+
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, SegmentRequest, Transport, TransportError};
 use crate::values::{
@@ -322,6 +325,12 @@ struct CompiledLocalDataPurgeTarget {
     selectors: Vec<(String, Vec<String>)>,
 }
 
+struct CompiledLocalDataPurge {
+    targets: Vec<CompiledLocalDataPurgeTarget>,
+    projections: BTreeSet<String>,
+    canonical_plan: String,
+}
+
 struct StoredCommitOutcomeRow {
     sequence: i64,
     client_commit_id: String,
@@ -521,6 +530,7 @@ struct Rollback {
     active_round: Option<(uuid::Uuid, i64, u64)>,
     overlay_dirty: Option<BTreeSet<String>>,
     change_queue: usize,
+    projection_pending_queue: usize,
     sync_intent_queue: usize,
     last_change: Option<DiagnosticLastChange>,
 }
@@ -606,6 +616,8 @@ pub struct SyncClient {
     /// §7.6: random per core instance, never persisted or sent.
     epoch: String,
     change_queue: VecDeque<ClientChangeBatch>,
+    projection_pending_queue: VecDeque<String>,
+    opening_replica: bool,
     sync_intent_queue: VecDeque<SyncIntent>,
     /// §8.7 `scopes` events received since the last drain.
     scopes_changed: usize,
@@ -2162,6 +2174,8 @@ impl SyncClient {
             progress: ProgressObserver::default(),
             epoch: uuid::Uuid::new_v4().to_string(),
             change_queue: VecDeque::new(),
+            projection_pending_queue: VecDeque::new(),
+            opening_replica: true,
             sync_intent_queue: VecDeque::new(),
             scopes_changed: 0,
             window_armed: HashSet::new(),
@@ -2213,11 +2227,13 @@ impl SyncClient {
             client.failed_commits = client.load_failed_commits()?.into();
             match marker {
                 None => {
+                    client.detach_projections(None)?;
                     client.create_synced_tables()?;
                     client.persist_schema_version()?;
                     client.save_unit_scope_schema()?;
                 }
                 Some(version) if version == client.schema.version => {
+                    client.detach_projections(None)?;
                     client.create_synced_tables()?;
                     // RFC 0005 D1: the same-version open backfills the descriptor
                     // for a database first opened by an unaware binary, so the
@@ -2263,6 +2279,9 @@ impl SyncClient {
             // owns this intent so native hosts never poll or require an
             // application-issued sync().
             client.enqueue_startup_sync_if_needed()?;
+            client
+                .projection_pending_queue
+                .extend(client.collect_projection_pending()?);
             Ok(())
         })();
         match startup {
@@ -2271,6 +2290,7 @@ impl SyncClient {
                 // read, with or without a transport; a replica reopened in
                 // preflight finishes it at activation.
                 Ok(()) => {
+                    client.opening_replica = false;
                     if !client.security_preflight {
                         client.drain_pending_evictions()?;
                     }
@@ -3519,6 +3539,7 @@ impl SyncClient {
             active_round: self.active_round,
             overlay_dirty: self.overlay_dirty.snapshot(),
             change_queue: self.change_queue.len(),
+            projection_pending_queue: self.projection_pending_queue.len(),
             sync_intent_queue: self.sync_intent_queue.len(),
             last_change: self.last_change.clone(),
         }
@@ -3538,6 +3559,8 @@ impl SyncClient {
         self.active_round = rollback.active_round;
         self.overlay_dirty.restore(rollback.overlay_dirty);
         self.change_queue.truncate(rollback.change_queue);
+        self.projection_pending_queue
+            .truncate(rollback.projection_pending_queue);
         self.sync_intent_queue.truncate(rollback.sync_intent_queue);
         self.last_change = rollback.last_change;
     }
@@ -3569,9 +3592,11 @@ impl SyncClient {
         let committed = if self.conn.is_autocommit() {
             Err("the coalesced apply transaction was rolled back".to_owned())
         } else {
-            self.conn
-                .execute_batch("COMMIT")
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+            self.collect_projection_pending().and_then(|pending| {
+                self.stored(self.conn.execute_batch("COMMIT"))?;
+                self.projection_pending_queue.extend(pending);
+                Ok(())
+            })
         };
         let Err(error) = committed else {
             return Ok(());
@@ -3615,6 +3640,18 @@ impl SyncClient {
     ) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::ObservationCommit);
+        for table in &self.schema.tables {
+            for projection in &table.local_projections {
+                if batch.tables.contains_key(&table.name)
+                    || projection
+                        .dependencies
+                        .iter()
+                        .any(|dep| batch.tables.contains_key(&dep.table))
+                {
+                    batch.table(&projection.name);
+                }
+            }
+        }
         if self.failed_commits.iter().any(|(commit, _)| {
             commit
                 .ops
@@ -3623,10 +3660,16 @@ impl SyncClient {
         }) {
             batch.outcomes = true;
         }
+        let projection_pending = if self.coalesced.is_none() && !self.opening_replica {
+            self.collect_projection_pending()?
+        } else {
+            Vec::new()
+        };
         if !batch.touched() {
             self.conn
                 .execute_batch(&format!("RELEASE {name}"))
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.projection_pending_queue.extend(projection_pending);
             return Ok(());
         }
         let revision = self
@@ -3705,6 +3748,7 @@ impl SyncClient {
             outcomes_changed: event.outcomes_changed,
         });
         self.change_queue.push_back(event);
+        self.projection_pending_queue.extend(projection_pending);
         Ok(())
     }
 
@@ -3911,6 +3955,7 @@ impl SyncClient {
         self.conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.opening_replica = true;
         let prior_schema = std::mem::replace(&mut self.schema, new_schema);
         // §7.4.3/§7.4.4: a reset inside this transaction mutates in-memory
         // state (dropped outbox commits, rejections, upgrade and floor flags,
@@ -3928,10 +3973,14 @@ impl SyncClient {
             match marker {
                 Some(version) if version < self.schema.version => self.run_schema_reset()?,
                 None => {
+                    self.detach_projections(None)?;
                     self.create_synced_tables()?;
                     self.persist_schema_version()?;
                 }
-                _ => {}
+                Some(_) => {
+                    self.detach_projections(None)?;
+                    self.open_projections()?;
+                }
             }
             // §7.4.2: recreation IS the boot for the in-memory core, so reload the
             // durable outbox the same-version path is about to replay. Only the
@@ -3957,8 +4006,11 @@ impl SyncClient {
             // a durable client. Apply the same startup catch-up contract even
             // when the schema itself did not change.
             self.enqueue_startup_sync_if_needed()?;
+            self.projection_pending_queue
+                .extend(self.collect_projection_pending()?);
             Ok(())
         })();
+        self.opening_replica = false;
         let outcome = match guarded {
             Ok(()) => self
                 .conn
@@ -4186,6 +4238,7 @@ impl SyncClient {
                 }
             }
         }
+        kept_objects.extend(self.detach_projections(Some(&kept))?);
         let kept_json = serde_json::to_string(&kept).expect("table names serialize");
         for sql in [
             "DELETE FROM _syncular_acked_rows WHERE tbl NOT IN (SELECT value FROM json_each(?1))",
@@ -4630,7 +4683,7 @@ impl SyncClient {
                 self.create_fts_projection(table, index)?;
             }
         }
-        Ok(())
+        self.open_projections()
     }
 
     fn fts_projection_exists(&self, index: &FtsIndexSchema) -> Result<bool, String> {
@@ -4734,6 +4787,26 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
+    fn create_fts_storage(
+        &self,
+        name: &str,
+        columns: &str,
+        tokenize: &str,
+        options: &str,
+    ) -> Result<(), String> {
+        let tokenizer = tokenize.replace('\'', "''");
+        let sql = format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS {} USING fts5({} UNINDEXED, {columns}, tokenize='{tokenizer}'{options})",
+            quote_ident(name),
+            quote_ident(FTS_SOURCE_ID_COLUMN),
+        );
+        self.conn
+            .execute(&sql, [])
+            .map_err(|error| format!("cannot create local FTS5 projection {name:?}: {error}"))?;
+        let mapping = quote_ident(&format!("_syncular_fts_{name}"));
+        self.stored(self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")))
+    }
+
     fn create_fts_projection(
         &self,
         table: &TableSchema,
@@ -4742,24 +4815,12 @@ impl SyncClient {
         self.begin_observation("syncular_fts_schema")?;
         let result = (|| {
             let existed = self.fts_projection_exists(index)?;
-            let tokenizer = index.tokenize.replace('\'', "''");
             let columns = index
                 .columns
                 .iter()
                 .map(|column| quote_ident(column))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let sql = format!(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5({source_id} UNINDEXED, {columns}, tokenize='{tokenizer}')",
-            fts = quote_ident(&index.name),
-            source_id = quote_ident(FTS_SOURCE_ID_COLUMN),
-        );
-            self.conn.execute(&sql, []).map_err(|error| {
-                format!(
-                    "cannot create local FTS5 projection {:?}: {error}",
-                    index.name
-                )
-            })?;
             let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
             let mapped: bool = self
                 .conn
@@ -4769,7 +4830,7 @@ impl SyncClient {
                     |row| row.get(0),
                 )
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.create_fts_storage(&index.name, &columns, &index.tokenize, "")?;
             if !mapped && existed {
                 self.conn
                     .execute_batch(&format!(
@@ -11745,7 +11806,7 @@ impl SyncClient {
     fn compile_local_data_purge(
         &self,
         input: &LocalDataPurgeInput,
-    ) -> Result<(Vec<CompiledLocalDataPurgeTarget>, String), String> {
+    ) -> Result<CompiledLocalDataPurge, String> {
         let invalid = |message: String| format!("sync.invalid_request: {message}");
         if input.purge_id.is_empty()
             || input.purge_id.len() > 128
@@ -11765,22 +11826,27 @@ impl SyncClient {
             String,
             (CompiledLocalDataPurgeTarget, LocalDataPurgeTarget),
         > = BTreeMap::new();
+        let mut projections = BTreeSet::new();
         for target in &input.targets {
-            let table = self.schema.table(&target.table).ok_or_else(|| {
-                invalid(format!(
-                    "local purge names unknown table {:?}",
-                    target.table
-                ))
+            let (table_name, raw_selectors) = match target {
+                LocalDataPurgeTarget::Table { table, selectors } => (table, selectors),
+                LocalDataPurgeTarget::Projection { projection } => {
+                    projections.insert(projection.clone());
+                    continue;
+                }
+            };
+            let table = self.schema.table(table_name).ok_or_else(|| {
+                invalid(format!("local purge names unknown table {:?}", table_name))
             })?;
-            if target.selectors.is_empty() || target.selectors.len() > MAX_LOCAL_PURGE_SELECTORS {
+            if raw_selectors.is_empty() || raw_selectors.len() > MAX_LOCAL_PURGE_SELECTORS {
                 return Err(invalid(format!(
                     "local purge target {:?} needs between 1 and {MAX_LOCAL_PURGE_SELECTORS} selectors",
-                    target.table
+                    table_name
                 )));
             }
-            let mut selectors = Vec::with_capacity(target.selectors.len());
+            let mut selectors = Vec::with_capacity(raw_selectors.len());
             let mut canonical_selectors = BTreeMap::new();
-            for (column_name, raw_values) in &target.selectors {
+            for (column_name, raw_values) in raw_selectors {
                 let Some((column_index, column)) = table
                     .columns
                     .iter()
@@ -11789,7 +11855,7 @@ impl SyncClient {
                 else {
                     return Err(invalid(format!(
                         "local purge target {:?} names unknown column {:?}",
-                        target.table, column_name
+                        table_name, column_name
                     )));
                 };
                 let encrypted = table
@@ -11799,13 +11865,13 @@ impl SyncClient {
                 if column.ty != ColumnType::String || encrypted {
                     return Err(invalid(format!(
                         "local purge selector {:?}.{:?} must be a plaintext string column",
-                        target.table, column_name
+                        table_name, column_name
                     )));
                 }
                 if raw_values.is_empty() || raw_values.len() > MAX_LOCAL_PURGE_VALUES {
                     return Err(invalid(format!(
                         "local purge selector {:?}.{:?} needs between 1 and {MAX_LOCAL_PURGE_VALUES} values",
-                        target.table, column_name
+                        table_name, column_name
                     )));
                 }
                 let mut values = raw_values.clone();
@@ -11823,8 +11889,8 @@ impl SyncClient {
                 selectors.push((column_name.clone(), values.clone()));
                 canonical_selectors.insert(column_name.clone(), values);
             }
-            let canonical = LocalDataPurgeTarget {
-                table: target.table.clone(),
+            let canonical = LocalDataPurgeTarget::Table {
+                table: table_name.clone(),
                 selectors: canonical_selectors,
             };
             let key = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
@@ -11832,24 +11898,28 @@ impl SyncClient {
                 key,
                 (
                     CompiledLocalDataPurgeTarget {
-                        table: target.table.clone(),
+                        table: table_name.clone(),
                         selectors,
                     },
                     canonical,
                 ),
             );
         }
-        let targets = deduplicated
-            .values()
-            .map(|(compiled, _)| compiled.clone())
-            .collect::<Vec<_>>();
-        let canonical = deduplicated
-            .values()
-            .map(|(_, target)| target.clone())
-            .collect::<Vec<_>>();
+        let (targets, mut canonical): (Vec<_>, Vec<_>) = deduplicated.into_values().unzip();
+        canonical.extend(
+            projections
+                .iter()
+                .map(|name| LocalDataPurgeTarget::Projection {
+                    projection: name.clone(),
+                }),
+        );
         let canonical_plan =
             serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
-        Ok((targets, canonical_plan))
+        Ok(CompiledLocalDataPurge {
+            targets,
+            projections,
+            canonical_plan,
+        })
     }
 
     fn local_purge_base_row_ids(
@@ -11917,8 +11987,15 @@ impl SyncClient {
     pub fn purge_local_data(
         &mut self,
         input: &LocalDataPurgeInput,
-    ) -> Result<LocalDataPurgeResult, String> {
-        let (targets, canonical_plan) = self.compile_local_data_purge(input)?;
+    ) -> Result<LocalDataPurgeResult, ClientError> {
+        let CompiledLocalDataPurge {
+            targets,
+            projections,
+            canonical_plan,
+        } = self.compile_local_data_purge(input)?;
+        for name in &projections {
+            self.lookup_projection(name)?;
+        }
         let meta_key = format!("localPurge:{}", input.purge_id);
         let applied_plan = self
             .conn
@@ -11934,7 +12011,7 @@ impl SyncClient {
                 return Err(format!(
                     "sync.invalid_request: local purge id {:?} was already used with a different plan",
                     input.purge_id
-                ));
+                ).into());
             }
             // A retry after a failed rewrite finishes it.
             self.erase_purged_pages()?;
@@ -11953,6 +12030,16 @@ impl SyncClient {
         let rollback = self.capture();
         self.begin_observation("syncular_local_purge")?;
         let applied = (|| -> Result<(ChangeAccumulator, LocalDataPurgeResult), String> {
+            let mut batch = ChangeAccumulator::default();
+            let mut purged_rows = 0;
+            for name in &projections {
+                purged_rows += self.clear_projection(name, None)?;
+                batch.table(name);
+            }
+            if targets.is_empty() {
+                self.set_meta(&meta_key, &canonical_plan)?;
+                return Ok((batch, LocalDataPurgeResult { already_applied: false, purged_rows, dropped_commits: 0 }));
+            }
             let row_ids = self.local_purge_base_row_ids(&targets)?;
             let retained_dropped = self.drop_failed_commits(|table, values| {
                 targets.iter().any(|target| {
@@ -11990,7 +12077,6 @@ impl SyncClient {
                 .iter()
                 .map(|commit| commit.client_commit_id.clone())
                 .collect::<BTreeSet<_>>();
-            let mut batch = ChangeAccumulator::default();
             for commit in &retained_dropped {
                 batch.conflicts = true;
                 batch.rejections = true;
@@ -12040,7 +12126,6 @@ impl SyncClient {
                 batch.outcomes = true;
             }
 
-            let mut purged_rows = 0usize;
             for (table, ids) in &row_ids {
                 if ids.is_empty() {
                     continue;
@@ -12152,7 +12237,7 @@ impl SyncClient {
             Err(error) => {
                 self.rollback_observation("syncular_local_purge");
                 self.restore(rollback);
-                return Err(error);
+                return Err(error.into());
             }
         };
         self.cancel_sync_round();
@@ -12165,17 +12250,21 @@ impl SyncClient {
     /// until either is rewritten. VACUUM rebuilds the file from the remaining
     /// rows, and the checkpoint truncates the WAL.
     fn erase_purged_pages(&self) -> Result<(), String> {
-        let erased = self
-            .conn
-            .execute_batch("PRAGMA secure_delete = ON; VACUUM;")
-            .and_then(|()| {
-                self.conn
-                    .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-            });
-        let reset = self.conn.execute_batch("PRAGMA secure_delete = OFF");
-        erased
-            .and(reset)
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+        let erased = self.stored(
+            self.conn
+                .execute_batch("PRAGMA secure_delete = ON; VACUUM;")
+                .and_then(|()| {
+                    self.conn
+                        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                            row.get::<_, bool>(0)
+                        })
+                }),
+        );
+        let reset = self.stored(self.conn.execute_batch("PRAGMA secure_delete = OFF"));
+        if erased.and_then(|busy| reset.map(|()| busy))? {
+            return Err("client.storage_busy: WAL checkpoint is busy".to_owned());
+        }
+        Ok(())
     }
 
     /// Application-authorized recovery of the replicated projection. Unlike a

@@ -20,6 +20,7 @@ import {
   sqlIdentifier,
   splitSelectList,
   scanTableRefs,
+  ftsRelationNames,
   stripCommentsAndStrings,
   type TableRef,
 } from './query';
@@ -904,9 +905,7 @@ class Validator {
   ): void {
     const tokens = significant(lexSyqlSqlSource(span.file, sql));
     const declaredFtsTables = new Set(
-      this.#ir.tables.flatMap((table) =>
-        table.ftsIndexes.map((index) => index.name),
-      ),
+      this.#ir.tables.flatMap(ftsRelationNames),
     );
     const queryRefs = refs ?? scanTableRefs(sql, this.#ir);
     const readsDeclaredFts = queryRefs.some((ref) =>
@@ -1019,6 +1018,7 @@ class Validator {
     const tableNames = this.#ir.tables.flatMap((table) => [
       table.name,
       ...table.ftsIndexes.map((index) => index.name),
+      ...(table.localProjections ?? []).map((projection) => projection.name),
     ]);
     const noTable = new RegExp(
       `no such table:\\s*(?:main\\.)?(${SQLITE_SUBJECT_RE})`,
@@ -1143,6 +1143,14 @@ class Validator {
         (candidate) => candidate.name === tableName,
       );
       if (fts !== undefined) return ['_syncular_source_id', ...fts.columns];
+      const projection = owner.localProjections?.find(
+        (candidate) => candidate.name === tableName,
+      );
+      if (projection)
+        return [
+          '_syncular_source_id',
+          ...projection.columns.map((column) => column.name),
+        ];
     }
     return [];
   }
@@ -2065,8 +2073,12 @@ class Validator {
   #primaryKey(tableName: string): string | undefined {
     const table = this.#ir.tables.find((item) => item.name === tableName);
     if (table !== undefined) return table.primaryKey;
-    return this.#ir.tables.some((item) =>
-      item.ftsIndexes.some((index) => index.name === tableName),
+    return this.#ir.tables.some(
+      (item) =>
+        item.ftsIndexes.some((index) => index.name === tableName) ||
+        item.localProjections?.some(
+          (projection) => projection.name === tableName,
+        ),
     )
       ? '_syncular_source_id'
       : undefined;

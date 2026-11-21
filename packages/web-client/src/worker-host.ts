@@ -1,3 +1,9 @@
+import type {
+  ProjectionInput,
+  ProjectionPending,
+  ProjectionPendingEvent,
+  ProjectionWriteResult,
+} from './projection';
 import {
   ProgressEmitter,
   type SyncProgress,
@@ -328,6 +334,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   #core: LeaderCore | undefined;
   readonly #invalidation = new InvalidationEmitter();
   readonly #progress = new ProgressEmitter();
+  readonly #pendingProjections = new ChangeEmitter<ProjectionPendingEvent>();
   readonly #synced = new ChangeEmitter<Parameters<SyncedListener>[0]>();
   readonly #changes = new ChangeEmitter();
   readonly #presence = new ChangeEmitter<{
@@ -414,7 +421,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
 
   /** @internal — dispatch a worker/relayed event to handle-local listeners. */
   __dispatchEvent(event: SyncWorkerEvent): void {
-    if (event.kind === 'progress') {
+    if (event.kind === 'projectionPending') {
+      this.#pendingProjections.emit(event.event);
+    } else if (event.kind === 'progress') {
       this.#progress.emit(event.progress);
     } else if (event.kind === 'presence') {
       this.#presence.emit(event);
@@ -676,6 +685,31 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     options?: { readonly baseVersion?: number },
   ): Promise<string> {
     return this.#call('patch', [table, rowId, partial, options]);
+  }
+
+  onProjectionPending(
+    listener: (event: ProjectionPendingEvent) => void,
+  ): () => void {
+    return this.#pendingProjections.on(listener);
+  }
+
+  projectionPending(name: string, limit: number): Promise<ProjectionPending> {
+    return this.#call('projectionPending', [name, limit]);
+  }
+
+  writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly ProjectionInput[],
+  ): Promise<ProjectionWriteResult> {
+    return this.#call('writeProjection', [name, epoch, rows]);
+  }
+
+  invalidateProjection(
+    name: string,
+    sourceIds?: readonly string[],
+  ): Promise<void> {
+    return this.#call('invalidateProjection', [name, sourceIds]);
   }
 
   purgeLocalData(input: LocalDataPurgeInput): Promise<LocalDataPurgeResult> {

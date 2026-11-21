@@ -33,12 +33,14 @@ import {
   type IrTable,
   irHash,
   serializeIr,
+  projectionGeneration,
   tableGeneration,
 } from './ir';
 import {
   MANIFEST_FILENAME,
   type Manifest,
   type ManifestScopeSpec,
+  type ManifestTable,
   parseManifest,
 } from './manifest';
 import {
@@ -63,6 +65,7 @@ import {
 } from './query';
 import { serializeQueryIr } from './query-ir';
 import {
+  ALLOWED_FTS_TOKENIZERS,
   applyMigrationSql,
   type ParsedTable,
   validateFinalSchemaIdentifiers,
@@ -114,13 +117,7 @@ function resolveScope(table: ParsedTable, spec: ManifestScopeSpec): IrScope {
 }
 
 function buildTable(
-  manifestTable: {
-    readonly name: string;
-    readonly scopes: readonly ManifestScopeSpec[];
-    readonly extensions: Readonly<Record<string, unknown>>;
-    readonly encryptedColumns: readonly string[];
-    readonly serverColumns: readonly string[];
-  },
+  manifestTable: ManifestTable,
   parsed: ParsedTable,
 ): IrTable {
   const scopes = manifestTable.scopes.map((spec) => resolveScope(parsed, spec));
@@ -156,6 +153,21 @@ function buildTable(
     // columns exist, names unique per schema) in declaration order.
     indexes: parsed.indexes,
     ftsIndexes: parsed.ftsIndexes,
+    ...(manifestTable.localProjections
+      ? {
+          localProjections: manifestTable.localProjections.map(
+            (projection) => ({
+              name: projection.name,
+              generation: projectionGeneration(parsed.name, projection),
+              columns: projection.columns,
+              ...(projection.fts ? { fts: projection.fts } : {}),
+              ...(projection.dependencies
+                ? { dependencies: projection.dependencies }
+                : {}),
+            }),
+          ),
+        }
+      : {}),
     extensions: canonicalizeExtensions(manifestTable.extensions) as Record<
       string,
       unknown
@@ -447,6 +459,78 @@ export function buildIr(
         MANIFEST_FILENAME,
         `migrated table ${JSON.stringify(name)} is missing from the manifest's tables list — every migrated table must be declared (fail loud; internal tables are a future manifest extension)`,
       );
+    }
+  }
+  const names = new Set(
+    tables
+      .flatMap((table) => [
+        table.name,
+        ...table.indexes.map((index) => index.name),
+        ...table.ftsIndexes.map((index) => index.name),
+      ])
+      .map((name) => name.toLowerCase()),
+  );
+  const projectionIdentifier = (value: string) =>
+    /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value) &&
+    !/^(?:_sync|sync_|sqlite_)/i.test(value);
+  for (const table of tables) {
+    for (const projection of table.localProjections ?? []) {
+      const { name } = projection;
+      const lower = name.toLowerCase();
+      const invalid = (column?: string): never => {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          'invalid local projection declaration',
+          'client.schema_invalid',
+          { name, ...(column === undefined ? {} : { column }) },
+        );
+      };
+      if (
+        !projectionIdentifier(name) ||
+        names.has(lower) ||
+        (projection.fts &&
+          (!ALLOWED_FTS_TOKENIZERS.has(projection.fts.tokenize) ||
+            !projection.fts.columns.length ||
+            new Set(projection.fts.columns).size !==
+              projection.fts.columns.length ||
+            !projection.fts.columns.every((name) =>
+              projection.columns.some(
+                (column) =>
+                  column.name === name && column.declaredType === 'string',
+              ),
+            )))
+      )
+        invalid();
+      names.add(lower);
+      const columns = new Set(projection.fts ? [lower, 'rowid', 'rank'] : []);
+      for (const column of projection.columns) {
+        const key = column.name.toLowerCase();
+        if (!projectionIdentifier(column.name) || columns.has(key))
+          invalid(column.name);
+        columns.add(key);
+      }
+      for (const dependency of projection.dependencies ?? []) {
+        const dependencyTable = tables.find(
+          (item) => item.name === dependency.table,
+        );
+        const match = dependencyTable?.columns.find(
+          (col) => col.name === dependency.column,
+        );
+        const source = table.columns.find(
+          (col) => col.name === dependency.sourceColumn,
+        );
+        if (
+          !match ||
+          !source ||
+          match.encrypted ||
+          source.encrypted ||
+          (table.primaryKey !== dependency.sourceColumn &&
+            !table.indexes.some(
+              (index) => index.columns[0] === dependency.sourceColumn,
+            ))
+        )
+          invalid(dependency.sourceColumn);
+      }
     }
   }
   validateReferences(tables, parsedTables);

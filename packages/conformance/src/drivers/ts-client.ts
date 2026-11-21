@@ -5,6 +5,7 @@
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
 
+import { compileLocalProjections } from '@syncular/client/projections';
 import { defineAuthorityReads } from '@syncular/client/authority';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -56,6 +57,9 @@ import type {
   DriverCommitDelivery,
   DriverCommitOutcome,
   DriverEncryptionConfig,
+  DriverProjectionInput,
+  DriverProjectionPending,
+  DriverProjectionWriteResult,
   DriverPreviousVersionAudit,
   DriverPreviousVersionSnapshot,
   DriverRow,
@@ -100,6 +104,9 @@ function toClientSchema(schema: DriverSchema): ClientSchema {
       primaryKey: table.primaryKey,
       ...(table.indexes ? { indexes: table.indexes } : {}),
       ...(table.ftsIndexes ? { ftsIndexes: table.ftsIndexes } : {}),
+      ...(table.localProjections
+        ? { localProjections: table.localProjections }
+        : {}),
       scopes: table.scopes.map((scope) =>
         scope.column !== undefined
           ? { pattern: scope.pattern, column: scope.column }
@@ -425,6 +432,7 @@ async function constructClient(
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
+    createProjections: compileLocalProjections,
     clientId: options.clientId,
     ...(options.authorityReads !== undefined
       ? { authorityReads: defineAuthorityReads(options.authorityReads) }
@@ -572,6 +580,7 @@ class TsClientInstance implements ClientInstance {
     },
   ) {
     this.#client = client;
+    client.onProjectionPending((event) => this.#projectionEvents.push(event));
     this.#db = db;
     this.#cleanup = cleanup;
     this.#schema = schema;
@@ -591,6 +600,45 @@ class TsClientInstance implements ClientInstance {
     client.onSyncIntent((intent) => {
       if (intent.kind === 'background') this.#intents.push(intent);
     });
+  }
+
+  readonly #projectionEvents: { type: 'projectionPending'; name: string }[] =
+    [];
+
+  async projectionPending(
+    name: string,
+    limit: number,
+  ): Promise<DriverProjectionPending> {
+    return this.#client.projectionPending(name, limit);
+  }
+
+  async writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly DriverProjectionInput[],
+  ): Promise<DriverProjectionWriteResult> {
+    return this.#client.writeProjection(name, epoch, rows);
+  }
+
+  async invalidateProjection(
+    name: string,
+    sourceIds?: readonly string[],
+  ): Promise<void> {
+    this.#client.invalidateProjection(name, sourceIds);
+  }
+
+  async drainProjectionPending() {
+    return this.#projectionEvents.splice(0);
+  }
+
+  async purgeLocalData(
+    ...[purgeId, targets]: Parameters<ClientInstance['purgeLocalData']>
+  ) {
+    return this.#client.purgeLocalData({ purgeId, targets });
+  }
+
+  async rebootstrapLocalData(rebootstrapId: string): Promise<void> {
+    this.#client.rebootstrapLocalData({ rebootstrapId });
   }
 
   async subscribe(scopes: DriverUnitScopes): Promise<string> {
@@ -1074,7 +1122,10 @@ class TsClientInstance implements ClientInstance {
   }
 
   async pendingPayloads(): Promise<Uint8Array[]> {
-    const compiled = compileClientSchema(toClientSchema(this.#schema));
+    const compiled = compileClientSchema(
+      toClientSchema(this.#schema),
+      compileLocalProjections,
+    );
     const payloads: Uint8Array[] = [];
     for (const commit of this.#client.pendingCommits()) {
       const frame = await encodeOutboxCommit(compiled, commit);
@@ -1178,6 +1229,9 @@ class TsClientInstance implements ClientInstance {
       schema,
     });
     this.#client = reopened.client;
+    this.#client.onProjectionPending((event) =>
+      this.#projectionEvents.push(event),
+    );
     this.#loseRealtime = reopened.loseRealtime;
     this.#deferredRound = reopened.deferredRound;
     this.#client.onChange((batch) => this.#changes.push(batch));

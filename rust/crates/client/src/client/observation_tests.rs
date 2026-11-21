@@ -5292,7 +5292,7 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                 client
                     .purge_local_data(&LocalDataPurgeInput {
                         purge_id: "pending-round".into(),
-                        targets: vec![LocalDataPurgeTarget {
+                        targets: vec![LocalDataPurgeTarget::Table {
                             table: "tasks".into(),
                             selectors: BTreeMap::from([("project_id".into(), vec!["p1".into()])]),
                         }],
@@ -5324,7 +5324,7 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
                     assert!(client
                         .purge_local_data(&LocalDataPurgeInput {
                             purge_id: "failed-round".into(),
-                            targets: vec![LocalDataPurgeTarget {
+                            targets: vec![LocalDataPurgeTarget::Table {
                                 table: "tasks".into(),
                                 selectors: BTreeMap::from([(
                                     "project_id".into(),
@@ -7384,7 +7384,7 @@ fn retained_rejection_survives_file_reopen_and_security_purge() {
         reopened
             .purge_local_data(&LocalDataPurgeInput {
                 purge_id: "protected-purge".into(),
-                targets: vec![LocalDataPurgeTarget {
+                targets: vec![LocalDataPurgeTarget::Table {
                     table: "tasks".into(),
                     selectors: BTreeMap::from_iter([("project_id".into(), vec!["p1".into()])]),
                 }],
@@ -10809,7 +10809,7 @@ fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
 
     let input = LocalDataPurgeInput {
         purge_id: "purge-001".to_owned(),
-        targets: vec![LocalDataPurgeTarget {
+        targets: vec![LocalDataPurgeTarget::Table {
             table: "patient_notes".to_owned(),
             selectors: BTreeMap::from([(
                 "encryption_key_id".to_owned(),
@@ -10864,7 +10864,7 @@ fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
     );
     let conflicting = LocalDataPurgeInput {
         purge_id: input.purge_id.clone(),
-        targets: vec![LocalDataPurgeTarget {
+        targets: vec![LocalDataPurgeTarget::Table {
             table: "patient_notes".to_owned(),
             selectors: BTreeMap::from([(
                 "encryption_key_id".to_owned(),
@@ -10872,10 +10872,13 @@ fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
             )]),
         }],
     };
-    assert!(client
-        .purge_local_data(&conflicting)
-        .expect_err("id collision must fail")
-        .contains("already used with a different plan"));
+    assert!(
+        client
+            .purge_local_data(&conflicting)
+            .expect_err("id collision must fail")
+            .code
+            == "sync.invalid_request"
+    );
 }
 
 /// Mirror `SyncClient::sync` through the split round API.
@@ -11861,7 +11864,7 @@ fn failed_operations_restore_every_mirror_through_one_rollback() {
     assert!(client
         .purge_local_data(&LocalDataPurgeInput {
             purge_id: "purge-1".into(),
-            targets: vec![LocalDataPurgeTarget {
+            targets: vec![LocalDataPurgeTarget::Table {
                 table: "tasks".into(),
                 selectors: BTreeMap::from([("project_id".into(), vec!["p1".into()])]),
             }],
@@ -12025,7 +12028,7 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
     let purged = client
         .purge_local_data(&LocalDataPurgeInput {
             purge_id: "purge-file".to_owned(),
-            targets: vec![LocalDataPurgeTarget {
+            targets: vec![LocalDataPurgeTarget::Table {
                 table: "patient_notes".to_owned(),
                 selectors: BTreeMap::from([(
                     "encryption_key_id".to_owned(),

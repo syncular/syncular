@@ -67,6 +67,34 @@ in-memory and nothing survives a restart. A file-backed database also gets the
 independent read owner.
 :::
 
+## Fill local projections in the Rust host
+
+Import `tauri_plugin_syncular::SyncularExt` and call `app.syncular()` from a
+Tauri manager after registering the plugin. The handle's `command(&Value)`
+method waits for a JSON reply from the replica owner. Use it to read sealed
+source rows in Rust and submit derived values with `writeProjection`.
+
+```rust
+use serde_json::json;
+use tauri_plugin_syncular::SyncularExt;
+
+let host = app.syncular();
+let events = host.subscribe();
+let reply = host.command(&json!({
+    "method": "projectionPending",
+    "params": { "name": "record_names", "limit": 32 }
+}));
+```
+
+Run this code after the replica opens and the client activates security.
+Subscribe before fetching pending work so you receive events for work queued
+after the fetch. Each event with `type: "projectionPending"` names the
+projection to check in its `name` field. The receiver carries the same events
+as the owning webview's channel. Run blocking commands and event reads off the
+UI thread. The same security preflight rules apply to host and webview commands.
+
+See [the projection API and preflight erasure](/tooling-local-search/#app-filled-local-projections).
+
 ## The pages of this SDK
 
 | Page | Type | You get |

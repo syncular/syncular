@@ -68,3 +68,11 @@ export {
   type SyncProgress,
   type SyncProgressListener,
 } from './progress';
+
+export type {
+  ClientLocalProjectionSpec,
+  ProjectionInput,
+  ProjectionPending,
+  ProjectionPendingEvent,
+  ProjectionWriteResult,
+} from './projection';

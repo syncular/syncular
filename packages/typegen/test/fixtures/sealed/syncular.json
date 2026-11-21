@@ -40,6 +40,34 @@
       "encryptedColumns": [
         "given_names",
         "notes"
+      ],
+      "localProjections": [
+        {
+          "name": "patient_display",
+          "columns": [
+            {
+              "name": "display_name",
+              "declaredType": "string"
+            },
+            {
+              "name": "display_order",
+              "declaredType": "integer"
+            }
+          ],
+          "fts": {
+            "tokenize": "unicode61",
+            "columns": [
+              "display_name"
+            ]
+          },
+          "dependencies": [
+            {
+              "table": "patients",
+              "column": "clinic_id",
+              "sourceColumn": "clinic_id"
+            }
+          ]
+        }
       ]
     }
   ]

@@ -121,3 +121,88 @@ An [encrypted column](/concepts-encryption/) is eligible when its declared appli
 Reading `_syncular_source_id` from the projection makes FTS5 fetch the content row of every match. Each managed projection therefore keeps an internal mapping table from source identity to FTS rowid, keyed by the projection rowid. The generated SQL reads each source id through that mapping, while the authored query, its types, and its rows stay the same. On 50,000 matches the generated form took 53.9 ms against 73.6 ms for the authored form (Bun 1.4.0, macOS arm64). `highlight` and `snippet` still read the content row of every match they evaluate.
 
 Deletes resolve the identity through a unique index and delete by rowid, which avoids scanning the unindexed source-identity column for each row during eviction or replacement. Both cores backfill the mapping for existing projections on startup without resetting application rows or pending writes. Source rows, mappings, and FTS changes commit or roll back together. Your query SQL and schema declarations need no change.
+
+## App-filled local projections
+
+An app-filled projection stores values your app derives from a synced source
+row. Use one when your app opens a sealed record on the device and needs to
+query the result across restarts.
+
+Add `localProjections` to the source table entry in `syncular.json`. Each
+column takes a `declaredType` of `string`, `integer`, `real`, `boolean` or
+`json`. When you open the database with a changed projection
+declaration, the client clears its derived rows and queues its source rows again.
+
+```json
+{
+  "name": "sealed_records",
+  "scopes": ["workspace:{workspace_id}"],
+  "localProjections": [
+    {
+      "name": "record_names",
+      "columns": [{ "name": "display_name", "declaredType": "string" }],
+      "fts": { "tokenize": "unicode61", "columns": ["display_name"] },
+      "dependencies": [
+        { "table": "record_wraps", "column": "key_id", "sourceColumn": "key_id" }
+      ]
+    }
+  ]
+}
+```
+
+Declare `record_wraps` as a synced table. Both dependency columns must be
+plaintext. Use the source primary key or declare a local index whose first
+column is `sourceColumn`. On a write to `record_wraps`, the client clears
+projection rows whose source `key_id` matches the old or new value of
+`record_wraps.key_id`. The client queues those source rows in the same transaction.
+
+Import `compileLocalProjections` from `@syncular/client/projections`.
+Pass `{ createProjections: compileLocalProjections }` to the direct
+`SyncClient` constructor or to `startSyncWorker` in your worker entry.
+The Rust client loads the projection from the generated schema.
+
+1. Call `projectionPending(name, limit)` for `{ epoch, entries }`. Each
+   entry carries a `sourceId` and a `token`. Pending work survives restarts
+   and browser leader changes. Register `onProjectionPending` before your
+   first read after security activation. Each event names a projection that
+   received new pending work in a committed transaction. Call
+   `projectionPending` to read the work.
+2. Read the source rows and derive their values. Submit
+   `writeProjection(name, epoch, rows)` with
+   `{ sourceId, token, values }` for each row. Pass `values: null` to withhold a
+   row from subsequent batches.
+   A source write, matching dependency write, or explicit invalidation queues
+   the row again. For a JSON column, pass a JSON document as a string. An omitted
+   or null column stores SQL NULL.
+3. Read `{ written, stale }` from the result. The client skips any entry
+   whose token or epoch changed while your app derived its values. It
+   rejects the entire batch with `client.projection_invalid` if it contains
+   an unknown column or a value of the wrong type.
+
+Call `invalidateProjection(name, sourceIds?)` when the app's authority over
+the derived values changes. This clears the selected projection rows and
+queues the source rows again. Omit `sourceIds` to select every row. The epoch
+advances and invalidates every outstanding batch for the projection.
+
+Query the projection by its name. Join its `_syncular_source_id` to the
+source primary key as text. To use FTS5, list at least one string column in
+`fts.columns`. List each column once. Use `MATCH` to search the indexed
+columns. Projection writes and clears invalidate named queries that
+read it. A query can establish coverage through the synced source
+table's declared scopes. During security preflight, the client rejects all
+three projection operations with `client.security_preflight_required`.
+
+The replica stores derived values in plaintext, under the same
+[device security rules as decrypted encrypted columns](/concepts-encryption/).
+Your app verifies access before it derives values or activates protected reads.
+A scope revocation or [authorized local purge](/concepts-local-data-purge/)
+removes the projection rows and FTS copies together with the affected source
+rows. Sync transfers the source data. Derived values stay on the device.
+
+To erase derived plaintext during security preflight, use
+`purgeLocalData({ purgeId, targets: [{ projection: "record_names" }] })`.
+The client clears the projection and queues its source rows again. It
+preserves the source rows and pending commits. The purge rewrites the
+replica file and truncates its write-ahead log (WAL) to erase the deleted
+values. After an interruption, retry the same purge plan with the same
+`purgeId` to finish erasure.

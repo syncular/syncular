@@ -89,6 +89,7 @@ pub use api::{
     CLIENT_DIAGNOSTICS_VERSION, LOCAL_AUTHORITY_UNCONFIGURED_CODE, MAX_DIAGNOSTIC_QUERY_FAILURES,
     REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
 };
+pub use client::ProjectionInput;
 pub use client::{
     CurrentBasePreparation, FileQuerySnapshotReader, SnapshotReadRequest, SnapshotStatement,
     SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE,

@@ -1,3 +1,4 @@
+import { compileLocalProjections } from '../src/projection';
 import type { ClientDatabase } from '../src/database';
 import { httpSegmentDownloader } from '../src/http';
 import { openPersistentWasmDatabase } from '../src/wasm-database';
@@ -120,6 +121,7 @@ scope.addEventListener('message', (event: MessageEvent) => {
 });
 
 startSyncWorker({
+  createProjections: compileLocalProjections,
   openDatabase: async (config) => {
     if (config.database.mode !== 'persistent')
       throw new Error('OPFS persistence required');

@@ -16,6 +16,7 @@ import { erasureScenarios } from './erasure';
 import { errorScenarios } from './errors';
 import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
+import { localProjectionScenarios } from './local-projections';
 import { localAuthorityScenarios } from './local-authority';
 import { observationScenarios } from './observation';
 import { offlineScenarios } from './offline';
@@ -66,6 +67,7 @@ export const CATALOG: readonly Scenario[] = [
   ...reconnectStormScenarios,
   ...referenceScenarios,
   ...localAuthorityScenarios,
+  ...localProjectionScenarios,
   ...roundFailureScenarios,
   ...deletePrecedenceScenarios,
   ...watermarkScenarios,

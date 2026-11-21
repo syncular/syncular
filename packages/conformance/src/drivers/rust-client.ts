@@ -56,6 +56,9 @@ import type {
   DriverCommitDelivery,
   DriverCommitOutcome,
   DriverEncryptionConfig,
+  DriverProjectionInput,
+  DriverProjectionPending,
+  DriverProjectionWriteResult,
   DriverPreviousVersionAudit,
   DriverPreviousVersionReason,
   DriverPreviousVersionSnapshot,
@@ -1205,6 +1208,92 @@ class RustClientInstance implements ClientInstance {
   constructor(shim: ShimProcess, cleanup: () => void = () => {}) {
     this.#shim = shim;
     this.#cleanup = cleanup;
+  }
+
+  async projectionPending(
+    name: string,
+    limit: number,
+  ): Promise<DriverProjectionPending> {
+    const result = asObject(
+      await this.#shim.call('projectionPending', { name, limit }),
+      'projectionPending',
+    );
+    if (typeof result.epoch !== 'number' || !Array.isArray(result.entries))
+      throw new Error('invalid projection pending result');
+    return {
+      epoch: result.epoch,
+      entries: result.entries.map((value) => {
+        const { sourceId, token } = asObject(value, 'projection entry');
+        if (typeof sourceId !== 'string' || typeof token !== 'number')
+          throw new Error('invalid projection entry');
+        return { sourceId, token };
+      }),
+    };
+  }
+
+  async writeProjection(
+    name: string,
+    epoch: number,
+    rows: readonly DriverProjectionInput[],
+  ): Promise<DriverProjectionWriteResult> {
+    const result = asObject(
+      await this.#shim.call('writeProjection', {
+        name,
+        epoch,
+        rows: rows.map((row) => ({ ...row })),
+      }),
+      'writeProjection',
+    );
+    return {
+      written: stringListOf(result.written),
+      stale: stringListOf(result.stale),
+    };
+  }
+
+  async invalidateProjection(
+    name: string,
+    sourceIds?: readonly string[],
+  ): Promise<void> {
+    await this.#shim.call('invalidateProjection', {
+      name,
+      ...(sourceIds === undefined ? {} : { sourceIds: [...sourceIds] }),
+    });
+  }
+
+  async drainProjectionPending() {
+    const { events } = asObject(
+      await this.#shim.call('drainProjectionPending', {}),
+      'projection events',
+    );
+    if (!Array.isArray(events)) throw new Error('invalid projection events');
+    return events.map((event) => {
+      const item = asObject(event, 'projection event');
+      if (item.type !== 'projectionPending' || typeof item.name !== 'string')
+        throw new Error('invalid projection event');
+      return { type: 'projectionPending' as const, name: item.name };
+    });
+  }
+
+  async purgeLocalData(
+    ...[purgeId, targets]: Parameters<ClientInstance['purgeLocalData']>
+  ) {
+    const { alreadyApplied, purgedRows, droppedCommits } = asObject(
+      await this.#shim.call('purgeLocalData', {
+        input: { purgeId, targets: [...targets] },
+      }),
+      'purgeLocalData',
+    );
+    if (
+      typeof alreadyApplied !== 'boolean' ||
+      typeof purgedRows !== 'number' ||
+      typeof droppedCommits !== 'number'
+    )
+      throw new Error('invalid local purge result');
+    return { alreadyApplied, purgedRows, droppedCommits };
+  }
+
+  async rebootstrapLocalData(rebootstrapId: string): Promise<void> {
+    await this.#shim.call('rebootstrapLocalData', { input: { rebootstrapId } });
   }
 
   async subscribe(scopes: DriverUnitScopes): Promise<string> {

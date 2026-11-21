@@ -117,6 +117,10 @@ pub fn reply(result: Result<Value, CommandError>) -> Value {
     }
 }
 
+pub fn projection_pending_event(name: String) -> Value {
+    json!({ "type": "projectionPending", "name": name })
+}
+
 /// A well-formed presence control frame (§8.6.2), the one inbound realtime
 /// event a native host surfaces as an event: a fanout, or the server's refusal
 /// of this client's own publish, which carries the server's `error` code.
@@ -1144,7 +1148,7 @@ pub fn dispatch<T: Transport>(
                 })?;
             let result = need_client(client)?
                 .purge_local_data(&input)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             serde_json::to_value(result).map_err(|error| client_err(error.to_string()))
         }
         "rebootstrapLocalData" => {
@@ -1255,6 +1259,55 @@ pub fn dispatch<T: Transport>(
                 .ok_or_else(|| client_err("readRows missing table".to_owned()))?;
             let rows = need_client(client)?.read_rows(table).map_err(client_err)?;
             Ok(json!({ "rows": rows }))
+        }
+        "projectionPending" | "writeProjection" | "invalidateProjection" => {
+            let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
+                CommandError::new("sync.invalid_request", "projection name must be a string")
+            })?;
+            let running = need_client(client)?;
+            let result = match method {
+                "projectionPending" => {
+                    let limit = params.get("limit").and_then(Value::as_i64).ok_or_else(|| {
+                        CommandError::new(
+                            "sync.invalid_request",
+                            "projection limit must be a nonnegative safe integer",
+                        )
+                    })?;
+                    running.projection_pending(name, limit)
+                }
+                "writeProjection" => {
+                    let epoch = params.get("epoch").and_then(Value::as_i64).ok_or_else(|| {
+                        CommandError::new(
+                            "sync.invalid_request",
+                            "projection epoch must be an integer",
+                        )
+                    })?;
+                    let rows = serde_json::from_value::<Vec<syncular_client::ProjectionInput>>(
+                        params["rows"].clone(),
+                    )
+                    .map_err(|_| {
+                        CommandError::new("sync.invalid_request", "invalid projection rows")
+                    })?;
+                    running.write_projection(name, epoch, &rows)
+                }
+                _ => {
+                    let source_ids = params
+                        .get("sourceIds")
+                        .map(|value| {
+                            serde_json::from_value::<Vec<String>>(value.clone()).map_err(|_| {
+                                CommandError::new(
+                                    "sync.invalid_request",
+                                    "projection source IDs must be strings",
+                                )
+                            })
+                        })
+                        .transpose()?;
+                    running
+                        .invalidate_projection(name, source_ids.as_deref())
+                        .map(|()| json!({}))
+                }
+            };
+            result.map_err(CommandError::from_client)
         }
         "query" => {
             // The React `useSyncQuery` live-query fast path: arbitrary read-only
@@ -1381,6 +1434,9 @@ pub fn dispatch<T: Transport>(
         ),
         "drainChangeBatches" => Ok(json!({
             "batches": need_client(client)?.drain_change_batches()
+        })),
+        "drainProjectionPending" => Ok(json!({
+            "events": need_client(client)?.drain_projection_pending().into_iter().map(projection_pending_event).collect::<Vec<_>>()
         })),
         "drainSyncIntents" => Ok(json!({
             "intents": need_client(client)?.drain_sync_intents()

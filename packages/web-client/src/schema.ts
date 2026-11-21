@@ -18,7 +18,12 @@ import { ensureFailedOverlaySchema, RETAINED_ROWS } from './failed-overlay';
  */
 import { definedObject, type RowColumn, type RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { invalidRequest, localStateCorrupt } from './errors';
+import { ClientSyncError, invalidRequest, localStateCorrupt } from './errors';
+import type {
+  ClientLocalProjectionSpec,
+  ProjectionStore,
+  compileLocalProjections,
+} from './projection';
 import { snakeToCamel } from './naming';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
@@ -54,6 +59,7 @@ export interface ClientTableSchema {
   readonly indexes?: readonly ClientIndexSpec[];
   /** Local FTS5 search projections; omitted when a table declares none. */
   readonly ftsIndexes?: readonly ClientFtsIndexSpec[];
+  readonly localProjections?: readonly ClientLocalProjectionSpec[];
 }
 
 export interface ClientSchema {
@@ -96,10 +102,11 @@ export interface CompiledClientTable {
 export interface CompiledClientSchema {
   readonly version: number;
   readonly tables: ReadonlyMap<string, CompiledClientTable>;
+  readonly projections: ProjectionStore | undefined;
 }
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
-const ALLOWED_FTS_TOKENIZERS = new Set([
+export const ALLOWED_FTS_TOKENIZERS = new Set([
   'unicode61',
   'unicode61 remove_diacritics 0',
   'unicode61 remove_diacritics 1',
@@ -114,6 +121,7 @@ function invalidSchema(message: string): never {
 
 export function compileClientSchema(
   schema: ClientSchema,
+  createProjections?: typeof compileLocalProjections,
 ): CompiledClientSchema {
   // §7.4.2: the persisted marker is a canonical positive i32 and a replica
   // refuses any requested version outside that range before it touches
@@ -124,20 +132,15 @@ export function compileClientSchema(
     schema.version < 1 ||
     schema.version > 2147483647
   ) {
-    throw invalidRequest(
-      'generated schema version must be an integer in 1..=2147483647',
-    );
+    throw invalidRequest('schema version must be an integer in 1..=2147483647');
   }
   const tables = new Map<string, CompiledClientTable>();
   const schemaObjectNames = new Set<string>();
   for (const table of schema.tables) {
     const tableLabel = `table ${table.name}`;
-    if (tables.has(table.name)) {
-      invalidSchema(`duplicate table ${JSON.stringify(table.name)}`);
-    }
     if (schemaObjectNames.has(table.name)) {
       invalidSchema(
-        `table ${JSON.stringify(table.name)} conflicts with an index or FTS projection`,
+        `table ${JSON.stringify(table.name)} conflicts with another schema object`,
       );
     }
     schemaObjectNames.add(table.name);
@@ -263,7 +266,35 @@ export function compileClientSchema(
       hasEncryptedColumns: table.columns.some((c) => c.encrypted === true),
     });
   }
-  return { version: schema.version, tables };
+  if (
+    !createProjections &&
+    schema.tables.some((table) => table.localProjections?.length)
+  )
+    throw projectionsUnavailable();
+  return {
+    version: schema.version,
+    tables,
+    projections: createProjections?.(schema, tables, schemaObjectNames),
+  };
+}
+
+function projectionsUnavailable(): ClientSyncError {
+  return new ClientSyncError(
+    'client.schema_invalid',
+    'projection implementation required',
+    false,
+    { reason: 'projections_unavailable' },
+  );
+}
+
+function detachProjections(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+  kept?: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+  if (!schema.projections && tableExists(db, '_syncular_local_projections'))
+    throw projectionsUnavailable();
+  return schema.projections?.detach(db, kept);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +466,24 @@ function createSyncedTable(
   }
 }
 
-const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
+const FTS_SOURCE_ID_COLUMN = '"_syncular_source_id"';
+
+export function createFtsStorage(
+  db: ClientDatabase,
+  name: string,
+  columns: string,
+  tokenize: string,
+  options = '',
+): void {
+  const projection = quoteIdent(name);
+  const tokenizer = tokenize.replaceAll("'", "''");
+  db.exec(
+    `CREATE VIRTUAL TABLE IF NOT EXISTS ${projection} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED,${columns},tokenize='${tokenizer}'${options})`,
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS ${quoteIdent(`_syncular_fts_${name}`)}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
+  );
+}
 
 /**
  * Create (or migrate) one contentful FTS5 projection for a table plus its
@@ -466,31 +514,22 @@ function createFtsProjection(
   const primaryKey = quoteIdent(table.primaryKey);
   const existed = tableExists(db, index.name);
   const indexedColumns = index.columns.map(quoteIdent);
-  const tokenizer = index.tokenize.replaceAll("'", "''");
-  db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS ${projection} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED,${indexedColumns.join(', ')},tokenize='${tokenizer}')`,
-  );
-
   const mapping = quoteIdent(`_syncular_fts_${index.name}`);
   const mapped = tableExists(db, `_syncular_fts_${index.name}`);
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS ${mapping}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
-  );
+  createFtsStorage(db, index.name, indexedColumns.join(', '), index.tokenize);
   const sourceId = `CAST(${primaryKey} AS TEXT)`;
   const newSourceId = `CAST(new.${primaryKey} AS TEXT)`;
   const oldSourceId = `CAST(old.${primaryKey} AS TEXT)`;
-  const projectionColumns = [
-    quoteIdent(FTS_SOURCE_ID_COLUMN),
-    ...indexedColumns,
-  ].join(', ');
+  const projectionColumns = [FTS_SOURCE_ID_COLUMN, ...indexedColumns].join(
+    ', ',
+  );
   const newValues = [
     newSourceId,
     ...index.columns.map((column) => `new.${quoteIdent(column)}`),
   ].join(', ');
-  const deleteFor = (value: string) =>
-    `DELETE FROM ${projection} WHERE rowid=(SELECT id FROM ${mapping} WHERE source_id=${value});DELETE FROM ${mapping} WHERE source_id=${value}`;
   const deleteDisplaced = (select: string) =>
     `DELETE FROM ${projection} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select}));DELETE FROM ${mapping} WHERE source_id IN (${select})`;
+  const deleteFor = (value: string) => deleteDisplaced(`SELECT ${value}`);
   const insertNew = `INSERT INTO ${mapping}(source_id)VALUES(${newSourceId});INSERT INTO ${projection}(rowid,${projectionColumns})VALUES((SELECT id FROM ${mapping} WHERE source_id=${newSourceId}),${newValues})`;
 
   // A clean insert cannot already have a projection row because the source
@@ -591,9 +630,18 @@ function createFtsProjection(
   if (!mapped || stale) {
     db.exec(`DELETE FROM ${mapping}`);
     db.exec(
-      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${projection}`,
+      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${FTS_SOURCE_ID_COLUMN} FROM ${projection}`,
     );
   }
+}
+
+function createLocalProjections(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+): void {
+  for (const table of schema.tables.values())
+    for (const index of table.ftsIndexes) createFtsProjection(db, table, index);
+  schema.projections?.open(db);
 }
 
 /**
@@ -607,6 +655,7 @@ export function ensureLocalSyncedSchema(
   schema: CompiledClientSchema,
 ): void {
   db.transaction(() => {
+    detachProjections(db, schema);
     for (const table of schema.tables.values()) {
       // §5.11: rebuild a table created before sealed apply (NOT NULL
       // encrypted columns, no reserved columns), keeping its rows.
@@ -635,11 +684,7 @@ export function ensureLocalSyncedSchema(
       }
       createSyncedTable(db, table);
     }
-    for (const table of schema.tables.values()) {
-      for (const index of table.ftsIndexes) {
-        createFtsProjection(db, table, index);
-      }
-    }
+    createLocalProjections(db, schema);
   });
 }
 
@@ -789,6 +834,7 @@ export function resetLocalReplica(
   const kept = bump
     ? pruneUnknownUnits(db, schema, true)
     : { tables: new Set<string>(), units: [], restricts: undefined };
+  const projectionNames = detachProjections(db, schema, kept.tables);
   const keptNames = [...kept.tables];
   db.exec(
     `DELETE FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL AND tbl NOT IN(${keptNames.map(() => '?')})`,
@@ -800,6 +846,7 @@ export function resetLocalReplica(
     `SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
   )) {
     const name = String(row.name);
+    if (projectionNames?.has(name)) continue;
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(`_syncular_fts_${name}`)}`);
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
@@ -807,12 +854,11 @@ export function resetLocalReplica(
     `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%' AND name NOT LIKE 'sqlite_%'`,
   )) {
     const name = String(row.name);
-    if (!kept.tables.has(name))
+    if (!projectionNames?.has(name) && !kept.tables.has(name))
       db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
   for (const table of schema.tables.values()) createSyncedTable(db, table);
-  for (const table of schema.tables.values())
-    for (const index of table.ftsIndexes) createFtsProjection(db, table, index);
+  createLocalProjections(db, schema);
   resetUnits(db, kept.units, kept.restricts);
   return [...schema.tables.keys()].filter((name) => !kept.tables.has(name));
 }
