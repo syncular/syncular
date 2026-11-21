@@ -49,15 +49,60 @@ use syncular_client::native_transport::{HostTransport, Inbound};
 /// copy before release, parse the owned copy, and close the handle once on drop.
 struct FfiClient {
     handle: NonNull<syncular::Handle>,
+    /// Answers every header question with the config's static `headers`
+    /// until `stop`; the FFI transport refuses static headers. Drop joins
+    /// it before close, so no header call outlives the handle.
+    answers: Option<std::thread::JoinHandle<()>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// The live handle, for the header-answer thread.
+struct HandlePtr(*mut syncular::Handle);
+// SAFETY: the FFI header calls take no core lock and are thread-safe.
+unsafe impl Send for HandlePtr {}
 
 impl FfiClient {
     fn new(config: &Value) -> Result<Self, CommandError> {
+        let mut config = config.clone();
+        let headers = config
+            .as_object_mut()
+            .and_then(|object| object.remove("headers"))
+            .unwrap_or_else(|| json!({}));
+        let headers =
+            CString::new(headers.to_string()).map_err(|error| client_err(error.to_string()))?;
         let config =
             CString::new(config.to_string()).map_err(|error| client_err(error.to_string()))?;
         let handle = NonNull::new(syncular::syncular_client_new(config.as_ptr()))
             .ok_or_else(|| client_err("FFI constructor returned null".to_owned()))?;
-        Ok(Self { handle })
+        let pointer = HandlePtr(handle.as_ptr());
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let answers = std::thread::spawn(move || {
+            let pointer = pointer;
+            while !stopped.load(std::sync::atomic::Ordering::Acquire) {
+                let question = syncular::syncular_client_poll_headers(pointer.0, 20);
+                if question.is_null() {
+                    continue;
+                }
+                // SAFETY: poll returned a library-owned, NUL-terminated string.
+                let id =
+                    serde_json::from_slice::<Value>(unsafe { CStr::from_ptr(question) }.to_bytes())
+                        .ok()
+                        .and_then(|question| question["requestId"].as_u64());
+                syncular::syncular_free_string(question);
+                let Some(id) = id else { return };
+                syncular::syncular_free_string(syncular::syncular_client_provide_headers(
+                    pointer.0,
+                    id,
+                    headers.as_ptr(),
+                ));
+            }
+        });
+        Ok(Self {
+            handle,
+            answers: Some(answers),
+            stop,
+        })
     }
 
     fn command(
@@ -178,6 +223,10 @@ impl FfiClient {
 
 impl Drop for FfiClient {
     fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(answers) = self.answers.take() {
+            let _ = answers.join();
+        }
         syncular::syncular_client_close(self.handle.as_ptr());
     }
 }
@@ -238,13 +287,36 @@ impl BenchTransport {
 
     fn from_config(config: &Value) -> Result<Self, String> {
         let (notify, notification) = mpsc::sync_channel(1);
+        // The native transport refuses static headers; a header source
+        // answers the bench config's `headers` on every request.
+        let mut config = config.clone();
+        let headers = config
+            .as_object_mut()
+            .and_then(|object| object.remove("headers"));
+        let mut inner = HostTransport::from_config_with_notify(
+            &config,
+            Some(Arc::new(move || {
+                let _ = notify.try_send(());
+            })),
+        )?;
+        if let Some(headers) = headers {
+            let headers: Vec<(String, String)> = headers
+                .as_object()
+                .ok_or("transport headers must be an object")?
+                .iter()
+                .map(|(name, value)| {
+                    value
+                        .as_str()
+                        .map(|value| (name.clone(), value.to_owned()))
+                        .ok_or("transport header values must be strings")
+                })
+                .collect::<Result<_, _>>()?;
+            inner.set_header_source(syncular_client::native_transport::HeaderSource::new(
+                move |_, _| Some(headers.clone()),
+            ));
+        }
         Ok(BenchTransport {
-            inner: Box::new(HostTransport::from_config_with_notify(
-                config,
-                Some(Arc::new(move || {
-                    let _ = notify.try_send(());
-                })),
-            )?),
+            inner: Box::new(inner),
             stats: TransportStats::default(),
             blob_diagnostics: true,
             wait_for_inbound: Box::new(move |remaining| {
