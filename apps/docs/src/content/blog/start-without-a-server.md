@@ -145,7 +145,7 @@ with a transport for the remote server:
 
 ```ts
 await client.syncUntilIdle();
-client.setTransportEnabled(false);
+client.setTransportGate('closed');
 await authority.attach(
   httpSyncTransport('https://api.example.com/sync', { headers }),
 );

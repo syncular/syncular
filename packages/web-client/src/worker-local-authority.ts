@@ -29,7 +29,8 @@ export const createWorkerLocalAuthority: WorkerLocalAuthorityFactory = (
         'init did not enable the local authority',
       );
     }
-    running.setTransportEnabled(false);
+    const gate = running.transportGate();
+    running.setTransportGate('closed');
     try {
       await context.serializedSync(() => run(local, remote));
     } catch (error) {
@@ -52,7 +53,8 @@ export const createWorkerLocalAuthority: WorkerLocalAuthorityFactory = (
       }
       throw error;
     } finally {
-      running.setTransportEnabled(!context.isOffline());
+      // A gate the app set during the drive stays.
+      if (running.transportGate() === 'closed') running.setTransportGate(gate);
     }
     context.wake();
   }

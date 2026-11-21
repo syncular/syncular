@@ -225,7 +225,7 @@ if (!available) {
         const host = nativeTauri(`http://127.0.0.1:${server.port}`);
         const client = await createTauriSyncClient({
           schema,
-          transportEnabled: false,
+          transportGate: 'closed',
           tauri: host.api,
         });
         try {
@@ -249,7 +249,7 @@ if (!available) {
           client.onChange((batch) => {
             if (batch.status) statuses.push(batch.status.upgrading);
           });
-          await client.setTransportEnabled(true);
+          await client.setTransportGate('open');
           expect(await client.sync()).toMatchObject({
             ok: true,
             report: { resets: stored === undefined ? [] : [unit] },
@@ -340,7 +340,7 @@ if (!available) {
       const host = nativeTauri();
       const client = await createTauriSyncClient({
         schema: bytesSchema,
-        transportEnabled: false,
+        transportGate: 'closed',
         tauri: host.api,
       });
       try {
@@ -493,7 +493,7 @@ if (!available) {
       const client = await createTauriSyncClient({
         schema,
         securityPreflight: true,
-        transportEnabled: false,
+        transportGate: 'closed',
         tauri: host.api,
       });
       try {
@@ -532,7 +532,7 @@ if (!available) {
           code: 'sync.offline',
         });
         expect(calls).toEqual([]);
-        await client.setOffline(false);
+        await client.setTransportGate('open');
         await client.syncUntilIdle();
         expect(await client.pendingCommits()).toEqual([]);
         expect((await client.query('SELECT title FROM todos'))[0]?.title).toBe(
@@ -1682,7 +1682,7 @@ test.skipIf(!available)(
         schema,
         tauri: harness.api,
         securityPreflight: true,
-        transportEnabled: false,
+        transportGate: 'closed',
         authorityReads: defineAuthorityReads([
           {
             table: 'todos',
@@ -1764,7 +1764,7 @@ test.skipIf(!available)(
           ],
         },
         tauri: harness.api,
-        transportEnabled: false,
+        transportGate: 'closed',
       });
       await client.mutate([
         {

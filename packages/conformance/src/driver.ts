@@ -1211,10 +1211,13 @@ export interface DriverAuthoritySnapshot {
     }[];
   }[];
 }
+/** SPEC §8.8 transport gate states. */
+export type DriverTransportGate = 'closed' | 'pull' | 'open';
+
 export interface ClientCreateOptions {
   readonly authorityReads?: readonly DriverAuthorityRead[];
   readonly securityPreflight?: boolean;
-  readonly transportEnabled?: boolean;
+  readonly transportGate?: DriverTransportGate;
   readonly retainFailedCommits?: boolean;
   readonly clientId: string;
   readonly schema: DriverSchema;
@@ -1609,7 +1612,7 @@ export interface ClientInstance {
   prepareRound?(): Promise<void>;
   completeRound?(): Promise<ClientSyncResult>;
 
-  setTransportEnabled(enabled: boolean): Promise<void>;
+  setTransportGate(state: DriverTransportGate): Promise<void>;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
   /**

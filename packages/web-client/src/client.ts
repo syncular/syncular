@@ -479,7 +479,8 @@ export interface SyncClientLimits {
 export interface SyncClientConfig {
   /** Explicit development console registry; absent means no registration. */
   readonly devtools?: DevtoolsRegistrar;
-  readonly transportEnabled?: boolean;
+  /** SPEC §8.8 transport gate at construction; default `open`. */
+  readonly transportGate?: TransportGate;
   /** Keep rejected/conflicting local intent visible until explicit resolution. */
   readonly retainFailedCommits?: boolean;
   readonly database: ClientDatabase;
@@ -583,6 +584,8 @@ export interface SyncClientConfig {
 
 /** The fail-closed local-replica security lifecycle shared by every host. */
 export type SecurityLifecycle = 'preflight' | 'active';
+/** SPEC §8.8: `pull` syncs down and sends no commit. */
+export type TransportGate = 'closed' | 'pull' | 'open';
 
 /** Stable client-local error while protected operations are preflight-gated. */
 export const SECURITY_PREFLIGHT_REQUIRED_CODE =
@@ -931,10 +934,14 @@ function isFinalPushResult(frame: PushResultFrame): boolean {
   );
 }
 
-function transportFlag(value: unknown): boolean {
-  if (typeof value !== 'boolean')
-    throw invalidRequest('transportEnabled must be a boolean');
-  return value;
+const TRANSPORT_GATES = ['closed', 'pull', 'open'] as const;
+
+/** The gate's index in TRANSPORT_GATES: 0 closed, 1 pull, 2 open. */
+function transportGate(value: unknown): number {
+  const gate = TRANSPORT_GATES.findIndex((name) => name === value);
+  if (gate < 0)
+    throw invalidRequest('transportGate must be closed, pull or open');
+  return gate;
 }
 
 /** The stable `code` a thrown value carries, when it has one. */
@@ -1008,7 +1015,7 @@ export class SyncClient {
   readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
   #securityEpoch = 0;
-  #transportEnabled: boolean;
+  #gate: number;
   #transportEpoch = 0;
   #registrationEpoch = 0;
   /** The units of each window base's latest `setWindow` (§4.8). */
@@ -1137,9 +1144,7 @@ export class SyncClient {
   #preflightBarrier: Promise<void> | undefined;
 
   constructor(config: SyncClientConfig) {
-    this.#transportEnabled =
-      config.transportEnabled === undefined ||
-      transportFlag(config.transportEnabled);
+    this.#gate = transportGate(config.transportGate ?? 'open');
     for (const name of [
       'maxPushCommitsPerRequest',
       'maxPushOperationsPerRequest',
@@ -1634,7 +1639,7 @@ export class SyncClient {
    * an interactive round. */
   #emitSyncNeeded(reason: 'startup' | 'hello' | WakeReason): void {
     this.#setSyncNeeded(true);
-    if (!this.#transportEnabled) return;
+    if (!this.#gate) return;
     for (const listener of [
       this.#config.onSyncNeeded,
       ...this.#syncNeededListeners,
@@ -1649,7 +1654,7 @@ export class SyncClient {
   }
 
   #emitSyncIntent(intent: SyncIntent): void {
-    if (!this.#transportEnabled && intent.kind !== 'none') return;
+    if (!this.#gate && intent.kind !== 'none') return;
     for (const listener of [
       this.#config.onSyncIntent,
       ...this.#syncIntentListeners,
@@ -1662,24 +1667,30 @@ export class SyncClient {
     }
   }
 
-  /** Host-owned transport policy; the local replica remains available. */
-  setTransportEnabled(enabled: boolean): void {
+  /** Host-owned transport policy (§8.8); the local replica remains available. */
+  setTransportGate(state: TransportGate): void {
     this.#requireStarted();
-    if (this.#transportEnabled === transportFlag(enabled)) return;
-    this.#transportEnabled = enabled;
+    const from = this.#gate;
+    const to = transportGate(state);
+    if (from === to) return;
+    this.#gate = to;
     this.#transportEpoch += 1;
     this.#disarm();
-    if (!enabled && !this.#syncOutstanding) this.disconnectRealtime();
+    if (!to && !this.#syncOutstanding) this.disconnectRealtime();
     this.#emitSyncIntent(
-      enabled && this.#securityLifecycle === 'active'
+      to && from < 2 && this.#securityLifecycle === 'active'
         ? { kind: 'interactive' }
         : { kind: 'none' },
     );
     this.#emitDiagnostics();
   }
 
+  transportGate(): TransportGate {
+    return TRANSPORT_GATES[this.#gate]!;
+  }
+
   #requireTransport(): void {
-    if (!this.#transportEnabled)
+    if (!this.#gate)
       throw new ClientSyncError('sync.offline', 'transport gate is closed');
   }
 
@@ -2300,7 +2311,7 @@ export class SyncClient {
     const capturedAtMs = this.#now();
     const leaseState = this.#diagnosticLease(capturedAtMs);
     const round = this.#lastRound;
-    const connectivity = !this.#transportEnabled
+    const connectivity = !this.#gate
       ? 'offline'
       : round?.status === 'succeeded'
         ? 'online'
@@ -2854,9 +2865,9 @@ export class SyncClient {
     }
     if (!provable(initial, outcome.sequence))
       return unproven('outcome_unavailable');
-    if (!this.#transportEnabled) return unproven('offline');
+    if (!this.#gate) return unproven('offline');
     await this.#opChain;
-    if (!this.#transportEnabled) return unproven('offline');
+    if (!this.#gate) return unproven('offline');
     let start: DriveStart;
     try {
       start = this.#driveStart();
@@ -2868,7 +2879,7 @@ export class SyncClient {
       report = await this.syncUntilIdle(maxRounds);
     } catch {
       return unproven(
-        !this.#transportEnabled || start.epoch !== this.#transportEpoch
+        !this.#gate || start.epoch !== this.#transportEpoch
           ? 'offline'
           : start.registrationEpoch !== this.#registrationEpoch
             ? 'missing_coverage'
@@ -2897,7 +2908,7 @@ export class SyncClient {
     { before, epoch, registrationEpoch, securityEpoch }: DriveStart,
     report: SyncIdleResult,
   ): CurrentBaseProof {
-    if (!this.#transportEnabled || epoch !== this.#transportEpoch)
+    if (!this.#gate || epoch !== this.#transportEpoch)
       return unproven('offline');
     if (registrationEpoch !== this.#registrationEpoch)
       return unproven('missing_coverage');
@@ -3480,7 +3491,7 @@ export class SyncClient {
         }
       });
     const sync: SyncIntent = {
-      kind: this.#transportEnabled && changed ? 'interactive' : 'none',
+      kind: this.#gate && changed ? 'interactive' : 'none',
     };
     if (sync.kind !== 'none') this.#emitSyncIntent(sync);
     return { value: undefined, effects: { sync } };
@@ -4245,12 +4256,15 @@ export class SyncClient {
     return this.#commandResult(this.patch(table, rowId, partial, options));
   }
 
-  /** A local write's result; an open transport gate owes interactive sync. */
+  /** A local write's result; an open transport gate owes interactive sync,
+   * and a `pull` gate owes none (§8.8). */
   #commandResult<T>(value: T): CommandResult<T> {
     return {
       value,
       effects: {
-        sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
+        sync: {
+          kind: this.#gate > 1 ? 'interactive' : 'none',
+        },
       },
     };
   }
@@ -4702,7 +4716,7 @@ export class SyncClient {
       )
       .finally(() => {
         this.#syncOutstanding = false;
-        if (!this.#transportEnabled) this.disconnectRealtime();
+        if (!this.#gate) this.disconnectRealtime();
         this.#endDiagnosticsDeferral();
       });
   }
@@ -4732,6 +4746,9 @@ export class SyncClient {
     }
     // A wake-up that lands during the round must survive it (§8.4).
     this.#setSyncNeeded(false);
+    // §8.8: a `pull` round sends no commit and uploads no blob; a gate change
+    // applies from the next round.
+    const pushes = this.#gate > 1;
     try {
       await this.#drainPendingEvictions();
       await this.#revealSealed();
@@ -4766,19 +4783,20 @@ export class SyncClient {
         outbox,
         frameBytes,
         deferred: encodedDeferred,
-      } = logEpoch === undefined
+      } = logEpoch === undefined || !pushes
         ? {
             pushFrames: [],
             outbox: [],
             frameBytes: [],
             // §2.1: the outbox waits for the next, epoch-bound request.
-            deferred: countOutbox(this.#db),
+            deferred: pushes ? countOutbox(this.#db) : 0,
           }
         : await this.#encodeOutboxForPush(header, pull, byteCap);
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
       if (
         logEpoch !== undefined &&
+        pushes &&
         this.#hasBlobs &&
         this.#config.blobs !== undefined
       ) {
@@ -5154,8 +5172,8 @@ export class SyncClient {
       aggregate.bootstrapping = [...last.bootstrapping];
       aggregate.deferredCommits = last.deferredCommits ?? 0;
       aggregate.schemaFloor = last.schemaFloor;
-      // A disabled transport or a schema floor ends the loop, not the budget.
-      if (!this.#transportEnabled || aggregate.schemaFloor) {
+      // A closed transport or a schema floor ends the loop, not the budget.
+      if (!this.#gate || aggregate.schemaFloor) {
         if (start !== undefined)
           this.#settleDecisions(decisions, start, result(false));
         return result(false);
@@ -5352,7 +5370,7 @@ export class SyncClient {
         this.#clientId,
       );
       openedSocket = socket;
-      if (!this.#transportEnabled) {
+      if (!this.#gate) {
         socket.close();
         this.#requireTransport();
       }
@@ -5422,7 +5440,7 @@ export class SyncClient {
   #heard(heartbeat?: boolean): void {
     if (
       this.#socket === undefined ||
-      !this.#transportEnabled ||
+      !this.#gate ||
       (this.#watchdog === undefined && heartbeat !== true)
     )
       return;
@@ -5554,7 +5572,7 @@ export class SyncClient {
   }
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {
-    if (!this.#transportEnabled) return;
+    if (!this.#gate) return;
     const resetEpoch = this.#localResetEpoch;
     const securityEpoch = this.#securityEpoch;
     const transportEpoch = this.#transportEpoch;
@@ -5564,7 +5582,7 @@ export class SyncClient {
     await this.#serialize(async () => {
       if (
         !this.#started ||
-        !this.#transportEnabled ||
+        !this.#gate ||
         this.#securityLifecycle !== 'active' ||
         securityEpoch !== this.#securityEpoch ||
         transportEpoch !== this.#transportEpoch
@@ -5586,8 +5604,7 @@ export class SyncClient {
   }
 
   #sendAck(cursor: number): void {
-    if (this.#transportEnabled)
-      this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
+    if (this.#gate) this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
   }
 
   // -- response processing ------------------------------------------------------

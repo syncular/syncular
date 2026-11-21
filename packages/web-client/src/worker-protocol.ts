@@ -36,6 +36,7 @@ import type {
   QuerySnapshot,
   SecurityLifecycle,
   SyncClientConfig,
+  TransportGate,
   SyncClientLimits,
   SyncSummary,
   SyncIdleOptions,
@@ -133,7 +134,7 @@ export interface WorkerInitConfig {
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly authorityReads?: readonly import('./authority').AuthorityReadDeclaration[];
   readonly securityPreflight?: boolean;
-  readonly transportEnabled?: boolean;
+  readonly transportGate?: TransportGate;
   /**
    * SPEC §12: sync against a local authority in a sibling file until
    * `attachLocalAuthority` moves its rows to `endpoints.syncUrl`. Requires
@@ -254,8 +255,8 @@ export interface WorkerApi extends Omit<
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef>;
   fetchBlob(blobIdOrRef: string): Promise<CachedBlob>;
-  /** Sever/restore the transport + realtime (offline simulation, demos). */
-  setOffline(offline: boolean): void;
+  /** SPEC §8.8 transport gate of the leader's client. */
+  setTransportGate(state: TransportGate): void;
   /** SPEC §12.3 state; `undefined` when init did not enable the local authority. */
   localAuthorityState(): LocalAuthorityState | undefined;
   /** SPEC §12.3: upload the local authority's rows to `endpoints.syncUrl`. */

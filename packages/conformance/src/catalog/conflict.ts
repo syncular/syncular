@@ -90,7 +90,7 @@ export const conflictScenarios: readonly Scenario[] = [
       };
 
       const first = await conflicted('mine', 'theirs');
-      await b.api.setTransportEnabled(false);
+      await b.api.setTransportGate('closed');
       const written = await b.api.replaceCommitOutcome(first);
       await ctx.recreateClient(b, ctx.schema);
       const pending = await outcome(first);
@@ -104,7 +104,7 @@ export const conflictScenarios: readonly Scenario[] = [
         [written],
         'the held replacement is queued',
       );
-      await b.api.setTransportEnabled(true);
+      await b.api.setTransportGate('open');
       await syncIdle(b);
       checkEqual(
         (await outcome(first))?.resolution,
@@ -124,11 +124,11 @@ export const conflictScenarios: readonly Scenario[] = [
       );
 
       const second = await conflicted('mine again', 'theirs again');
-      await b.api.setTransportEnabled(false);
+      await b.api.setTransportGate('closed');
       const refused = await b.api.replaceCommitOutcome(second);
       await a.api.patch('tasks', 't1', { title: 'newer' });
       await syncIdle(a);
-      await b.api.setTransportEnabled(true);
+      await b.api.setTransportGate('open');
       await syncIdle(b);
       checkEqual(
         (await outcome(second))?.resolution,

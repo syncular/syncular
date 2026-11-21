@@ -165,7 +165,7 @@ async function makeWorkerCore(
     },
     setOffline: async (offline) => {
       network.set(offline ? 'offline' : 'online');
-      await handle.setOffline(offline);
+      await handle.setTransportGate(offline ? 'closed' : 'open');
     },
     connectRealtime: async () => {
       try {

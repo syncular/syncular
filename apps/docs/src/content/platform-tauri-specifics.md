@@ -141,7 +141,7 @@ import { createTauriAuthoritySyncClient } from '@syncular/tauri/authority';
 const client = await createTauriAuthoritySyncClient({
   schema,
   securityPreflight: true,
-  transportEnabled: false,
+  transportGate: 'closed',
   authorityReads: defineAuthorityReads([{
     table: 'memberships',
     columns: ['id', 'user_id', 'facility_id', 'status', 'version'],
@@ -208,7 +208,7 @@ the app.
 
 ## Local activation with transport closed
 
-Create with `transportEnabled: false` to open the replica without network work.
+Create with `transportGate: 'closed'` to open the replica without network work.
 Keep `SyncularConfig.auto_sync: true`: the native owner continues local reads and
 commits, and resumes its scheduler when the gate opens. The gate is independent
 of security preflight and encryption keys.
@@ -219,7 +219,7 @@ import { createTauriSyncClient } from '@syncular/tauri';
 const client = await createTauriSyncClient({
   schema,
   securityPreflight: true,
-  transportEnabled: false,
+  transportGate: 'closed',
 });
 
 // The app verifies its signed offline lease and device authentication first.
@@ -228,15 +228,16 @@ await client.activateSecurity({ encryption: acceptedKeyring });
 // Keys that arrive later: await client.addEncryptionKeys(keys), see /concepts-encryption/#adding-a-key-while-the-client-runs
 
 // The Rust `header_source` answers the fresh bearer on the next request.
-await client.setTransportEnabled(true);
+await client.setTransportGate('open');
 ```
 
-`setTransportEnabled(false)` blocks new HTTP rounds, realtime connections,
+`setTransportGate('closed')` blocks new HTTP rounds, realtime connections,
 presence sends, and uncached blob downloads with `sync.offline`. Cached blob
-reads and staged uploads stay local. `setOffline(true)` is the bridge's alias
-for browser parity. Automatic sync and retry intents stay suspended; reopening
-emits one interactive wake, and queued commits flush in FIFO order with their own
-pull. Security activation never reopens the gate.
+reads and staged uploads stay local. Automatic sync and retry intents stay
+suspended; opening emits one interactive wake, and queued commits flush in FIFO
+order with their own pull. `setTransportGate('pull')` runs rounds that pull and
+send no commit, and a local write in `pull` schedules no round. Security
+activation never changes the gate.
 
 An already-started round finishes its captured network exchange and atomic apply,
 including acknowledgement and revocation checks; closing the gate does not
@@ -246,8 +247,8 @@ commands stay available while a delayed reply is pending. Security preflight
 still blocks protected local access and invalidates the old authorization
 context.
 
-The gate defaults open on each new client and is never stored in SQLite. Pass
-`transportEnabled: false` on every secure offline cold start. Repeated pause or
+The gate defaults to `open` on each new client and is never stored in SQLite.
+Pass `transportGate: 'closed'` on every secure offline cold start. Repeated pause or
 resume calls are idempotent. The realtime supervisor owns reconnect after
 resume, and a closed gate refuses its connect attempts without opening a socket.
 

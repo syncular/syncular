@@ -164,7 +164,7 @@ overhead is unmeasured; phase 1 records it for a 100k-row fixture.
 ### 3.6 Attach
 
 1. The app runs a round that leaves the client outbox empty, then closes the
-   transport gate (`setTransportEnabled(false)`, §8.8).
+   transport gate (`setTransportGate('closed')`, §8.8).
 2. The app calls `attach` on the authority with an authenticated cloud
    `SyncTransport`. The authority persists `attaching` and a random
    `attachId`; the producer `clientId` is `authority-<attachId>` and the

@@ -733,7 +733,7 @@ export const encryptionScenarios: readonly Scenario[] = [
       );
 
       // An open write: queued in the outbox while the key arrives.
-      await reader.api.setTransportEnabled(false);
+      await reader.api.setTransportGate('closed');
       await reader.api.mutate([
         {
           op: 'upsert',
@@ -761,7 +761,7 @@ export const encryptionScenarios: readonly Scenario[] = [
         'the reveal publishes a revision',
       );
       await reader.api.mutate([sealedRow('r1', 'edited')]);
-      await reader.api.setTransportEnabled(true);
+      await reader.api.setTransportGate('open');
       await syncIdle(reader);
       checkEqual(
         (await ctx.server.readRows('secrets')).map((row) => row.rowId).sort(),

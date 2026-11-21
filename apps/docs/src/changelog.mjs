@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-21',
+    title: 'A transport gate that pulls without pushing',
+    body: "The transport gate has three states: `closed`, `pull` and `open`. In `pull`, rounds pull and realtime works, and no round sends a commit, so an app can hold pending commits it may still replace. `transportGate` and `setTransportGate` replace `transportEnabled`, `setTransportEnabled` and the worker's `setOffline`.",
+    links: [
+      {
+        href: '/platform-web-realtime/#transport-gate',
+        label: 'The transport gate',
+      },
+    ],
+  },
+  {
+    date: '2026-11-21',
     title: 'App-filled local projections',
     body: 'Store and search values your app derives on the device. Pending work survives restarts. The client clears derived rows when a write affects their source or a declared dependency.',
     links: [

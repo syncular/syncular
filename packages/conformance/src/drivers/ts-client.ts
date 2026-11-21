@@ -68,6 +68,7 @@ import type {
   DriverUnitScopes,
   DriverSnapshotRead,
   DriverSyncIntent,
+  DriverTransportGate,
   DriverWindowBase,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
@@ -440,8 +441,8 @@ async function constructClient(
     ...(options.securityPreflight !== undefined
       ? { securityPreflight: options.securityPreflight }
       : {}),
-    ...(options.transportEnabled !== undefined
-      ? { transportEnabled: options.transportEnabled }
+    ...(options.transportGate !== undefined
+      ? { transportGate: options.transportGate }
       : {}),
     ...(options.retainFailedCommits !== undefined
       ? { retainFailedCommits: options.retainFailedCommits }
@@ -1243,12 +1244,12 @@ class TsClientInstance implements ClientInstance {
     return this;
   }
 
-  async setTransportEnabled(enabled: boolean): Promise<void> {
+  async setTransportGate(state: DriverTransportGate): Promise<void> {
     const unlisten = this.#client.onSyncIntent((intent) =>
       this.#intents.push(intent),
     );
     try {
-      this.#client.setTransportEnabled(enabled);
+      this.#client.setTransportGate(state);
     } finally {
       unlisten();
     }

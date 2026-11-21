@@ -91,7 +91,7 @@ export const blobScenarios: readonly Scenario[] = [
         clientId: 'blob-gate',
         schema: BLOB_SCHEMA,
         allowed: P1,
-        transportEnabled: false,
+        transportGate: 'closed',
       });
       await requireBlobs(owner);
       const ref = await owner.api.uploadBlob!(bytesOf('local staged bytes'));
@@ -120,7 +120,7 @@ export const blobScenarios: readonly Scenario[] = [
           values: { id: 'a', project_id: 'p1', title: 'local', file: ref },
         },
       ]);
-      await owner.api.setTransportEnabled(true);
+      await owner.api.setTransportGate('open');
       await syncIdle(owner);
       check(owner.blobUploads.length > 0, 'resume flushed the staged body');
     },
@@ -152,7 +152,7 @@ export const blobScenarios: readonly Scenario[] = [
             owner.api.executeStorageSql !== undefined,
           'blob storage hooks exist',
         );
-        await owner.api.setTransportEnabled(false);
+        await owner.api.setTransportGate('closed');
         const ref = await owner.api.uploadBlob(bytesOf(fault));
         const commit = await owner.api.mutate([
           {
@@ -185,7 +185,7 @@ export const blobScenarios: readonly Scenario[] = [
         await owner.api.executeStorageSql(
           "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES ('logEpoch', 'known-before-upgrade')",
         );
-        await owner.api.setTransportEnabled(true);
+        await owner.api.setTransportGate('open');
         await syncIdle(owner);
         checkEqual(
           await owner.api.pendingCommitIds(),

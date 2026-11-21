@@ -891,7 +891,7 @@ describe('supported realtime host supervisor', () => {
       'initial connect',
     );
 
-    client.setTransportEnabled(false);
+    client.setTransportGate('closed');
     // The first attempt after the close meets the gate; its `sync.offline`
     // refusal is the evidence that holds the supervisor offline.
     const before = connects;
@@ -910,7 +910,7 @@ describe('supported realtime host supervisor', () => {
     expect(timers.pending()).toBe(0);
     expect(connects).toBe(refused);
 
-    client.setTransportEnabled(true);
+    client.setTransportGate('open');
     timers.runNext();
     await waitFor(
       () => supervisor.snapshot().phase === 'connected',

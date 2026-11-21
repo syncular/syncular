@@ -567,7 +567,7 @@ describe('privacy-safe client diagnostics', () => {
     // A refused call starts no attempt and records no round.
     const before = client.diagnosticsSnapshot().lastRound;
     const latest = client.progressSnapshot();
-    client.setTransportEnabled(false);
+    client.setTransportGate('closed');
     await expect(client.sync()).rejects.toMatchObject({ code: 'sync.offline' });
     expect(client.diagnosticsSnapshot().lastRound).toEqual(before);
     expect(client.progressSnapshot()).toEqual(latest);

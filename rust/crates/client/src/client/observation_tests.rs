@@ -2655,7 +2655,7 @@ fn a_refused_offline_round_changes_neither_progress_nor_last_round() {
     assert!(matches!(client.sync(&mut transport), SyncOutcome::Ok(_)));
     let progress = client.progress().snapshot();
     let last_round = client.diagnostics_snapshot().unwrap().last_round;
-    client.set_transport_enabled(&mut transport, false);
+    client.set_transport_gate(&mut transport, crate::TransportGate::Closed);
     assert!(matches!(
         client.sync(&mut transport),
         SyncOutcome::Failed { error_code, .. } if error_code == "sync.offline"
@@ -3406,7 +3406,7 @@ fn closed_transport_never_invokes_network_and_reopen_is_host_owned() {
     )
     .unwrap();
     client.connect_realtime(&mut transport).unwrap();
-    client.set_transport_enabled(&mut transport, false);
+    client.set_transport_gate(&mut transport, crate::TransportGate::Closed);
     assert_eq!(transport.closes, 1);
     client.begin_security_preflight().unwrap();
     client.activate_security(Default::default()).unwrap();
@@ -3460,20 +3460,32 @@ fn closed_transport_never_invokes_network_and_reopen_is_host_owned() {
         path.to_str().unwrap(),
     )
     .unwrap();
-    assert!(reopened.transport_enabled());
-    reopened.set_transport_enabled(&mut transport, false);
+    assert_eq!(reopened.transport_gate(), crate::TransportGate::Open);
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Closed);
     assert_eq!(reopened.pending_commit_ids(), pending);
     assert_eq!(
         reopened.query("SELECT id FROM tasks", &[]).unwrap().len(),
         2
     );
-    reopened.set_transport_enabled(&mut transport, true);
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Open);
     assert!(matches!(
         reopened.drain_sync_intents().as_slice(),
         [SyncIntent::Interactive]
     ));
-    reopened.set_transport_enabled(&mut transport, true);
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Open);
     assert!(reopened.drain_sync_intents().is_empty());
+    // §8.8: open → pull owes nothing; closed → pull owes one pull.
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Pull);
+    assert!(matches!(
+        reopened.drain_sync_intents().as_slice(),
+        [SyncIntent::None]
+    ));
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Closed);
+    reopened.set_transport_gate(&mut transport, crate::TransportGate::Pull);
+    assert!(matches!(
+        reopened.drain_sync_intents().as_slice(),
+        [SyncIntent::Interactive]
+    ));
     drop(reopened);
     std::fs::remove_file(path).unwrap();
 }
@@ -5217,7 +5229,10 @@ fn released_context_discards_in_flight_ack_and_server_rows() {
             }])
             .unwrap();
         let prepared = client.prepare_sync_round(false).unwrap();
-        client.set_transport_enabled(&mut CountingRealtimeTransport::default(), false);
+        client.set_transport_gate(
+            &mut CountingRealtimeTransport::default(),
+            crate::TransportGate::Closed,
+        );
         let payload = encode_row_json(
             &client.schema.tables[0],
             "server",
@@ -10894,7 +10909,7 @@ fn sync_split(client: &mut SyncClient, transport: &mut dyn Transport) -> SyncOut
             crate::AppliedSyncRound::Complete {
                 outcome, controls, ..
             } => {
-                if client.transport_enabled() {
+                if client.transport_gate() != crate::TransportGate::Closed {
                     for text in controls {
                         let _ = transport.realtime_send(&text);
                     }

@@ -118,7 +118,7 @@ async function setup() {
 
 test('keep mine offline stays pending, then the next drive writes it', async () => {
   const s = await setup();
-  s.reader.setTransportEnabled(false);
+  s.reader.setTransportGate('closed');
   const replacement = s.reader.replaceCommitOutcome(s.outcome);
   expect(
     outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
@@ -148,7 +148,7 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
 
   // A later write of the same row queues behind the held replacement.
   s.reader.patch('notes', 'n1', { body: 'later' });
-  s.reader.setTransportEnabled(true);
+  s.reader.setTransportGate('open');
   await s.reader.syncUntilIdle();
   expect(
     outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
@@ -171,7 +171,7 @@ test('keep mine offline stays pending, then the next drive writes it', async () 
 
 test('a pending replacement payload survives a restart', async () => {
   const s = await setup();
-  s.reader.setTransportEnabled(false);
+  s.reader.setTransportGate('closed');
   const replacement = s.reader.replaceCommitOutcome({
     ...s.outcome,
     replacement: [
@@ -206,11 +206,11 @@ test('a pending replacement payload survives a restart', async () => {
 
 test('a base that moves before the proof refuses the decision', async () => {
   const s = await setup();
-  s.reader.setTransportEnabled(false);
+  s.reader.setTransportGate('closed');
   const replacement = s.reader.replaceCommitOutcome(s.outcome);
   s.peer.patch('notes', 'n1', { title: 'newer' });
   await s.peer.syncUntilIdle();
-  s.reader.setTransportEnabled(true);
+  s.reader.setTransportGate('open');
   await s.reader.syncUntilIdle();
   expect(
     outcomeOf(s.reader.commitDelivery(s.outcome.clientCommitId)),
@@ -279,9 +279,9 @@ test('a payload names no base version for a retained row', async () => {
 
 test('a registration change during the drive keeps the decision pending', async () => {
   const s = await setup();
-  s.reader.setTransportEnabled(false);
+  s.reader.setTransportGate('closed');
   const replacement = s.reader.replaceCommitOutcome(s.outcome);
-  s.reader.setTransportEnabled(true);
+  s.reader.setTransportGate('open');
   s.during(() => s.reader.subscribe({ list_id: 'two' }));
   await s.reader.syncUntilIdle();
   expect(

@@ -84,10 +84,10 @@ pub use api::{
     QueryReadFailure, QueryRow, QuerySnapshot, QueryValue, RealtimePolicy, RealtimeState,
     RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow, RetainedUniqueConflict,
     RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot,
-    TableChange, TimeBucketUnit, TransportCauseKind, UnitCatchup, UnitRecord, UnitRestriction,
-    UnitScopes, UnitStatus, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
-    CLIENT_DIAGNOSTICS_VERSION, LOCAL_AUTHORITY_UNCONFIGURED_CODE, MAX_DIAGNOSTIC_QUERY_FAILURES,
-    REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
+    TableChange, TimeBucketUnit, TransportCauseKind, TransportGate, UnitCatchup, UnitRecord,
+    UnitRestriction, UnitScopes, UnitStatus, WindowBase, WindowChange, WindowCoverage, WindowState,
+    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
 };
 pub use client::ProjectionInput;
 pub use client::{

@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 
 use serde_json::{json, Value};
 use syncular_client::{
-    ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient, SyncIntent,
+    ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient, SyncIntent, TransportGate,
 };
 use syncular_command::{diagnostics_event, dispatch, presence_event, reply, CreateEffects};
 
@@ -188,7 +188,7 @@ impl SyncularCore {
     /// Consume the next coalesced host schedule. Interactive work preempts a
     /// pending retry; background work keeps the earliest real deadline.
     pub fn take_sync_intent(&mut self) -> SyncIntent {
-        if !self.transport_enabled() {
+        if self.transport_closed() {
             return SyncIntent::None;
         }
         if std::mem::take(&mut self.interactive_sync) {
@@ -201,10 +201,10 @@ impl SyncularCore {
         }
     }
 
-    pub fn transport_enabled(&self) -> bool {
+    pub fn transport_closed(&self) -> bool {
         self.client
             .as_ref()
-            .is_some_and(SyncClient::transport_enabled)
+            .is_none_or(|client| client.transport_gate() == TransportGate::Closed)
     }
 
     pub fn prepare_current_base(
@@ -306,9 +306,9 @@ impl SyncularCore {
             },
         };
         self.round_pending = matches!(applied, syncular_client::AppliedSyncRound::Continue(_));
-        if !self.round_pending && !self.transport_enabled() {
+        if !self.round_pending && self.transport_closed() {
             if let Some(client) = self.client.as_mut() {
-                client.set_transport_enabled(&mut self.transport, false);
+                client.set_transport_gate(&mut self.transport, TransportGate::Closed);
             }
         }
         if let syncular_client::AppliedSyncRound::Complete { controls, .. } = &mut applied {
@@ -344,7 +344,7 @@ impl SyncularCore {
     }
 
     pub fn take_controls(&mut self) -> Option<(Vec<String>, HostTransport)> {
-        if !self.transport_enabled() {
+        if self.transport_closed() {
             self.controls.clear();
             return None;
         }
@@ -420,7 +420,7 @@ impl SyncularCore {
     /// Feed buffered inbound WS frames to the client (which may ack back through
     /// the same transport). A no-op without a native socket.
     fn drain_realtime(&mut self) {
-        if self.round_pending || !self.transport_enabled() {
+        if self.round_pending || self.transport_closed() {
             return;
         }
         let frames = self.transport.take_inbound();
@@ -536,7 +536,7 @@ mod tests {
     fn transport_gate_survives_security_activation_and_owner_rounds() {
         let mut core = SyncularCore::new(&json!({})).unwrap();
         let result = core.command(&json!({ "method": "create", "params": {
-            "schema": simple_schema(), "transportEnabled": false, "securityPreflight": true
+            "schema": simple_schema(), "transportGate": "closed", "securityPreflight": true
         } }));
         assert!(result.get("error").is_none());
         assert!(core
@@ -556,19 +556,21 @@ mod tests {
             core.query("SELECT title FROM todo", Value::Null)["result"]["rows"][0]["title"],
             "second"
         );
-        assert!(!core.transport_enabled());
-        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": true } }));
+        assert!(core.transport_closed());
+        core.command(&json!({ "method": "setTransportGate", "params": { "state": "pull" } }));
         assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
-        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": true } }));
+        core.command(&json!({ "method": "setTransportGate", "params": { "state": "open" } }));
+        assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
+        core.command(&json!({ "method": "setTransportGate", "params": { "state": "open" } }));
         assert!(matches!(core.take_sync_intent(), SyncIntent::None));
-        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": false } }));
+        core.command(&json!({ "method": "setTransportGate", "params": { "state": "closed" } }));
         core.command(&json!({ "method": "beginSecurityPreflight" }));
         assert_eq!(
             core.query("SELECT title FROM todo", Value::Null)["error"]["code"],
             "client.security_preflight_required"
         );
         core.command(&json!({ "method": "activateSecurity", "params": {} }));
-        assert!(!core.transport_enabled());
+        assert!(core.transport_closed());
     }
 
     #[test]

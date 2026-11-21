@@ -24,8 +24,8 @@ use syncular_client::values::{bytes_to_hex, hex_to_bytes};
 use syncular_client::{
     ClientDiagnosticsSnapshot, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
-    RealtimePolicy, ResolveCommitOutcomeInput, SyncClient, Transport, TransportError, UnitScopes,
-    WindowBase, WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    RealtimePolicy, ResolveCommitOutcomeInput, SyncClient, Transport, TransportError,
+    TransportGate, UnitScopes, WindowBase, WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -391,6 +391,18 @@ fn parse_push_limit(
                 details: Some(serde_json::json!({ "limit": key })),
                 retryable: false,
             }),
+    }
+}
+
+/// §8.8: parse a transport gate state (`transportGate`, `setTransportGate`).
+fn parse_transport_gate(value: &Value) -> Result<TransportGate, CommandError> {
+    match value.as_str() {
+        Some("closed") => Ok(TransportGate::Closed),
+        Some("pull") => Ok(TransportGate::Pull),
+        Some("open") => Ok(TransportGate::Open),
+        _ => Err(client_err(
+            "sync.invalid_request: transportGate must be 'closed', 'pull' or 'open'".to_owned(),
+        )),
     }
 }
 
@@ -763,7 +775,7 @@ pub fn dispatch<T: Transport>(
                 | "securityLifecycle"
                 | "beginSecurityPreflight"
                 | "activateSecurity"
-                | "setTransportEnabled"
+                | "setTransportGate"
                 | "disconnectRealtime"
                 | "purgeLocalData"
                 | "previousVersionDiscard"
@@ -888,11 +900,8 @@ pub fn dispatch<T: Transport>(
             if security_preflight {
                 instance.begin_security_preflight().map_err(client_err)?;
             }
-            if let Some(enabled) = params.get("transportEnabled") {
-                let enabled = enabled.as_bool().ok_or_else(|| {
-                    client_err("sync.invalid_request: transportEnabled must be a boolean".into())
-                })?;
-                instance.set_transport_enabled(transport, enabled);
+            if let Some(state) = params.get("transportGate") {
+                instance.set_transport_gate(transport, parse_transport_gate(state)?);
             }
             effects.security_preflight_pending = security_preflight;
             transport.set_client_id(instance.client_id());
@@ -968,17 +977,9 @@ pub fn dispatch<T: Transport>(
                 .map_err(CommandError::from_client)?;
             Ok(json!({}))
         }
-        "setTransportEnabled" => {
-            let enabled = params
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .ok_or_else(|| {
-                    client_err(
-                        "sync.invalid_request: setTransportEnabled.enabled must be a boolean"
-                            .into(),
-                    )
-                })?;
-            need_client(client)?.set_transport_enabled(transport, enabled);
+        "setTransportGate" => {
+            let state = parse_transport_gate(params.get("state").unwrap_or(&Value::Null))?;
+            need_client(client)?.set_transport_gate(transport, state);
             Ok(json!({}))
         }
         "shutdown" => {
@@ -1655,14 +1656,14 @@ pub fn dispatch<T: Transport>(
             }
             // §12.3: hold the client's rounds while the authority uploads or
             // rolls back, then restore the host's transport gate.
-            let enabled = running.transport_enabled();
-            running.set_transport_enabled(transport, false);
+            let gate = running.transport_gate();
+            running.set_transport_gate(transport, TransportGate::Closed);
             let outcome = if method == "attachLocalAuthority" {
                 transport.attach_local_authority()
             } else {
                 transport.abandon_local_authority_attach()
             };
-            running.set_transport_enabled(transport, enabled);
+            running.set_transport_gate(transport, gate);
             outcome.map_err(transport_command_error)?;
             Ok(json!({ "effects": CommandEffects::interactive() }))
         }
@@ -1746,10 +1747,13 @@ pub fn dispatch<T: Transport>(
 
         other => Err(client_err(format!("unknown method {other:?}"))),
     };
-    if client
-        .as_ref()
-        .is_some_and(|running| !running.transport_enabled())
-    {
+    // §8.8: a closed gate owes no sync, and a `pull` gate owes no push for a
+    // local write.
+    if client.as_ref().is_some_and(|running| {
+        running.transport_gate() == TransportGate::Closed
+            || (running.transport_gate() == TransportGate::Pull
+                && matches!(method, "mutate" | "patch" | "replaceCommitOutcome"))
+    }) {
         if let Ok(value) = &mut result {
             if let Some(effects) = value.get_mut("effects").and_then(Value::as_object_mut) {
                 effects.remove("sync");
@@ -1913,7 +1917,7 @@ mod tests {
             assert_eq!(error.code, "client.local_authority_unconfigured");
         }
         let running = client.as_mut().expect("client");
-        assert!(running.transport_enabled());
+        assert_eq!(running.transport_gate(), TransportGate::Open);
         assert!(
             running.drain_sync_intents().is_empty(),
             "the gate never toggled"
@@ -2030,7 +2034,10 @@ mod tests {
             error.details,
             Some(json!({ "reason": "commit_rejected", "opIndex": 0 }))
         );
-        assert!(client.as_ref().expect("client").transport_enabled());
+        assert_eq!(
+            client.as_ref().expect("client").transport_gate(),
+            TransportGate::Open
+        );
 
         let abandoned = dispatch(
             &mut transport,
@@ -2048,8 +2055,8 @@ mod tests {
             &mut transport,
             &mut client,
             &mut effects,
-            "setTransportEnabled",
-            &json!({ "enabled": false }),
+            "setTransportGate",
+            &json!({ "state": "closed" }),
         )
         .expect("go offline");
         let attached = dispatch(
@@ -2061,7 +2068,10 @@ mod tests {
         )
         .expect("attach");
         assert!(attached["effects"].get("sync").is_none());
-        assert!(!client.as_ref().expect("client").transport_enabled());
+        assert_eq!(
+            client.as_ref().expect("client").transport_gate(),
+            TransportGate::Closed
+        );
     }
 
     #[test]

@@ -886,7 +886,7 @@ describe('§4.8 windows as sets of units', () => {
         transport: async () => {
           throw new Error('the transport stays closed');
         },
-        transportEnabled: false,
+        transportGate: 'closed',
         securityPreflight: preflight,
       });
       await reopened.start();

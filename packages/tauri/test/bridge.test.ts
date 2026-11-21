@@ -1334,27 +1334,27 @@ describe('createTauriSyncClient', () => {
     const client = await createTauriSyncClient({
       schema: { version: 1, tables: [] },
       securityPreflight: true,
-      transportEnabled: false,
+      transportGate: 'closed',
       tauri,
     });
     const created = calls[0]?.args.command as {
-      params: { transportEnabled: boolean };
+      params: { transportGate: string };
     };
-    expect(created.params.transportEnabled).toBe(false);
-    await client.setTransportEnabled(false);
-    await client.setOffline(true);
+    expect(created.params.transportGate).toBe('closed');
+    await client.setTransportGate('pull');
+    await client.setTransportGate('closed');
     await client.activateSecurity();
-    await client.setTransportEnabled(true);
+    await client.setTransportGate('open');
     const gate = calls.filter(
       (c) =>
         (c.args.command as { method?: string } | undefined)?.method ===
-        'setTransportEnabled',
+        'setTransportGate',
     );
     expect(
       gate.map((c) => (c.args.command as { params: unknown }).params),
-    ).toEqual([{ enabled: false }, { enabled: false }, { enabled: true }]);
+    ).toEqual([{ state: 'pull' }, { state: 'closed' }, { state: 'open' }]);
     await client.close();
-    await expect(client.setTransportEnabled(true)).rejects.toMatchObject({
+    await expect(client.setTransportGate('open')).rejects.toMatchObject({
       code: 'client.closed',
     });
   });

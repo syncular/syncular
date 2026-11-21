@@ -2951,7 +2951,7 @@ Each chunk rechecks outbox pins. Re-entry cancels the pending marker before
 registering the unit again. Opening an active replica MUST finish the
 remaining work before the open resolves, and activating a replica in security
 preflight MUST finish it before the activation resolves, with or without a
-registered unit, an outbox, or an open transport gate (§8.8). Rows the outbox
+registered unit, an outbox, or any transport gate state (§8.8). Rows the outbox
 pins stay pending, and every sync round retries them before its request. A
 failed chunk rolls back its rows and revision while earlier chunks and the
 pending marker remain durable. Failure to read, save, or delete a pending
@@ -6350,7 +6350,8 @@ a fingerprint of the surface's declarations, and every type they name, to the
 constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0,
-protocol 8 covers 0.98.0 and 0.99.0, and protocol 9 starts with 0.100.0.
+protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
+covers 0.101.0, and protocol 11 starts with 0.102.0.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -9075,29 +9076,43 @@ poll it replaced took half of production's coordinator time.
 
 ### 8.8 Realtime policy and connectivity state
 
-**Transport gate.** Both client cores expose `setTransportEnabled(enabled)`
-(native Rust: `set_transport_enabled`) independently of security preflight.
-Construction accepts `transportEnabled: false` before startup can schedule work.
-The gate defaults open on each new client instance and is never persisted.
-Security activation, header-source answers, owner-loop rounds and schema resets MUST
-NOT reopen it. A closed gate keeps authorized local reads, keys, units,
-mutations and staged blob uploads available. Commits remain durable and ordered.
-New sync rounds, realtime connects, presence sends and uncached blob downloads
-fail with client-local `sync.offline` before invoking transport; automatic hosts
-consume no sync/retry intent while closed. Cached blob reads remain local.
+**Transport gate.** Each client holds one transport gate with three states:
+`closed`, `pull` and `open`. Construction takes it as `transportGate`
+(default `open`), and `setTransportGate(state)` changes it (native Rust:
+`set_transport_gate(TransportGate)`; the command `setTransportGate { state }`).
+The gate is independent of security preflight and is never persisted: each new
+client instance starts in its construction state. Security activation,
+header-source answers, owner-loop rounds and schema resets MUST NOT change the
+gate.
+
+- `open`: rounds push and pull.
+- `pull`: rounds run, realtime connects, presence sends and uncached blob
+  downloads work. A round's request carries no `PUSH_COMMIT` frame and uploads
+  no staged blob, and the round leaves every outbox commit as it was. Automatic
+  hosts consume sync intents; a pending outbox raises no push intent while the
+  gate is `pull`. An application that holds pending commits it may still
+  replace creates the client in `pull`.
+- `closed`: new sync rounds, realtime connects, presence sends and uncached
+  blob downloads fail with client-local `sync.offline` before invoking
+  transport, and automatic hosts consume no sync or retry intent. Cached blob
+  reads remain local.
+
+In every state, authorized local reads, keys, units, mutations and staged blob
+uploads stay available, and commits remain durable and ordered.
 
 A round whose network exchange already started MAY finish its captured request,
-segment downloads and atomic response application after closure. Its ordinary
-acknowledgement, version, revocation and security-context checks still apply.
-Closure MUST NOT cancel that reply or start a follow-up round. The host releases
-the socket when that round settles and sends no queued realtime controls while
-closed. Security preflight still invalidates an in-flight authorization context.
+segment downloads and atomic response application after the gate changes. Its
+ordinary acknowledgement, version, revocation and security-context checks still
+apply. A change MUST NOT cancel that reply or start a follow-up round; it
+applies from the next round. On `closed`, the host releases the socket when
+that round settles and sends no queued realtime controls. Security preflight
+still invalidates an in-flight authorization context.
 
-Reopening emits one interactive wake, and its round asks the header source (§1.1);
-the existing automatic scheduler drains queued work and performs its own pull.
-Realtime reconnect uses the host's existing lifecycle policy. Repeating either
-state is idempotent. The browser worker's `setOffline(value)` sets the same gate
-with `enabled = !value`; it retains its public offline control.
+Moving to `open` emits one interactive wake, and its round asks the header
+source (§1.1); the existing automatic scheduler drains queued work and performs
+its own pull. Moving from `closed` to `pull` emits one interactive wake for the
+pull. Realtime reconnect uses the host's existing lifecycle policy. Setting the
+current state again is idempotent.
 
 
 A client configures how a sync round treats the realtime binding with one

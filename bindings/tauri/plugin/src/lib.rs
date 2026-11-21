@@ -654,7 +654,7 @@ where
     // its own; app drives still run.
     let mut suspended = false;
     loop {
-        if !core.transport_enabled() {
+        if core.transport_closed() {
             background_deadline = None;
         }
         if let Some((controls, transport)) = core.take_controls() {
@@ -801,7 +801,7 @@ where
                         if bootstrap_advanced && run.max_rounds.is_none() {
                             run.spent = 0;
                         }
-                        keep_running = more && core.transport_enabled();
+                        keep_running = more && !core.transport_closed();
                         // §7.8: an elapsed round budget or drive deadline
                         // ends the drive with the aggregate report.
                         if keep_running
@@ -887,7 +887,7 @@ where
                     continue;
                 }
                 if matches!(method, Some("sync" | "syncUntilIdle" | "proveCurrentBase"))
-                    && core.transport_enabled()
+                    && !core.transport_closed()
                 {
                     let until_idle = method != Some("sync");
                     let proof = if method == Some("proveCurrentBase") {
@@ -1932,7 +1932,7 @@ mod tests {
             {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "role", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
         ]}]});
         let policy = json!([{"table": "authority", "columns": ["id", "actor_id", "role"], "scopes": {"actor_id": ["a", "b"]}}]);
-        let create = |reads: Value| json!({"method": "create", "params": {"schema": schema, "securityPreflight": true, "transportEnabled": false, "authorityReads": reads}});
+        let create = |reads: Value| json!({"method": "create", "params": {"schema": schema, "securityPreflight": true, "transportGate": "closed", "authorityReads": reads}});
         let created = command(create(policy.clone()));
         assert!(created.get("error").is_none(), "{created}");
         let conn = rusqlite::Connection::open(&path).expect("fixture db");
@@ -2803,7 +2803,7 @@ mod tests {
             result
         };
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "pending-round", "transportEnabled": false, "securityPreflight": true, "schema": { "version": 1, "tables": [{
+            "clientId": "pending-round", "transportGate": "closed", "securityPreflight": true, "schema": { "version": 1, "tables": [{
                 "name": "todo", "primaryKey": "id", "columns": [
                     { "name": "id", "type": "string", "nullable": false },
                     { "name": "title", "type": "string", "nullable": false }
@@ -2843,7 +2843,7 @@ mod tests {
         );
         assert_eq!(requests.load(Ordering::SeqCst), 0);
         assert!(
-            call(json!({ "method": "setTransportEnabled", "params": { "enabled": true } }))
+            call(json!({ "method": "setTransportGate", "params": { "state": "open" } }))
                 .recv()
                 .unwrap()
                 .get("error")
@@ -2851,7 +2851,7 @@ mod tests {
         );
         entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(
-            call(json!({ "method": "setTransportEnabled", "params": { "enabled": false } }))
+            call(json!({ "method": "setTransportGate", "params": { "state": "closed" } }))
                 .recv()
                 .unwrap()
                 .get("error")
@@ -2902,7 +2902,7 @@ mod tests {
         );
         assert_eq!(requests.load(Ordering::SeqCst), paused_count);
         assert!(
-            call(json!({ "method": "setTransportEnabled", "params": { "enabled": true } }))
+            call(json!({ "method": "setTransportGate", "params": { "state": "open" } }))
                 .recv()
                 .unwrap()
                 .get("error")
@@ -3134,7 +3134,7 @@ mod tests {
             result.recv().unwrap()
         };
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "diagnostics-tauri-connect", "transportEnabled": true,
+            "clientId": "diagnostics-tauri-connect", "transportGate": "open",
             "schema": { "version": 1, "tables": [] }
         } }));
         assert!(created.get("error").is_none(), "{created}");
@@ -3247,7 +3247,7 @@ mod tests {
             result.recv().unwrap()
         };
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "diagnostics-tauri", "transportEnabled": true,
+            "clientId": "diagnostics-tauri", "transportGate": "open",
             "schema": { "version": 1, "tables": [] }
         } }));
         assert!(created.get("error").is_none(), "{created}");
@@ -3445,7 +3445,7 @@ mod tests {
         };
 
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "budget-tauri", "transportEnabled": true, "retainFailedCommits": true, "schema": { "version": 1, "tables": [{
+            "clientId": "budget-tauri", "transportGate": "open", "retainFailedCommits": true, "schema": { "version": 1, "tables": [{
                 "name": "todo", "primaryKey": "id",
                 "columns": [
                     { "name": "id", "type": "string", "nullable": false },
@@ -3570,7 +3570,7 @@ mod tests {
             result.recv().unwrap()
         };
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "host-budget-tauri", "transportEnabled": true, "schema": { "version": 1, "tables": [{
+            "clientId": "host-budget-tauri", "transportGate": "open", "schema": { "version": 1, "tables": [{
                 "name": "todo", "primaryKey": "id",
                 "columns": [
                     { "name": "id", "type": "string", "nullable": false },

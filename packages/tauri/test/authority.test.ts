@@ -47,7 +47,7 @@ test('ordinary native bridge excludes the authority method; explicit bridge pres
     schema: {},
     tauri,
     securityPreflight: true,
-    transportEnabled: false,
+    transportGate: 'closed',
     authorityReads: defineAuthorityReads([
       { table: 'authority', columns: ['id'], scopes: { actor_id: ['a'] } },
     ]),

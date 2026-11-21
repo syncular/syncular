@@ -49,6 +49,7 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   SecurityLifecycle,
+  TransportGate,
   SnapshotRead,
   SnapshotReadRequest,
   SyncClientConfig,
@@ -205,7 +206,7 @@ export interface SyncClientHandleConfig {
   readonly authorityReads?: import('./authority').AuthorityReadPolicy;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
-  readonly transportEnabled?: boolean;
+  readonly transportGate?: TransportGate;
   /** SPEC §12: start against the worker's local authority (`WorkerInitConfig`). */
   readonly localAuthority?: boolean;
   readonly clientId?: string;
@@ -912,9 +913,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('fetchBlob', [blobIdOrRef]);
   }
 
-  /** Sever/restore transport + realtime inside the worker (demos). */
-  setOffline(offline: boolean): Promise<void> {
-    return this.#call('setOffline', [offline]);
+  /** SPEC §8.8 transport gate of the leader's client. */
+  setTransportGate(state: TransportGate): Promise<void> {
+    return this.#call('setTransportGate', [state]);
   }
 
   /** SPEC §12.3 local-authority state; `undefined` without `localAuthority`. */
@@ -1100,8 +1101,8 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
     ...(config.encryption !== undefined
       ? { encryption: config.encryption }
       : {}),
-    ...(config.transportEnabled !== undefined
-      ? { transportEnabled: config.transportEnabled }
+    ...(config.transportGate !== undefined
+      ? { transportGate: config.transportGate }
       : {}),
     ...(config.localAuthority !== undefined
       ? { localAuthority: config.localAuthority }

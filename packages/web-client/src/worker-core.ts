@@ -148,7 +148,6 @@ export type WorkerLocalAuthorityFactory = (context: {
   readonly overrides: SyncWorkerOverrides;
   readonly requireClient: () => SyncClient;
   readonly serializedSync: <T>(run: () => Promise<T>) => Promise<T>;
-  readonly isOffline: () => boolean;
   readonly wake: () => void;
 }) => WorkerLocalAuthorityExtension;
 
@@ -205,7 +204,6 @@ export function startSyncWorkerCore(
 
   let client: SyncClient | undefined;
   let database: ClientDatabase | undefined;
-  let offline = false;
   let closed = false;
   // Every worker event goes through here; a closed worker posts none.
   const emit = (event: SyncWorkerEvent): void => {
@@ -261,7 +259,7 @@ export function startSyncWorkerCore(
     withClientDiagnosticsHost(snapshot, {
       kind: 'worker',
       role: 'leader',
-      connectivity: offline ? 'offline' : snapshot.host.connectivity,
+      connectivity: snapshot.host.connectivity,
       realtime: snapshot.host.realtime,
     });
   const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void =>
@@ -271,7 +269,7 @@ export function startSyncWorkerCore(
     if (
       closed ||
       client === undefined ||
-      offline ||
+      client.transportGate() === 'closed' ||
       client.securityLifecycle() === 'preflight'
     ) {
       autoSyncScheduled = false;
@@ -324,7 +322,7 @@ export function startSyncWorkerCore(
       !autoSync ||
       closed ||
       client === undefined ||
-      offline ||
+      client.transportGate() === 'closed' ||
       client.securityLifecycle() === 'preflight' ||
       intent.kind === 'none'
     ) {
@@ -371,7 +369,6 @@ export function startSyncWorkerCore(
     overrides,
     requireClient,
     serializedSync,
-    isOffline: () => offline,
     wake: () => consumeSyncIntent({ kind: 'interactive' }),
   });
 
@@ -443,7 +440,6 @@ export function startSyncWorkerCore(
     // `{clientId}` URL placeholder — start the client first, then attach
     // the connector through a mutable slot read at connect time.
     let realtimeConnector: RealtimeConnector | undefined;
-    offline = config.transportEnabled === false;
     const started = new SyncClient({
       ...definedObject({
         segments: bindings.segments,
@@ -460,8 +456,8 @@ export function startSyncWorkerCore(
           overrides.createAuthorityReads!(config.authorityReads),
         securityPreflight: config.securityPreflight,
         previousVersionContext: config.previousVersionContext,
+        transportGate: config.transportGate,
       }),
-      transportEnabled: !offline,
       database,
       schema: config.schema,
       transport: bindings.transport,
@@ -555,6 +551,7 @@ export function startSyncWorkerCore(
     'unit',
     'connectRealtime',
     'disconnectRealtime',
+    'setTransportGate',
     'setPresence',
     'presence',
     'uploadBlob',
@@ -620,15 +617,6 @@ export function startSyncWorkerCore(
         running.onDiagnostics(postDiagnostics);
       }
       return workerDiagnostics(running.diagnosticsSnapshot());
-    },
-    setOffline: (value) => {
-      offline = value;
-      requireClient().setTransportEnabled(!value);
-      if (offline) {
-        stopBackground();
-      } else if (client !== undefined && pushingDiagnostics) {
-        postDiagnostics(client.diagnosticsSnapshot());
-      }
     },
     ...local?.methods,
     close: async () => {

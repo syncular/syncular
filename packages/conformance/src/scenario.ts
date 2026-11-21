@@ -362,7 +362,7 @@ export interface NewClientOptions {
   readonly server?: SyncEndpoint;
   readonly authorityReads?: ClientCreateOptions['authorityReads'];
   readonly securityPreflight?: boolean;
-  readonly transportEnabled?: boolean;
+  readonly transportGate?: ClientCreateOptions['transportGate'];
   readonly retainFailedCommits?: boolean;
   readonly actorId: string;
   readonly clientId: string;
@@ -597,8 +597,8 @@ export class ScenarioContext {
       ...(options.securityPreflight !== undefined
         ? { securityPreflight: options.securityPreflight }
         : {}),
-      ...(options.transportEnabled !== undefined
-        ? { transportEnabled: options.transportEnabled }
+      ...(options.transportGate !== undefined
+        ? { transportGate: options.transportGate }
         : {}),
       ...(options.retainFailedCommits !== undefined
         ? { retainFailedCommits: options.retainFailedCommits }

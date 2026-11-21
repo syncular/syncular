@@ -25,6 +25,7 @@ import type {
   ClientDiagnosticsListener,
   SecurityLifecycle,
   SnapshotRead,
+  TransportGate,
 } from '@syncular/client';
 import {
   NativeBridgeClient,
@@ -88,8 +89,8 @@ export interface TauriSyncClientConfig extends NativeCreateConfig {
   readonly retainFailedCommits?: boolean;
   /** Fixed plain authority reads permitted before security activation. */
   readonly authorityReads?: AuthorityReadPolicy;
-  /** Open local storage with network transport closed until explicitly resumed. */
-  readonly transportEnabled?: boolean;
+  /** SPEC §8.8 transport gate at create; default `open`. */
+  readonly transportGate?: TransportGate;
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
@@ -199,9 +200,10 @@ export class TauriSyncClient extends NativeBridgeClient {
     return off;
   }
 
-  /** Suspend new network work while retaining local access and queued commits. */
-  async setTransportEnabled(enabled: boolean): Promise<void> {
-    await this.command('setTransportEnabled', { enabled });
+  /** SPEC §8.8: `closed` suspends network work, `pull` sends no commit;
+   * local access and queued commits remain. */
+  async setTransportGate(state: TransportGate): Promise<void> {
+    await this.command('setTransportGate', { state });
   }
 
   /**
@@ -213,11 +215,6 @@ export class TauriSyncClient extends NativeBridgeClient {
    */
   async setHostLifecycle(state: 'active' | 'background'): Promise<void> {
     await this.command('setHostLifecycle', { state });
-  }
-
-  /** Browser offline-control parity; local reads and commits remain available. */
-  async setOffline(offline: boolean): Promise<void> {
-    await this.setTransportEnabled(!offline);
   }
 
   /**
@@ -262,8 +259,8 @@ export async function createTauriSyncClient(
     ...(config.retainFailedCommits !== undefined
       ? { retainFailedCommits: config.retainFailedCommits }
       : {}),
-    ...(config.transportEnabled !== undefined
-      ? { transportEnabled: config.transportEnabled }
+    ...(config.transportGate !== undefined
+      ? { transportGate: config.transportGate }
       : {}),
     ...(config.authorityReads !== undefined
       ? { authorityReads: config.authorityReads.declarations }

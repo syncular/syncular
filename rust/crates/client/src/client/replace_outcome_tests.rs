@@ -195,8 +195,8 @@ impl Drop for Setup {
     }
 }
 
-fn offline(s: &mut Setup, enabled: bool) {
-    s.reader.set_transport_enabled(&mut s.server, enabled);
+fn gate(s: &mut Setup, state: crate::TransportGate) {
+    s.reader.set_transport_gate(&mut s.server, state);
 }
 
 fn replace(s: &mut Setup, replacement: Option<Vec<Mutation>>) -> Result<String, ClientError> {
@@ -220,7 +220,7 @@ fn pending_operations(client: &SyncClient) -> Vec<Value> {
 #[test]
 fn keep_mine_offline_stays_pending_then_the_next_drive_writes_it() {
     let mut s = setup();
-    offline(&mut s, false);
+    gate(&mut s, crate::TransportGate::Closed);
     let replacement = replace(&mut s, None).unwrap();
     let current = s
         .reader
@@ -261,7 +261,7 @@ fn keep_mine_offline_stays_pending_then_the_next_drive_writes_it() {
 
     // A later write of the same row queues behind the held replacement.
     patch(&mut s.reader, "body", "later", None);
-    offline(&mut s, true);
+    gate(&mut s, crate::TransportGate::Open);
     idle(&mut s.reader, &mut s.server);
     let current = s
         .reader
@@ -309,7 +309,7 @@ fn a_held_replacement_and_every_later_commit_stay_out_of_the_push() {
 #[test]
 fn a_pending_replacement_payload_survives_a_restart() {
     let mut s = setup();
-    offline(&mut s, false);
+    gate(&mut s, crate::TransportGate::Closed);
     let replacement = replace(
         &mut s,
         Some(vec![Mutation::Patch {
@@ -349,11 +349,11 @@ fn a_pending_replacement_payload_survives_a_restart() {
 #[test]
 fn a_base_that_moves_before_the_proof_refuses_the_decision() {
     let mut s = setup();
-    offline(&mut s, false);
+    gate(&mut s, crate::TransportGate::Closed);
     let replacement = replace(&mut s, None).unwrap();
     patch(&mut s.peer, "title", "newer", None);
     idle(&mut s.peer, &mut s.server);
-    offline(&mut s, true);
+    gate(&mut s, crate::TransportGate::Open);
     idle(&mut s.reader, &mut s.server);
     let current = s
         .reader

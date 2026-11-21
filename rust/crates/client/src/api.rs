@@ -484,6 +484,16 @@ impl RealtimePolicy {
     }
 }
 
+/// §8.8 transport gate. `Pull` rounds pull and send no commit; the client
+/// never persists the gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransportGate {
+    Closed,
+    Pull,
+    #[default]
+    Open,
+}
+
 /// §8.8: the explicit availability state of the realtime binding. The
 /// TypeScript host adds `unsupported` (no connector configured) and `unknown`
 /// (a wrapper without evidence); the Rust core reaches neither because a

@@ -241,19 +241,29 @@ connects cannot orphan another socket.
 
 ## Transport gate
 
-Direct clients accept `transportEnabled: false` at construction and expose
-`setTransportEnabled(enabled)`. Worker handles accept the same initial option
-and expose `setOffline(offline)`, which controls the same gate.
+The transport gate has three states: `closed`, `pull` and `open`. Direct
+clients, worker handles and the Tauri bridge accept `transportGate` at
+construction (default `open`) and expose `setTransportGate(state)`.
 
-A closed gate keeps authorized SQLite reads and queued local commits available,
-refuses new network work with `sync.offline`, and suspends automatic retry
-scheduling. Resuming emits one interactive wake. An already-started round
-finishes its atomic apply; the client closes realtime afterwards and starts no
-follow-up round while the gate is closed. The gate is independent of security
-preflight and defaults open on each new client instance. Make sure the
-header source answers a fresh credential before you resume. A realtime supervisor whose connect the
-closed gate refused with `sync.offline` reports phase `offline` and makes no
-further attempt until the client reports the gate open again.
+- `open`: rounds push the outbox and pull.
+- `pull`: rounds pull, realtime and presence work, and no round sends a
+  commit or uploads a staged blob. A local write owes no push intent, so the
+  automatic host does not schedule a round for it. Create the client in `pull`
+  when it holds pending commits it may still replace.
+- `closed`: new network work fails with `sync.offline`, and automatic retry
+  scheduling is suspended.
+
+In every state, authorized SQLite reads and local writes stay available, and
+commits queue durably in order. Moving to `open` emits one interactive wake;
+moving from `closed` to `pull` emits one for the pull. An already-started
+round finishes its atomic apply, and a gate change applies from the next round.
+On `closed`, the client closes realtime after that round and starts no
+follow-up round. The gate is independent of security preflight and starts in
+its construction state on each new client instance; the client never stores it.
+Make sure the header source answers a fresh credential before you open the gate.
+A realtime supervisor whose connect the closed gate refused with `sync.offline`
+reports phase `offline` and makes no further attempt until the client reports
+the gate in `pull` or `open`.
 
 ## Sync progress
 

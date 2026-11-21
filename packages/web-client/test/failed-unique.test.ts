@@ -190,12 +190,12 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         proven: false,
         reason: 'budget_exhausted',
       });
-      reader!.setTransportEnabled(false);
+      reader!.setTransportGate('closed');
       expect(await reader!.proveCurrentBase(outcome)).toEqual({
         proven: false,
         reason: 'offline',
       });
-      reader!.setTransportEnabled(true);
+      reader!.setTransportGate('open');
       fail = true;
       expect(await reader!.proveCurrentBase(outcome)).toEqual({
         proven: false,

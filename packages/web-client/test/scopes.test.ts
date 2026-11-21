@@ -335,7 +335,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       expect(intersection!.query('SELECT id FROM docs ORDER BY id')).toEqual([
         { id: 'old' },
       ]);
-      host!.setTransportEnabled(false);
+      host!.setTransportGate('closed');
       host!.mutate([
         { op: 'upsert', table: 'docs', values: row('new', 'o1', 'new') },
       ]);
@@ -344,7 +344,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         'old',
         'other',
       ]);
-      host!.setTransportEnabled(true);
+      host!.setTransportGate('open');
       await host!.syncUntilIdle();
       await historical!.syncUntilIdle();
       await intersection!.syncUntilIdle();
@@ -515,11 +515,11 @@ describe('row ownership across overlapping subscriptions (§3.3, §4.8)', () => 
     expect(tableRows(a.db, 'docs')).toEqual([]);
     expect(listsDocs()).toBe(false);
     // A pending write in the cleared scope needs the list, and survives.
-    a.client.setTransportEnabled(false);
+    a.client.setTransportGate('closed');
     a.client.mutate([doc('mine', 'o2', 'p2')]);
     reads.length = 0;
     a.client.subscribe({ projectId: 'p2' });
-    a.client.setTransportEnabled(true);
+    a.client.setTransportGate('open');
     await a.client.syncUntilIdle();
     expect(listsDocs()).toBe(true);
     expect(tableRows(a.db, 'docs').map((row) => row.id)).toEqual(['mine']);

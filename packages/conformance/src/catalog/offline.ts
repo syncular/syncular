@@ -502,6 +502,75 @@ export const offlineScenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'offline/pull-gate-pulls-and-holds-the-outbox',
+    specRefs: ['§8.8'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'gate-pull',
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'gate-peer',
+        allowed: P1,
+      });
+      await a.api.subscribe(U1);
+      await b.api.subscribe(U1);
+      await a.api.drainSyncIntents!();
+      const held = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'held') },
+      ]);
+      check(
+        !(await a.api.drainSyncIntents!()).some((i) => i.kind !== 'none'),
+        'a pull gate owes no push for a local write',
+      );
+      await b.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'peer') },
+      ]);
+      await syncIdle(b);
+      await syncIdle(a);
+      check(
+        !a.sentRequests.some((bytes) =>
+          decodeMessage(bytes).frames.some(
+            (frame) => frame.type === 'PUSH_COMMIT',
+          ),
+        ),
+        'pull rounds carry no PUSH_COMMIT',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [held],
+        'the commit stays queued',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't2'],
+        'the pull delivered the peer row next to the local intent',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the server holds no commit of the pull client',
+      );
+      await a.api.setTransportGate('open');
+      checkEqual(
+        await a.api.drainSyncIntents!(),
+        [{ kind: 'interactive' }],
+        'opening wakes once',
+      );
+      const result = await syncOk(a);
+      checkEqual(result.applied, [held], 'open pushes the held commit');
+      await syncIdle(a);
+      await syncIdle(b);
+      await expectConverged(ctx, 'tasks', [a, b], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
     name: 'offline/explicit-transport-gate-local-writes-and-resume',
     specRefs: ['§8.8', '§7.1'],
     async run(ctx) {
@@ -509,7 +578,7 @@ export const offlineScenarios: readonly Scenario[] = [
         actorId: 'a',
         clientId: 'gate',
         allowed: P1,
-        transportEnabled: false,
+        transportGate: 'closed',
       });
       await a.api.subscribe(U1);
       const first = await a.api.mutate([
@@ -541,13 +610,13 @@ export const offlineScenarios: readonly Scenario[] = [
         !(await a.api.drainSyncIntents!()).some((i) => i.kind !== 'none'),
         'closed gate emits no scheduler wake',
       );
-      await a.api.setTransportEnabled(true);
+      await a.api.setTransportGate('open');
       checkEqual(
         await a.api.drainSyncIntents!(),
         [{ kind: 'interactive' }],
         'resume has one wake',
       );
-      await a.api.setTransportEnabled(true);
+      await a.api.setTransportGate('open');
       checkEqual(await a.api.drainSyncIntents!(), [], 'resume is idempotent');
       const result = await syncOk(a);
       checkEqual(result.applied, [first, second], 'resume sends FIFO');
@@ -588,7 +657,7 @@ export const offlineScenarios: readonly Scenario[] = [
           ]);
           if (revoke) await ctx.server.setAllowedScopes(a.actorId, {});
           await a.api.prepareRound!();
-          await a.api.setTransportEnabled(false);
+          await a.api.setTransportGate('closed');
           const result = await a.api.completeRound!();
           check(
             result.ok,
@@ -620,7 +689,7 @@ export const offlineScenarios: readonly Scenario[] = [
             count,
             'paused follow-up never invokes transport',
           );
-          await a.api.setTransportEnabled(true);
+          await a.api.setTransportGate('open');
           await syncIdle(a);
         }
       }

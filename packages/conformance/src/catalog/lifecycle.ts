@@ -211,7 +211,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         'registration is incomplete',
       );
       await syncIdle(a);
-      await a.api.setTransportEnabled(false);
+      await a.api.setTransportGate('closed');
       await a.api.mutate([
         {
           op: 'patch',
@@ -265,10 +265,10 @@ export const lifecycleScenarios: readonly Scenario[] = [
         'writes remain closed',
       );
       await a.api.activateSecurity();
-      await a.api.setTransportEnabled(true);
+      await a.api.setTransportGate('open');
       await ctx.server.setAllowedScopes('authority', {});
       await syncIdle(a);
-      await a.api.setTransportEnabled(false);
+      await a.api.setTransportGate('closed');
       await a.api.beginSecurityPreflight();
       const revoked = await a.api.authoritySnapshot();
       check(!revoked.complete, 'scope loss invalidates completeness');
@@ -288,7 +288,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
         clientId: 'preflight',
         allowed: P1,
         securityPreflight: true,
-        transportEnabled: false,
+        transportGate: 'closed',
         authorityReads: [
           { table: 'tasks', columns: ['id', 'project_id'], scopes: P1 },
         ],
@@ -312,7 +312,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
             actorId: 'forbidden',
             clientId: 'forbidden',
             securityPreflight: true,
-            transportEnabled: false,
+            transportGate: 'closed',
             authorityReads: [{ table: 'tasks', columns, scopes: P1 }],
           });
         } catch (e) {

@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   let offline = false;
   offlineBtn.addEventListener('click', async () => {
     offline = !offline;
-    await handle.setOffline(offline);
+    await handle.setTransportGate(offline ? 'closed' : 'open');
     offlineBtn.textContent = offline ? 'Go online' : 'Go offline';
     if (offline) {
       setStatus('offline — edits queue in the outbox');

@@ -426,7 +426,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         'securityLifecycle',
         'beginSecurityPreflight',
         'activateSecurity',
-        'setTransportEnabled',
+        'setTransportGate',
         'disconnectRealtime',
         'purgeLocalData',
         'previousVersionDiscard',

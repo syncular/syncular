@@ -1,5 +1,33 @@
 # Syncular release notes
 
+## 0.102.0 release notes
+
+### A transport gate that pulls without pushing
+
+The transport gate now has three states: `closed`, `pull` and `open`. In
+`pull`, rounds pull, realtime and presence work, and no round sends a commit
+or uploads a staged blob; a local write schedules no round. An app that holds
+pending commits it may still replace creates the client in `pull` and opens
+the gate once it has decided. The client never stores the gate, so each new
+instance starts in its construction state (SPEC §8.8).
+
+[The transport gate](https://syncular.dev/platform-web-realtime/#transport-gate)
+
+### Upgrading
+
+- `transportEnabled: false` becomes `transportGate: 'closed'` on the direct
+  client, worker handles, Tauri and the native `create` command.
+- `setTransportEnabled(true)` and `setTransportEnabled(false)` become
+  `setTransportGate('open')` and `setTransportGate('closed')`.
+- The worker handle's and the Tauri bridge's `setOffline(true)` and
+  `setOffline(false)` are removed; call `setTransportGate('closed')` and
+  `setTransportGate('open')`.
+- Rust: `set_transport_enabled(transport, bool)` becomes
+  `set_transport_gate(transport, TransportGate)`, and `transport_enabled()`
+  becomes `transport_gate()`.
+- The native command `setTransportEnabled { enabled }` becomes
+  `setTransportGate { state }`.
+
 ## 0.101.0 release notes
 
 ### App-filled local projections

@@ -863,7 +863,7 @@ describe('heartbeat watchdog (§8.5)', () => {
     await client.connectRealtime();
     watched.socket().onText(heartbeat);
     expect(watched.armed()).toHaveLength(1);
-    client.setTransportEnabled(false);
+    client.setTransportGate('closed');
     expect(watched.armed()).toEqual([]);
     await client.close();
     watched.db.close();

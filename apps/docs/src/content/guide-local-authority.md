@@ -114,7 +114,7 @@ import { httpSegmentDownloader, httpSyncTransport } from '@syncular/client';
 const headers = { Authorization: `Bearer ${token}` };
 
 await client.syncUntilIdle();
-client.setTransportEnabled(false);
+client.setTransportGate('closed');
 await authority.attach(
   httpSyncTransport('https://api.example.com/sync', { headers }),
 );

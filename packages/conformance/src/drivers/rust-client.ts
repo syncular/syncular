@@ -2,6 +2,7 @@ import type {
   DriverQueryFailure,
   DriverRealtimeAvailability,
   DriverSyncProgress,
+  DriverTransportGate,
 } from '../driver';
 /**
  * Rust ClientDriver: spawns the `conformance-shim` binary (the Rust client
@@ -1966,8 +1967,8 @@ class RustClientInstance implements ClientInstance {
     };
   }
 
-  async setTransportEnabled(enabled: boolean): Promise<void> {
-    await this.#shim.call('setTransportEnabled', { enabled });
+  async setTransportGate(state: DriverTransportGate): Promise<void> {
+    await this.#shim.call('setTransportGate', { state });
   }
 
   async connectRealtime(): Promise<void> {
@@ -2222,8 +2223,8 @@ export const rustClientDriver: ClientDriver = {
       ...(options.securityPreflight !== undefined
         ? { securityPreflight: options.securityPreflight }
         : {}),
-      ...(options.transportEnabled !== undefined
-        ? { transportEnabled: options.transportEnabled }
+      ...(options.transportGate !== undefined
+        ? { transportGate: options.transportGate }
         : {}),
       schema: options.schema as unknown as JsonValue,
       ...(options.limits !== undefined

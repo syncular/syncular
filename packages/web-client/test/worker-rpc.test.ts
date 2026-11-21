@@ -521,7 +521,7 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
   const { handle, events } = await makeHandle({
     clientId: 'rpc-security-preflight',
     securityPreflight: true,
-    transportEnabled: false,
+    transportGate: 'closed',
     authorityReads: defineAuthorityReads([
       {
         table: 'tasks',
@@ -593,7 +593,7 @@ test('a preflight handle with an onDiagnostics listener gets its first snapshot 
   const { handle } = await makeHandle({
     clientId: 'rpc-preflight-diagnostics',
     securityPreflight: true,
-    transportEnabled: false,
+    transportGate: 'closed',
   });
   handle.onDiagnostics((snapshot) => seen.push(snapshot.replica.localRevision));
   expect(await handle.securityLifecycle()).toBe('preflight');
@@ -1189,14 +1189,19 @@ test('offline gate queues, reconnect drains through the worker', async () => {
   await handle.subscribe({ project_id: 'p5' });
   await handle.syncUntilIdle();
 
-  await handle.setOffline(true);
+  await handle.setTransportGate('closed');
   await handle.mutate([
     { table: 'tasks', op: 'upsert', values: taskValues('t5', 'p5', 'queued') },
   ]);
   expect((await handle.pendingCommits()).length).toBe(1);
   await expectRejectsWithCode(handle.sync(), 'sync.offline');
 
-  await handle.setOffline(false);
+  // §8.8: a pull round runs and leaves the commit queued.
+  await handle.setTransportGate('pull');
+  await handle.syncUntilIdle();
+  expect((await handle.pendingCommits()).length).toBe(1);
+
+  await handle.setTransportGate('open');
   await handle.syncUntilIdle();
   expect((await handle.pendingCommits()).length).toBe(0);
 });
@@ -1563,7 +1568,7 @@ test('worker auto-sync continues after exhausting its round budget', async () =>
     limits: { maxPushCommitsPerRequest: 1 },
   });
   handle.onSynced(() => synced?.());
-  await handle.setOffline(true);
+  await handle.setTransportGate('closed');
   for (let i = 0; i < 22; i++) {
     await handle.mutate([
       {
@@ -1574,7 +1579,7 @@ test('worker auto-sync continues after exhausting its round budget', async () =>
     ]);
   }
   expect(await handle.pendingCommits()).toHaveLength(22);
-  await handle.setOffline(false);
+  await handle.setTransportGate('open');
   await waitFor(
     async () => (await handle.pendingCommits()).length === 0,
     (notify) => {

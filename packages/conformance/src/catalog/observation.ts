@@ -351,7 +351,7 @@ export const observationScenarios: readonly Scenario[] = [
         'progress names the same attempt',
       );
 
-      await handle.api.setTransportEnabled(false);
+      await handle.api.setTransportGate('closed');
       await syncFails(handle, 'sync.offline', 'closed gate');
       checkEqual(
         (await diagnostics()).lastRound,

@@ -578,7 +578,7 @@ pub struct SyncClient {
     /// status/lifecycle inspection and an exact authorized local purge.
     security_preflight: bool,
     security_epoch: u64,
-    transport_enabled: bool,
+    transport_gate: crate::TransportGate,
     transport_epoch: u64,
     /// Raised by every registration change; a current-base proof spanning
     /// one reports missing coverage.
@@ -2156,7 +2156,7 @@ impl SyncClient {
             encryption: crate::values::EncryptionConfig::default(),
             security_preflight: false,
             security_epoch: 0,
-            transport_enabled: true,
+            transport_gate: crate::TransportGate::Open,
             transport_epoch: 0,
             registration_epoch: 0,
             previous_version,
@@ -2348,27 +2348,39 @@ impl SyncClient {
         self.security_preflight
     }
 
-    /// Host-owned, non-persisted network gate. Local operations remain available.
-    pub fn set_transport_enabled(&mut self, transport: &mut dyn Transport, enabled: bool) {
-        if self.transport_enabled != enabled {
-            self.transport_enabled = enabled;
+    /// Host-owned, non-persisted network gate (§8.8). Local operations remain
+    /// available.
+    pub fn set_transport_gate(
+        &mut self,
+        transport: &mut dyn Transport,
+        state: crate::TransportGate,
+    ) {
+        use crate::TransportGate::{Closed, Open};
+        let from = self.transport_gate;
+        if from != state {
+            self.transport_gate = state;
             self.transport_epoch = self.transport_epoch.wrapping_add(1);
             self.sync_intent_queue.clear();
-            self.sync_intent_queue
-                .push_back(if enabled && !self.security_preflight {
+            self.sync_intent_queue.push_back(
+                if state != Closed && from != Open && !self.security_preflight {
                     SyncIntent::Interactive
                 } else {
                     SyncIntent::None
-                });
+                },
+            );
         }
         // A captured reply keeps its normal apply/revocation semantics.
-        if !enabled && self.active_round.is_none() {
+        if state == crate::TransportGate::Closed && self.active_round.is_none() {
             self.disconnect_realtime(transport);
         }
     }
 
-    pub fn transport_enabled(&self) -> bool {
-        self.transport_enabled
+    pub fn transport_gate(&self) -> crate::TransportGate {
+        self.transport_gate
+    }
+
+    fn transport_closed(&self) -> bool {
+        self.transport_gate == crate::TransportGate::Closed
     }
 
     /// Quarantine this replica: enter the fail-closed gate, release all
@@ -3223,7 +3235,7 @@ impl SyncClient {
             }
         };
         let connectivity = match self.last_round.as_ref() {
-            _ if !self.transport_enabled && self.active_round.is_none() => "offline",
+            _ if self.transport_closed() && self.active_round.is_none() => "offline",
             Some(round) if round.status == "succeeded" => "online",
             Some(round)
                 if round.status == "failed"
@@ -3345,7 +3357,7 @@ impl SyncClient {
 
     pub fn drain_sync_intents(&mut self) -> Vec<SyncIntent> {
         let intents = self.sync_intent_queue.drain(..).collect();
-        if self.transport_enabled {
+        if !self.transport_closed() {
             intents
         } else {
             vec![SyncIntent::None]
@@ -5361,7 +5373,7 @@ impl SyncClient {
                 CurrentBaseProofReason::OutcomeUnavailable,
             ));
         }
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Err(CurrentBaseProof::failure(CurrentBaseProofReason::Offline));
         }
         Ok(CurrentBasePreparation {
@@ -5383,7 +5395,7 @@ impl SyncClient {
         prepared: CurrentBasePreparation,
         drive: SyncOutcome,
     ) -> CurrentBaseProof {
-        if !self.transport_enabled || self.transport_epoch != prepared.transport_epoch {
+        if self.transport_closed() || self.transport_epoch != prepared.transport_epoch {
             return CurrentBaseProof::failure(CurrentBaseProofReason::Offline);
         }
         if self.registration_epoch != prepared.registration_epoch {
@@ -5860,7 +5872,7 @@ impl SyncClient {
                 self.drain_pending_evictions()?;
             }
         }
-        Ok(if changed && self.transport_enabled {
+        Ok(if changed && !self.transport_closed() {
             CommandEffects::interactive()
         } else {
             CommandEffects::none()
@@ -7251,7 +7263,7 @@ impl SyncClient {
         decisions: &[CurrentBasePreparation],
         drive: &SyncOutcome,
     ) -> Result<bool, String> {
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Ok(false);
         }
         let mut written = false;
@@ -8204,7 +8216,9 @@ impl SyncClient {
             }
             None => 0,
         };
-        let total_outbox = if log_epoch.is_some() {
+        // §8.8: a `pull` round carries no commit and defers none.
+        let pushes = self.transport_gate == crate::TransportGate::Open;
+        let total_outbox = if log_epoch.is_some() && pushes {
             self.outbox.len()
         } else {
             0
@@ -8215,7 +8229,11 @@ impl SyncClient {
         let mut bytes_in_request = 0usize;
         // §2.1: an epoch-less request withholds the whole outbox until the
         // next, epoch-bound request.
-        let mut deferred_commits = self.outbox.len() - total_outbox;
+        let mut deferred_commits = if pushes {
+            self.outbox.len() - total_outbox
+        } else {
+            0
+        };
         // §7.2.2: a pending replacement is held; the push stops before it
         // without deferring work.
         let held: HashSet<String> = self
@@ -8448,7 +8466,7 @@ impl SyncClient {
                 crate::AppliedSyncRound::Complete {
                     outcome, controls, ..
                 } => {
-                    if self.transport_enabled {
+                    if !self.transport_closed() {
                         for text in controls {
                             let _ = transport.realtime_send(&text);
                         }
@@ -8616,7 +8634,7 @@ impl SyncClient {
         &mut self,
         url_capable: bool,
     ) -> Result<crate::PreparedSyncRound, Box<SyncOutcome>> {
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Err(Box::new(SyncOutcome::Failed {
                 error_code: "sync.offline".into(),
                 message: "transport gate is closed".into(),
@@ -8680,7 +8698,10 @@ impl SyncClient {
                     recommended_action: None,
                 })
             })?;
-            let uploads = if has_log_epoch.is_some() && self.schema_has_blobs() {
+            let uploads = if has_log_epoch.is_some()
+                && self.transport_gate == crate::TransportGate::Open
+                && self.schema_has_blobs()
+            {
                 self.pending_blob_uploads().map_err(|e| {
                     Box::new(SyncOutcome::Failed {
                         error_code: e.code,
@@ -9002,7 +9023,7 @@ impl SyncClient {
             }
             _ => {}
         }
-        let more = self.transport_enabled
+        let more = !self.transport_closed()
             && matches!(&outcome, SyncOutcome::Ok(report)
                 if report.schema_floor.is_none()
                     && (!report.bootstrapping.is_empty()
@@ -9015,7 +9036,7 @@ impl SyncClient {
             && before != self.resume_tokens();
         crate::AppliedSyncRound::Complete {
             outcome: self.finish_sync_round(prepared.started_at_ms, prepared.attempt, outcome),
-            controls: if self.transport_enabled {
+            controls: if !self.transport_closed() {
                 downloads.controls
             } else {
                 Vec::new()
@@ -9140,9 +9161,9 @@ impl SyncClient {
                     {
                         spent = 0;
                     }
-                    // TS parity: a disabled transport or a schema floor ends
+                    // TS parity: a closed transport or a schema floor ends
                     // the loop. The latest round still merges first.
-                    let stop = !self.transport_enabled() || report.schema_floor.is_some();
+                    let stop = self.transport_closed() || report.schema_floor.is_some();
                     aggregate.merge(&report);
                     // §4.5: pull again whenever the response contained
                     // commits or segments; resets re-bootstrap; a pending
@@ -12509,7 +12530,7 @@ impl SyncClient {
         if let Some(cached) = self.get_cached_blob_bytes(&blob_id).map_err(simple)? {
             return Ok(cached);
         }
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Err(("sync.offline".into(), "transport gate is closed".into()));
         }
         // §5.9.5: propagate the server's blob.* code (blob.forbidden /
@@ -13506,7 +13527,7 @@ impl SyncClient {
     }
 
     pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Err("sync.offline: transport gate is closed".into());
         }
         if self.realtime_policy == RealtimePolicy::Off {
@@ -13578,7 +13599,7 @@ impl SyncClient {
         scope_key: &str,
         doc: Option<&Value>,
     ) -> Result<(), String> {
-        if !self.transport_enabled {
+        if self.transport_closed() {
             return Err("sync.offline: transport gate is closed".into());
         }
         if !self.realtime_connected() {
@@ -13645,7 +13666,7 @@ impl SyncClient {
 
     /// Inbound JSON control message (§8.1). Unknown events are tolerated.
     pub fn on_realtime_text(&mut self, text: &str) {
-        if self.stopped || !self.transport_enabled || self.security_preflight {
+        if self.stopped || self.transport_closed() || self.security_preflight {
             return;
         }
         match parse_control(text) {
@@ -13695,7 +13716,7 @@ impl SyncClient {
     /// other than `active`, a decode or apply failure) is a drop and raises
     /// sync-needed.
     pub fn on_realtime_binary(&mut self, transport: &mut dyn Transport, bytes: &[u8]) {
-        if self.stopped || !self.transport_enabled || self.security_preflight {
+        if self.stopped || self.transport_closed() || self.security_preflight {
             return;
         }
         #[cfg(feature = "bench-internals")]

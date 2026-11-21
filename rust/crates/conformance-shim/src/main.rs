@@ -664,12 +664,17 @@ fn main() {
                                         controls,
                                         ..
                                     } => {
-                                        if instance.transport_enabled() {
+                                        if instance.transport_gate()
+                                            != syncular_client::TransportGate::Closed
+                                        {
                                             for text in controls {
                                                 let _ = io.realtime_send(&text);
                                             }
                                         } else {
-                                            instance.set_transport_enabled(&mut io, false);
+                                            instance.set_transport_gate(
+                                                &mut io,
+                                                syncular_client::TransportGate::Closed,
+                                            );
                                         }
                                         break Ok(outcome.to_json());
                                     }

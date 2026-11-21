@@ -116,8 +116,9 @@ client so a later sign-in cannot reach a closed replica.
 
 ## Pausing the network
 
-`setTransportEnabled(false)` closes all network work while local reads and
-writes continue, and `setOffline(true)` is its alias. The contract is in
+`setTransportGate('closed')` closes all network work while local reads and
+writes continue; `setTransportGate('pull')` keeps pulls and realtime and sends
+no commit. The contract is in
 [Platform specifics](/platform-tauri-specifics/#local-activation-with-transport-closed).
 
 ## The app in the background

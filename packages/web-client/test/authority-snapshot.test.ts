@@ -41,7 +41,7 @@ const create = (db: BunClientDatabase, declarations = [read]) =>
     database: db,
     schema,
     securityPreflight: true,
-    transportEnabled: false,
+    transportGate: 'closed',
     authorityReads: defineAuthorityReads(declarations),
     transport: async () => {
       throw new Error('authority reads must never transport');
@@ -108,7 +108,7 @@ test('authority snapshot merges complete persisted scope rectangles, distinguish
     schema,
     authorityReads: policy,
     securityPreflight: true,
-    transportEnabled: false,
+    transportGate: 'closed',
     transport: async () => {
       throw new Error('unexpected transport');
     },
