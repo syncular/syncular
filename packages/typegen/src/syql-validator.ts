@@ -53,7 +53,8 @@ export type SyqlValidationErrorCode =
   | 'SYQL6005_INVALID_SYNC_QUERY'
   | 'SYQL6006_INVALID_SORT'
   | 'SYQL6007_INVALID_LIMIT'
-  | 'SYQL6008_INVALID_IDENTITY';
+  | 'SYQL6008_INVALID_IDENTITY'
+  | 'SYQL6009_INVALID_AUTHORITY_QUERY';
 
 export interface SyqlValidatedSort {
   readonly control: string;
@@ -68,6 +69,8 @@ export interface SyqlValidatedQuery {
   readonly analysis: AnalyzedQuery;
   readonly bindTypes: ReadonlyMap<string, SyqlValueType>;
   readonly reactive: QueryReactiveMetadata;
+  /** An authority query's read set (§13.3): table -> sorted columns. */
+  readonly authorityReads?: Readonly<Record<string, readonly string[]>>;
   readonly identity?: readonly string[];
   readonly sort?: SyqlValidatedSort;
   readonly limit?: {
@@ -314,6 +317,30 @@ const SQL_PAREN_KEYWORDS = new Set([
   'with',
 ]);
 const SQLITE_346_PORTABLE_COLLATIONS = new Set(['binary', 'nocase', 'rtrim']);
+/** Words that never name a column in a SELECT statement. */
+const SQL_RESERVED_WORDS = new Set(
+  (
+    'all and as between by case cast collate cross distinct else end escape ' +
+    'except exists false from full glob group having in indexed inner ' +
+    'intersect is isnull join left limit like match materialized natural not ' +
+    'notnull null offset on or order outer recursive regexp right select ' +
+    'then true union using values when where window with'
+  ).split(' '),
+);
+/** Words that are keywords in their clause and may still name a column. */
+const SQL_SOFT_KEYWORDS = new Set(
+  (
+    'asc current desc exclude first following groups last no nulls others ' +
+    'over partition preceding range row rows ties unbounded'
+  ).split(' '),
+);
+const AUTHORITY_TYPES = new Set<string>([
+  'string',
+  'integer',
+  'float',
+  'boolean',
+  'json',
+]);
 const OUTER_CLAUSE_ENDERS = new Set([
   'group',
   'having',
@@ -486,6 +513,10 @@ class Validator {
       bindSymbols,
     );
 
+    const authorityReads = logical.declaration.authority
+      ? this.#authorityReads(logical, activeSql, relations, bindTypes, location)
+      : undefined;
+
     const sort = this.#validateSort(
       logical.declaration,
       activeStructure,
@@ -597,6 +628,7 @@ class Validator {
       analysis: { ...analysis, reactive: reactiveWithIdentity },
       bindTypes,
       reactive: reactiveWithIdentity,
+      ...(authorityReads === undefined ? {} : { authorityReads }),
       ...(identity === undefined ? {} : { identity }),
       ...(sort === undefined ? {} : { sort }),
       ...(logical.declaration.limit === undefined
@@ -609,6 +641,347 @@ class Validator {
             },
           }),
     };
+  }
+
+  /** Check the SYQL §13.3 restrictions and derive the read set: every
+   * column reference resolved to the FROM/JOIN source of its SELECT scope or
+   * an enclosing one, as SQLite resolves it. */
+  #authorityReads(
+    logical: SyqlLogicalQuery,
+    sql: string,
+    relations: SqlRelations,
+    bindTypes: ReadonlyMap<string, SyqlValueType>,
+    location: string,
+  ): Readonly<Record<string, readonly string[]>> {
+    const declaration = logical.declaration;
+    const fail: (span: SyqlSourceSpan | undefined, message: string) => never = (
+      span,
+      message,
+    ) =>
+      this.#fail(
+        'SYQL6009_INVALID_AUTHORITY_QUERY',
+        span ?? declaration.statement.span,
+        message,
+      );
+    if (declaration.sort !== undefined) {
+      fail(declaration.sort.span, 'an authority query has no dynamic sort');
+    }
+    if (declaration.limit !== undefined) {
+      fail(declaration.limit.span, 'an authority query has no dynamic limit');
+    }
+    if (logical.conditions[0] !== undefined) {
+      fail(
+        logical.conditions[0].span,
+        'an authority query has no conditional predicate',
+      );
+    }
+    for (const parameter of declaration.parameters) {
+      const type =
+        parameter.kind === 'value' ? bindTypes.get(parameter.name) : undefined;
+      if (
+        parameter.kind !== 'value' ||
+        parameter.optional ||
+        parameter.default !== undefined ||
+        type === undefined ||
+        !AUTHORITY_TYPES.has(type.base)
+      ) {
+        fail(
+          parameter.nameSpan,
+          `authority query input ${parameter.name} must be a required string, integer, float, bool or json value, optionally | null`,
+        );
+      }
+    }
+    for (const ref of relations.tables) {
+      if (!this.#ir.tables.some((table) => table.name === ref.table)) {
+        fail(
+          this.#sqlSubjectSpan(logical, ref.table, 'table'),
+          `authority query reads ${ref.table}, which is not a schema table; FTS tables and local projections are refused`,
+        );
+      }
+    }
+
+    const tokens = significant(lexSyqlSqlSource(location, sql));
+    const subjectSpan = (subject: string): SyqlSourceSpan | undefined =>
+      this.#sqlSubjectSpan(logical, subject, 'column');
+    const parents: number[] = [];
+    const closes = new Map<number, number>();
+    // `order` marks a token inside an ORDER BY of its own parenthesis level.
+    const clauses: string[] = [];
+    const stack: { readonly open: number; readonly clause: string }[] = [];
+    let clause = '';
+    tokens.forEach((token, index) => {
+      const lower = tokenLower(token);
+      if (token.text === ')') {
+        const frame = stack.pop();
+        if (frame !== undefined) {
+          closes.set(frame.open, index);
+          clause = frame.clause;
+        }
+      }
+      parents[index] = stack.at(-1)?.open ?? -1;
+      if (lower === 'order' && tokenLower(tokens[index + 1]) === 'by') {
+        clause = 'order';
+      } else if (
+        token.kind === 'identifier' &&
+        ['select', 'limit', 'offset', 'union', 'intersect', 'except'].includes(
+          lower ?? '',
+        )
+      ) {
+        clause = '';
+      }
+      clauses[index] = clause;
+      if (token.text === '(') stack.push({ open: index, clause });
+      if (
+        token.kind === 'identifier' &&
+        (lower === 'match' || lower === 'using' || lower === 'natural')
+      ) {
+        fail(
+          subjectSpan(token.text),
+          lower === 'match'
+            ? 'an authority query cannot use MATCH'
+            : `an authority query cannot use ${token.text.toUpperCase()}; write the join condition as an ON equality`,
+        );
+      }
+    });
+    const opensScope = (open: number): boolean =>
+      ['select', 'with', 'values'].includes(tokenLower(tokens[open + 1]) ?? '');
+    const scopeOf = (index: number): number => {
+      let open = parents[index] ?? -1;
+      while (open !== -1 && !opensScope(open)) open = parents[open] ?? -1;
+      return open;
+    };
+    const enclosing = (scope: number): number[] => {
+      const chain = [scope];
+      for (let level = scope; level !== -1;) {
+        level = scopeOf(level);
+        chain.push(level);
+      }
+      return chain;
+    };
+
+    // Relation sources per SELECT scope; a CTE or derived table has no table.
+    type Source = { readonly alias: string; readonly table?: string };
+    const sources = new Map<number, Source[]>();
+    const consumed = new Set<number>();
+    const addSource = (index: number, source: Source): void => {
+      const scope = scopeOf(index);
+      sources.set(scope, [...(sources.get(scope) ?? []), source]);
+    };
+    const aliasAt = (after: number): number =>
+      tokenLower(tokens[after]) === 'as' ? after + 1 : after;
+    for (const ref of [...relations.tables, ...relations.cteRefs]) {
+      const index = tokens.findIndex(
+        (token) => token.span.start.offset === ref.start,
+      );
+      const alias = aliasAt(index + 1);
+      consumed.add(index);
+      if (
+        sqlIdentifier(tokens[alias])?.toLowerCase() === ref.alias.toLowerCase()
+      )
+        consumed.add(alias);
+      addSource(index, {
+        alias: ref.alias.toLowerCase(),
+        ...('table' in ref ? { table: ref.table } : {}),
+      });
+    }
+    tokens.forEach((token, index) => {
+      const lower = tokenLower(token);
+      const previous = tokenLower(tokens[index - 1]);
+      if (
+        token.text === '(' &&
+        opensScope(index) &&
+        (previous === 'from' || previous === 'join')
+      ) {
+        const alias = aliasAt((closes.get(index) ?? index) + 1);
+        const name = sqlIdentifier(tokens[alias]);
+        if (name !== undefined && !SQL_RESERVED_WORDS.has(name.toLowerCase())) {
+          consumed.add(alias);
+          addSource(index, { alias: name.toLowerCase() });
+        }
+      }
+      if (lower === 'with' && token.kind === 'identifier') {
+        // `WITH [RECURSIVE] name [(columns)] AS [NOT] [MATERIALIZED] (...)`.
+        let cursor =
+          tokenLower(tokens[index + 1]) === 'recursive' ? index + 2 : index + 1;
+        while (sqlIdentifier(tokens[cursor]) !== undefined) {
+          consumed.add(cursor);
+          cursor += 1;
+          if (tokens[cursor]?.text === '(') {
+            const close = closes.get(cursor) ?? cursor;
+            for (let column = cursor + 1; column < close; column += 1)
+              consumed.add(column);
+            cursor = close + 1;
+          }
+          if (tokenLower(tokens[cursor]) !== 'as') break;
+          cursor += 1;
+          if (tokenLower(tokens[cursor]) === 'not') cursor += 1;
+          if (tokenLower(tokens[cursor]) === 'materialized') cursor += 1;
+          if (tokens[cursor]?.text !== '(') break;
+          cursor = (closes.get(cursor) ?? cursor) + 1;
+          if (tokens[cursor]?.text !== ',') break;
+          cursor += 1;
+        }
+      }
+      if (lower === 'indexed') consumed.add(index + 2);
+    });
+
+    const keyword = (token: SyqlToken | undefined): boolean =>
+      token?.kind === 'identifier' &&
+      (SQL_RESERVED_WORDS.has(token.text.toLowerCase()) ||
+        SQL_SOFT_KEYWORDS.has(token.text.toLowerCase()));
+    const endsOperand = (token: SyqlToken | undefined): boolean =>
+      token !== undefined &&
+      (['number', 'string', 'blob', 'bind', 'quoted-identifier'].includes(
+        token.kind,
+      ) ||
+        token.text === ')' ||
+        (token.kind === 'identifier' &&
+          (!keyword(token) ||
+            ['null', 'true', 'false', 'end'].includes(
+              token.text.toLowerCase(),
+            ))));
+    // Result aliases of each SELECT scope (`expr AS alias`, `expr alias`) and
+    // the type or collation name after AS / COLLATE.
+    const aliases = new Map<number, Set<string>>();
+    tokens.forEach((token, index) => {
+      const name = sqlIdentifier(token);
+      const previous = tokens[index - 1];
+      if (name === undefined || consumed.has(index)) return;
+      if (tokenLower(previous) === 'collate') {
+        consumed.add(index);
+        return;
+      }
+      if (
+        keyword(token) ||
+        tokens[index + 1]?.text === '(' ||
+        tokens[index + 1]?.text === '.' ||
+        (tokenLower(previous) !== 'as' && !endsOperand(previous))
+      ) {
+        return;
+      }
+      consumed.add(index);
+      const scope = scopeOf(index);
+      if (parents[index] !== scope) return;
+      aliases.set(
+        scope,
+        (aliases.get(scope) ?? new Set()).add(name.toLowerCase()),
+      );
+    });
+
+    const reads = new Map<string, Set<string>>(
+      relations.tables.map((ref) => [ref.table, new Set<string>()]),
+    );
+    const read = (table: string, name: string, subject: string): void => {
+      const column =
+        name === '_sync_version'
+          ? undefined
+          : this.#ir.tables
+              .find((candidate) => candidate.name === table)
+              ?.columns.find(
+                (candidate) => candidate.name.toLowerCase() === name,
+              );
+      if (
+        name !== '_sync_version' &&
+        (column === undefined ||
+          column.encrypted === true ||
+          !AUTHORITY_TYPES.has(column.type))
+      ) {
+        fail(
+          subjectSpan(subject),
+          `authority query reads ${table}.${name}; every read column must be a string, integer, float, boolean or json column without encryption, or _sync_version`,
+        );
+      }
+      reads.get(table)?.add(column?.name ?? name);
+    };
+    const unresolved: (subject: string) => never = (subject) =>
+      fail(
+        subjectSpan(subject),
+        `authority query column ${subject} does not resolve to one table; qualify it with its table or alias`,
+      );
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index] as SyqlToken;
+      if (token.text === '*') {
+        const previous = tokens[index - 1];
+        if (previous?.text !== '(' && !endsOperand(previous)) {
+          fail(
+            subjectSpan('*'),
+            'an authority query cannot select *; name every column it reads',
+          );
+        }
+        continue;
+      }
+      const name = sqlIdentifier(token)?.toLowerCase();
+      if (
+        name === undefined ||
+        consumed.has(index) ||
+        tokens[index + 1]?.text === '(' ||
+        (token.kind === 'identifier' && SQL_RESERVED_WORDS.has(name))
+      ) {
+        continue;
+      }
+      const scope = scopeOf(index);
+      if (tokens[index + 1]?.text === '.') {
+        const column = sqlIdentifier(tokens[index + 2])?.toLowerCase();
+        const subject = `${token.text}.${tokens[index + 2]?.text ?? ''}`;
+        index += 2;
+        if (tokens[index]?.text === '*') {
+          fail(
+            subjectSpan(token.text),
+            'an authority query cannot select alias.*; name every column it reads',
+          );
+        }
+        const source = enclosing(scope)
+          .map((level) =>
+            sources.get(level)?.find((candidate) => candidate.alias === name),
+          )
+          .find((candidate) => candidate !== undefined);
+        if (source === undefined || column === undefined) unresolved(subject);
+        if (source.table !== undefined) read(source.table, column, subject);
+        continue;
+      }
+      const soft = token.kind === 'identifier' && SQL_SOFT_KEYWORDS.has(name);
+      let resolved = false;
+      for (const level of enclosing(scope)) {
+        const own = level === scope && aliases.get(level)?.has(name) === true;
+        if (own && clauses[index] === 'order') {
+          resolved = true;
+          break;
+        }
+        const levelSources = sources.get(level) ?? [];
+        const matches = levelSources.filter(
+          (source) =>
+            source.table !== undefined &&
+            (name === '_sync_version' ||
+              this.#ir.tables
+                .find((candidate) => candidate.name === source.table)
+                ?.columns.some((column) => column.name.toLowerCase() === name)),
+        );
+        const match = matches[0];
+        if (match?.table !== undefined && matches.length === 1) {
+          read(match.table, name, token.text);
+          resolved = true;
+          break;
+        }
+        if (
+          matches.length > 1 ||
+          (!soft && levelSources.some((source) => source.table === undefined))
+        ) {
+          unresolved(token.text);
+        }
+        if (own) {
+          resolved = true;
+          break;
+        }
+      }
+      if (!resolved && !soft) unresolved(token.text);
+    }
+    const byCodePoint = (left: string, right: string): number =>
+      left < right ? -1 : left > right ? 1 : 0;
+    return Object.fromEntries(
+      [...reads]
+        .sort(([left], [right]) => byCodePoint(left, right))
+        .map(([table, columns]) => [table, [...columns].sort(byCodePoint)]),
+    );
   }
 
   #render(
@@ -1575,6 +1948,16 @@ class Validator {
       }
     }
 
+    for (const dimension of logical.declaration.syncByJoined) {
+      if (!eligible.some((item) => item.ref.alias === dimension.qualifier)) {
+        this.#fail(
+          'SYQL6005_INVALID_SYNC_QUERY',
+          dimension.span,
+          `\`by ${dimension.qualifier}.${dimension.column}\` does not name a table instance the query reads`,
+        );
+      }
+    }
+
     const sameParams = (
       left: readonly string[],
       right: readonly string[],
@@ -1595,22 +1978,63 @@ class Validator {
         const byVariable = new Map(
           candidate.scopes.map((scope) => [scope.binding.variable, scope]),
         );
+        // SYQL §13.2: the sole proven dimension, else the one matching the
+        // anchor unit's parameters, else a later `by` entry.
+        const matching =
+          anchorUnit === undefined
+            ? []
+            : candidate.scopes.filter((scope) =>
+                sameParams(scope.binding.params, anchorUnit.binding.params),
+              );
+        const ambiguous =
+          candidate.ref.table !== byCandidate?.ref.table &&
+          candidate.scopes.length > 1 &&
+          matching.length !== 1;
+        const joinedBy = logical.declaration.syncByJoined.filter((dimension) =>
+          eligible.some(
+            (item) =>
+              item.ref.table === table.name &&
+              item.ref.alias === dimension.qualifier,
+          ),
+        );
+        for (const dimension of joinedBy) {
+          if (!ambiguous || joinedBy.length > 1) {
+            this.#fail(
+              'SYQL6005_INVALID_SYNC_QUERY',
+              dimension.span,
+              joinedBy.length > 1
+                ? `\`by\` names table ${table.name} more than once; name one unit dimension per ambiguous joined table`
+                : `\`by ${dimension.qualifier}.${dimension.column}\` names table ${table.name}, whose unit dimension is not ambiguous; remove the entry`,
+            );
+          }
+        }
         let unit: InferredScope | undefined;
         if (candidate.ref.table === byCandidate?.ref.table) {
           unit = anchorUnit;
-        } else if (table.scopes.length === 1) {
-          unit = candidate.scopes[0];
-        } else if (anchorUnit !== undefined) {
-          const matching = candidate.scopes.filter((scope) =>
-            sameParams(scope.binding.params, anchorUnit.binding.params),
+        } else if (!ambiguous) {
+          unit =
+            candidate.scopes.length === 1 ? candidate.scopes[0] : matching[0];
+        } else if (joinedBy[0] !== undefined) {
+          const dimension = joinedBy[0];
+          const variable = table.scopes.find(
+            (scope) => scope.column === dimension.column,
+          )?.variable;
+          unit = candidate.scopes.find(
+            (scope) => scope.binding.variable === variable,
           );
-          if (matching.length === 1) unit = matching[0];
+          if (unit === undefined) {
+            this.#fail(
+              'SYQL6005_INVALID_SYNC_QUERY',
+              dimension.span,
+              `${dimension.qualifier}.${dimension.column} is not a scope column the query proves for ${table.name}`,
+            );
+          }
         }
         if (unit === undefined) {
           this.#fail(
             'SYQL6005_INVALID_SYNC_QUERY',
             syncBy?.span ?? logical.declaration.nameSpan,
-            `joined multi-scope table ${table.name} has no unambiguous unit dimension compatible with the selected anchor; split the query`,
+            `joined table ${table.name} proves several scope dimensions and none or several match the anchor unit; select one with a later \`by alias.scope_column\` entry`,
           );
         }
         const fixedScopes = table.scopes

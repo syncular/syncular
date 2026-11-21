@@ -111,8 +111,11 @@ pub struct SyncularConfig {
     pub database_dir: Option<String>,
     /// Run the background host loop (§8.4). Default true.
     pub auto_sync: bool,
-    /// Native app-approved table/column ceiling. Webview create selects scopes
-    /// and a subset; raw IPC cannot expand this policy.
+    /// §5.11 native authority ceiling, table to permitted columns. At `create`
+    /// the plugin prepares each declared authority query on an in-memory
+    /// replica of the schema under the SQLite authorizer and refuses one that
+    /// reads a table or column outside it (`client.authority_read_forbidden`,
+    /// reason `ceiling`); the webview cannot widen it.
     pub authority_columns: std::collections::BTreeMap<String, Vec<String>>,
 }
 
@@ -620,6 +623,7 @@ where
     if let Some(source) = &config.header_source {
         core.set_header_source(source.clone());
     }
+    core.set_authority_ceiling(config.authority_columns.clone());
     let progress_emit = emit.clone();
     core.progress_listener = Some(std::sync::Arc::new(move |progress| {
         progress_emit(&json!({ "type": "progress", "progress": progress }));
@@ -1194,27 +1198,6 @@ impl SyncularState {
         };
         let mut database = None;
         if method == "create" {
-            if let Some(reads) = command.pointer("/params/authorityReads") {
-                let declarations: Vec<syncular_client::AuthorityReadDeclaration> =
-                    match serde_json::from_value(reads.clone()) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            return Ok(
-                                json!({"error": {"code": "client.authority_read_forbidden", "message": "invalid authority declaration"}}),
-                            )
-                        }
-                    };
-                if !declarations.iter().all(|read| {
-                    self.config
-                        .authority_columns
-                        .get(&read.table)
-                        .is_some_and(|columns| read.columns.iter().all(|c| columns.contains(c)))
-                }) {
-                    return Ok(
-                        json!({"error": {"code": "client.authority_read_forbidden", "message": "authority declaration exceeds the native app policy"}}),
-                    );
-                }
-            }
             database =
                 match resolve_database(&self.config, command.get("params").unwrap_or(&Value::Null))
                 {
@@ -1909,7 +1892,7 @@ mod tests {
     }
 
     #[test]
-    fn authority_snapshot_raw_ipc_obeys_native_columns_and_never_opens_protected_reads() {
+    fn authority_read_raw_ipc_obeys_the_native_ceiling_and_never_opens_protected_reads() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
         let path =
             std::env::temp_dir().join(format!("syncular-authority-ipc-{}.db", std::process::id()));
@@ -1931,8 +1914,28 @@ mod tests {
         let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
             {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "role", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
         ]}]});
-        let policy = json!([{"table": "authority", "columns": ["id", "actor_id", "role"], "scopes": {"actor_id": ["a", "b"]}}]);
+        let query = |name: &str, sql: &str, reads: Value| {
+            json!({
+                "name": name,
+                "sql": sql,
+                "bind": ["actorId"],
+                "params": [{"name": "actorId", "type": "string", "nullable": false}],
+                "coverage": [{"table": "authority", "variable": "actor_id", "units": ["actorId"]}],
+                "reads": reads,
+                "resultColumns": [{"name": "role", "type": "string", "nullable": false}]
+            })
+        };
+        let policy = json!([query(
+            "roleOf",
+            "SELECT role FROM authority WHERE actor_id = ?",
+            json!({"authority": ["actor_id", "role"]})
+        )]);
         let create = |reads: Value| json!({"method": "create", "params": {"schema": schema, "securityPreflight": true, "transportGate": "closed", "authorityReads": reads}});
+        let read = |actor: &str| {
+            command(json!({"method": "authorityRead", "params": {"requests": [
+                {"query": "roleOf", "params": {"actorId": actor}}
+            ]}}))
+        };
         let created = command(create(policy.clone()));
         assert!(created.get("error").is_none(), "{created}");
         let conn = rusqlite::Connection::open(&path).expect("fixture db");
@@ -1945,44 +1948,84 @@ mod tests {
             )
             .expect("fixture unit");
         }
-        let snapshot = command(json!({"method": "authoritySnapshot", "params": {}}));
-        assert_eq!(snapshot["result"]["complete"], true, "{snapshot}");
+        let snapshot = read("a");
         assert_eq!(
-            snapshot["result"]["tables"][0]["rows"][0]["values"],
-            json!({"id": "one", "actor_id": "a", "role": "accepted"})
+            snapshot["result"]["results"],
+            json!([{
+                "query": "roleOf",
+                "rows": [{"role": "accepted"}],
+                "coverage": [{"table": "authority", "base": {"variable": "actor_id"}, "unit": "a", "state": "complete"}],
+                "complete": true
+            }]),
+            "{snapshot}"
         );
+        assert!(snapshot["result"]["revision"].is_string());
         assert!(!snapshot.to_string().contains("clinical plaintext"));
         assert_eq!(
             command(json!({"method": "securityLifecycle", "params": {}}))["result"]["state"],
             "preflight"
         );
         for params in [
+            json!({}),
             json!({"sql": "SELECT secret FROM authority"}),
-            json!({"columns": ["secret"]}),
-            json!({"table": "_syncular_meta"}),
-            json!({"scopes": {"actor_id": ["outside"]}}),
-            json!({"authorityReads": policy}),
+            json!({"requests": {}}),
+            json!({"requests": [{"query": "roleOf"}]}),
+            json!({"requests": [{"query": "roleOf", "params": {}, "sql": "x"}]}),
+            json!({"requests": [], "authorityReads": policy}),
         ] {
-            assert_eq!(
-                command(json!({"method": "authoritySnapshot", "params": params}))["error"]["code"],
-                "client.authority_read_forbidden"
-            );
+            let refused = command(json!({"method": "authorityRead", "params": params}));
+            assert_eq!(refused["error"]["code"], "client.authority_read_forbidden");
+            assert!(refused["error"].get("details").is_none(), "{refused}");
         }
-        for columns in [
-            json!(["id", "actor_id", "secret"]),
-            json!([
-                "id",
-                "actor_id",
-                "role FROM authority; DELETE FROM authority"
-            ]),
+        let unknown = command(json!({"method": "authorityRead", "params": {"requests": [
+            {"query": "secretOf", "params": {}}
+        ]}}));
+        assert_eq!(unknown["error"]["code"], "client.authority_query_unknown");
+        assert_eq!(unknown["error"]["details"], json!({"query": "secretOf"}));
+        let mistyped = command(json!({"method": "authorityRead", "params": {"requests": [
+            {"query": "roleOf", "params": {"actorId": 1}}
+        ]}}));
+        assert_eq!(mistyped["error"]["code"], "sync.invalid_request");
+        assert_eq!(
+            mistyped["error"]["details"],
+            json!({"query": "roleOf", "param": "actorId"})
+        );
+        // The ceiling checks the authored statement, whatever `reads` claims.
+        for (sql, reads, details) in [
+            (
+                "SELECT secret FROM authority WHERE actor_id = ?",
+                json!({"authority": ["actor_id"]}),
+                json!({"query": "probe", "reason": "ceiling", "table": "authority", "column": "secret"}),
+            ),
+            (
+                "SELECT value FROM _syncular_meta WHERE key = ?",
+                json!({}),
+                json!({"query": "probe", "reason": "ceiling", "table": "_syncular_meta"}),
+            ),
+            (
+                "SELECT role FROM authority WHERE actor_id = ? AND random() > 0",
+                json!({"authority": ["actor_id", "role"]}),
+                json!({"query": "probe", "reason": "ceiling"}),
+            ),
+            (
+                "SELECT role FROM authority WHERE actor_id = ?; DELETE FROM authority",
+                json!({"authority": ["actor_id", "role"]}),
+                json!({"query": "probe", "reason": "shape"}),
+            ),
+            (
+                "SELECT role FROM authority WHERE actor_id = ?",
+                json!({"authority": ["actor_id", "secret"]}),
+                json!({"query": "probe", "reason": "column", "table": "authority", "column": "secret"}),
+            ),
         ] {
+            let refused = command(create(json!([query("probe", sql, reads)])));
             assert_eq!(
-                command(create(
-                    json!([{"table": "authority", "columns": columns, "scopes": {"actor_id": ["a"]}}])
-                ))["error"]["code"],
-                "client.authority_read_forbidden"
+                refused["error"]["code"], "client.authority_read_forbidden",
+                "{sql}"
             );
+            assert_eq!(refused["error"]["details"], details, "{sql}");
         }
+        assert_eq!(read("a")["result"]["results"][0]["complete"], true);
         for method in ["query", "querySnapshot", "mutate", "subscribe", "sync"] {
             assert_eq!(
                 command(json!({"method": method, "params": {"sql": "SELECT id FROM authority"}}))
@@ -2013,28 +2056,33 @@ mod tests {
             "client.security_preflight_required"
         );
         let before = snapshot["result"]["revision"].clone();
-        assert_eq!(
-            command(json!({"method": "authoritySnapshot", "params": {}}))["result"]["revision"],
-            before
-        );
+        assert_eq!(read("a")["result"]["revision"], before);
         conn.execute("UPDATE _syncular_units SET cursor=7, bootstrap_state='credential-do-not-expose' WHERE id='b'", []).unwrap();
-        let partial = command(json!({"method": "authoritySnapshot", "params": {}}));
-        assert_eq!(partial["result"]["complete"], false);
+        let partial = read("b");
+        assert_eq!(partial["result"]["results"][0]["complete"], false);
+        assert_eq!(
+            partial["result"]["results"][0]["coverage"][0]["state"],
+            "pending"
+        );
         assert!(!partial.to_string().contains("credential-do-not-expose"));
         conn.execute(
             "UPDATE _syncular_units SET echo='credential-do-not-expose' WHERE id='b'",
             [],
         )
         .unwrap();
-        let corrupt = command(json!({"method": "authoritySnapshot", "params": {}}));
+        let corrupt = read("a");
         assert_eq!(corrupt["error"]["code"], "sync.local_corrupt");
         assert!(!corrupt.to_string().contains("credential-do-not-expose"));
         conn.execute("DELETE FROM _syncular_units WHERE id='b'", [])
             .unwrap();
+        assert_eq!(
+            read("b")["result"]["results"][0]["coverage"][0]["state"],
+            "missing"
+        );
         command(json!({"method": "beginSecurityPreflight", "params": {}}));
         // Entering preflight emits one status batch (§5.11), which advances the
         // revision; a second lock does not.
-        let locked = command(json!({"method": "authoritySnapshot", "params": {}}));
+        let locked = read("a");
         assert!(locked.get("error").is_none());
         let before = locked["result"]["revision"].clone();
         // The owner's mailbox serializes a lock/read race without admitting SQL.
@@ -2045,11 +2093,11 @@ mod tests {
                 command(json!({"method": "beginSecurityPreflight", "params": {}}))
             });
             barrier.wait();
-            let reading = command(json!({"method": "authoritySnapshot", "params": {}}));
+            let reading = read("a");
             assert_eq!(reading["result"]["revision"], before);
             assert!(locking.join().unwrap().get("error").is_none());
         });
-        // A racing close either follows the entire snapshot or rejects it.
+        // A racing close either follows the entire read or rejects it.
         let barrier = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {
             let closing = scope.spawn(|| {
@@ -2057,7 +2105,7 @@ mod tests {
                 command(json!({"method": "shutdown", "params": {}}))
             });
             barrier.wait();
-            let reading = command(json!({"method": "authoritySnapshot", "params": {}}));
+            let reading = read("a");
             assert!(
                 reading["result"]["revision"] == before
                     || reading["error"]["code"] == "client.closed",
@@ -2065,10 +2113,7 @@ mod tests {
             );
             assert!(closing.join().unwrap().get("error").is_none());
         });
-        assert_eq!(
-            command(json!({"method": "authoritySnapshot", "params": {}}))["error"]["code"],
-            "client.closed"
-        );
+        assert_eq!(read("a")["error"]["code"], "client.closed");
         drop(conn);
         let _ = std::fs::remove_file(path);
     }

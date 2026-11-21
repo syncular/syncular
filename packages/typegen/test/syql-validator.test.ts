@@ -1605,3 +1605,262 @@ describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () =>
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
   });
 });
+
+describe('joined unit dimensions (SYQL §13.2)', () => {
+  const joined = `select c.id from calendars c
+    join messages m on m.body = c.id
+    where c.facility = :facilityId`;
+
+  test('a joined table takes its sole proven dimension, whatever its inputs', () => {
+    const query = validate(`sync query q(facilityId, threadId) by c.facility {
+      ${joined} and m.thread_id = :threadId;
+    }`).queries[0];
+    expect(query?.reactive.coverage).toEqual([
+      {
+        table: 'calendars',
+        variable: 'facility_id',
+        units: ['facilityId'],
+        fixedScopes: [],
+      },
+      {
+        table: 'messages',
+        variable: 'thread_id',
+        units: ['threadId'],
+        fixedScopes: [],
+      },
+    ]);
+  });
+
+  test('a later `by` entry selects the dimension of an ambiguous joined table', () => {
+    const source = (by: string) =>
+      `sync query q(facilityId, roomId, threadId) by c.facility${by} {
+        ${joined} and m.thread_id = :threadId and m.room_id = :roomId;
+      }`;
+    expect(
+      validate(source(', m.thread_id')).queries[0]?.reactive.coverage,
+    ).toEqual([
+      {
+        table: 'calendars',
+        variable: 'facility_id',
+        units: ['facilityId'],
+        fixedScopes: [],
+      },
+      {
+        table: 'messages',
+        variable: 'thread_id',
+        units: ['threadId'],
+        fixedScopes: [{ variable: 'room_id', params: ['roomId'] }],
+      },
+    ]);
+    for (const [by, message] of [
+      ['', 'none or several match the anchor unit'],
+      [
+        ', m.body',
+        'm.body is not a scope column the query proves for messages',
+      ],
+      [', x.thread_id', 'does not name a table instance the query reads'],
+      [', m.thread_id, m.room_id', 'names table messages more than once'],
+      [
+        ', c.id',
+        'names table calendars, whose unit dimension is not ambiguous',
+      ],
+    ] as const) {
+      const error = frontendError(() => validate(source(by)));
+      expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+      expect(error.detail).toContain(message);
+    }
+    const unambiguous = frontendError(() =>
+      validate(`sync query q(facilityId, threadId) by c.facility, m.thread_id {
+        ${joined} and m.thread_id = :threadId;
+      }`),
+    );
+    expect(unambiguous.detail).toContain(
+      'names table messages, whose unit dimension is not ambiguous',
+    );
+  });
+
+  test('the anchor match still wins over a later `by` entry', () => {
+    const query = validate(`sync query q(facilityId, threadId) by c.facility {
+      ${joined} and m.thread_id = :threadId and m.room_id = :facilityId;
+    }`).queries[0];
+    expect(query?.reactive.coverage[1]).toEqual({
+      table: 'messages',
+      variable: 'room_id',
+      units: ['facilityId'],
+      fixedScopes: [{ variable: 'thread_id', params: ['threadId'] }],
+    });
+  });
+});
+
+describe('authority queries (SYQL §13.3)', () => {
+  const SECURE: IrDocument = {
+    ...IR,
+    tables: IR.tables.map((table) =>
+      table.name === 'notes'
+        ? {
+            ...table,
+            columns: [
+              ...table.columns,
+              { name: 'attachment', type: 'bytes', nullable: true },
+              {
+                name: 'secret',
+                type: 'bytes',
+                nullable: true,
+                encrypted: true,
+                declaredType: 'string',
+              },
+            ],
+          }
+        : table,
+    ),
+  };
+  const secureDb = makeQueryDb(SECURE).db;
+  function validateSecure(source: string) {
+    const file = resolve(root, 'query.syql');
+    const graph = buildSyqlModuleGraph(root, ['query.syql'], (candidate) =>
+      candidate === file ? source : undefined,
+    );
+    return validateSyqlProgram(analyzeSyqlSemantics(graph), SECURE, secureDb, {
+      naming: 'camel',
+      targets: ['ts'],
+    });
+  }
+
+  test('derives the read set from every clause and keeps sync coverage', () => {
+    const query =
+      validate(`authority query q(listId, minPosition: integer | null) {
+      select t.status, count(*) as total, cast(max(d.body) as text) as body,
+        t._sync_version as version
+      from todos as t
+      join todo_details as d on d.todo_id = t.id and d.list_id = t.list_id
+      where t.list_id = :listId and position >= :minPosition
+      group by t.status, t._sync_version
+      having count(d.id) > 0
+      order by total desc, t.status;
+    }`).queries[0];
+    expect(query?.authorityReads).toEqual({
+      todo_details: ['body', 'id', 'list_id', 'todo_id'],
+      todos: ['_sync_version', 'id', 'list_id', 'position', 'status'],
+    });
+    expect(query?.reactive.coverage.map((entry) => entry.table)).toEqual([
+      'todo_details',
+      'todos',
+    ]);
+  });
+
+  test('resolves aliases, CTE columns and tables read without a column', () => {
+    const aliased = validate(`authority query q(listId) {
+      select t.title heading, count(*) as total from todos t
+      where t.list_id = :listId group by heading order by heading;
+    }`).queries[0];
+    expect(aliased?.authorityReads).toEqual({ todos: ['list_id', 'title'] });
+    const cte = validate(`authority query q(listId) {
+      with open as (select t.id, t.title from todos t where t.list_id = :listId)
+      select open.id, open.title from open order by open.id;
+    }`).queries[0];
+    expect(cte?.authorityReads).toEqual({ todos: ['id', 'list_id', 'title'] });
+    const counted =
+      validate(`authority query q(roomId, threadId) by m.thread_id {
+      select count(*) as total from messages m
+      where m.room_id = :roomId and m.thread_id = :threadId;
+    }`).queries[0];
+    expect(counted?.authorityReads).toEqual({
+      messages: ['room_id', 'thread_id'],
+    });
+  });
+
+  test('refuses everything outside the §13.3 restrictions', () => {
+    const list = (body: string, signature = 'listId') =>
+      `authority query q(${signature}) { ${body} }`;
+    const scoped = 'from todos t where t.list_id = :listId';
+    for (const [source, message] of [
+      [list(`select * ${scoped};`), 'cannot select *'],
+      [list(`select t.* ${scoped};`), 'cannot select alias.*'],
+      [
+        list(
+          `select t.id ${scoped} and when(title) t.title = :title;`,
+          'listId, title?',
+        ),
+        'no conditional predicate',
+      ],
+      [
+        list(
+          `select t.id ${scoped} order by sortBy default byId { byId: t.id asc; };`,
+        ),
+        'no dynamic sort',
+      ],
+      [
+        list(`select t.id ${scoped} limit n default 1 max 2;`),
+        'no dynamic limit',
+      ],
+      [
+        list(
+          `select t.id ${scoped} and t.position between :span;`,
+          'listId, span: range<integer>',
+        ),
+        'must be a required',
+      ],
+      [
+        list(
+          `select t.id ${scoped} and :blob is not null;`,
+          'listId, blob: bytes',
+        ),
+        'must be a required',
+      ],
+      [
+        list(
+          `select t.id ${scoped} and t.title is not null = :done;`,
+          'listId, done: bool = false',
+        ),
+        'must be a required',
+      ],
+      [
+        list(
+          `select t.id ${scoped} and t.id in (select f._syncular_source_id from todos_fts f);`,
+        ),
+        'not a schema table',
+      ],
+      [
+        list(`select t.id ${scoped} and t.title match 'x';`),
+        'cannot use MATCH',
+      ],
+      [
+        list(
+          `with x as (select t.id, t.title ${scoped}) select x.id, title from x;`,
+        ),
+        'column title does not resolve to one table',
+      ],
+    ] as const) {
+      const error = frontendError(() => validate(source));
+      expect(`${error.code} ${error.detail}`).toContain(
+        `SYQL6009_INVALID_AUTHORITY_QUERY`,
+      );
+      expect(error.detail).toContain(message);
+    }
+    for (const column of ['attachment', 'secret']) {
+      const error = frontendError(() =>
+        validateSecure(`authority query q(listId) {
+          select n.id from notes n where n.list_id = :listId and n.${column} is null;
+        }`),
+      );
+      expect(error.code).toBe('SYQL6009_INVALID_AUTHORITY_QUERY');
+      expect(error.detail).toContain(`reads notes.${column}`);
+    }
+  });
+
+  test('follows every sync coverage rule', () => {
+    for (const source of [
+      'authority query q() { select id from todos; }',
+      'authority query q(roomId) { select m.id from messages m where m.room_id = :roomId; }',
+      `authority query q(listId) {
+        select t.id from todos t
+        where t.list_id = :listId
+          and exists (select 1 from notes n where n.todo_id = t.id);
+      }`,
+    ]) {
+      expect(frontendError(() => validate(source)).code).toBe(
+        'SYQL6005_INVALID_SYNC_QUERY',
+      );
+    }
+  });
+});

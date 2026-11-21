@@ -223,12 +223,16 @@ describe('schema bump keeps tables with unchanged generations (§7.4.3)', () => 
     const catalogRead = () =>
       bumped.client.querySnapshot({
         sql: 'SELECT id FROM catalog ORDER BY id',
-        coverage: [{ base: { variable: 'lib_id' }, units: ['l1'] }],
+        coverage: [
+          { table: 'catalog', base: { variable: 'lib_id' }, units: ['l1'] },
+        ],
       });
     const notesRead = () =>
       bumped.client.querySnapshot({
         sql: 'SELECT id FROM notes',
-        coverage: [{ base: { variable: 'owner_id' }, units: ['u1'] }],
+        coverage: [
+          { table: 'notes', base: { variable: 'owner_id' }, units: ['u1'] },
+        ],
       });
     const status = bumped.client.statusSnapshot();
     expect(status).toMatchObject({ upgrading: true, upgradeKeptTables: true });

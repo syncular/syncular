@@ -145,8 +145,14 @@ export interface SyqlSyncDimension {
 export interface SyqlQueryDeclaration {
   readonly kind: 'query';
   readonly name: string;
+  /** True for `sync query` and `authority query` (§13.2, §13.3). */
   readonly sync: boolean;
+  /** True for `authority query` (§13.3). */
+  readonly authority: boolean;
+  /** The first `by` entry: the anchor unit dimension. */
   readonly syncBy?: SyqlSyncDimension;
+  /** Later `by` entries: the unit dimensions of ambiguous joined tables. */
+  readonly syncByJoined: readonly SyqlSyncDimension[];
   readonly parameters: readonly SyqlQueryParameter[];
   /** The SQL-shaped statement body, excluding its terminating semicolon. */
   readonly statement: SyqlTemplate;
@@ -314,9 +320,17 @@ class Parser {
         );
         declarations.push(declaration);
         predicates.push(declaration);
-      } else if (next.text === 'query' || next.text === 'sync') {
+      } else if (
+        next.text === 'query' ||
+        next.text === 'sync' ||
+        next.text === 'authority'
+      ) {
         const declaration = this.#parseQuery(
-          next.text === 'sync',
+          next.text === 'sync'
+            ? 'sync'
+            : next.text === 'authority'
+              ? 'authority'
+              : undefined,
           acknowledgements,
         );
         this.#claimName(
@@ -335,7 +349,7 @@ class Parser {
           next,
           acknowledgements.length > 0
             ? `a query plan acknowledgement precedes a query declaration; found ${JSON.stringify(next.text || 'end of file')}`
-            : `expected import, predicate, query, or sync query; found ${JSON.stringify(next.text)}`,
+            : `expected import, predicate, query, sync query, or authority query; found ${JSON.stringify(next.text)}`,
         );
       }
     }
@@ -545,32 +559,37 @@ class Parser {
   }
 
   #parseQuery(
-    sync: boolean,
+    keyword: 'sync' | 'authority' | undefined,
     acknowledgements: readonly QueryAcknowledgement[],
   ): SyqlQueryDeclaration {
-    const start = sync ? this.#expectText('sync') : this.#peek();
+    const start =
+      keyword === undefined ? this.#peek() : this.#expectText(keyword);
     this.#expectText('query');
     const name = this.#parseCamelName('query name');
     const parsedParameters = this.#parseQueryParameters();
-    let syncBy: SyqlSyncDimension | undefined;
+    const by: SyqlSyncDimension[] = [];
     if (this.#peek().text === 'by') {
-      const by = this.#take();
-      if (!sync) {
+      const byToken = this.#take();
+      if (keyword === undefined) {
         this.#fail(
           'SYQL2012_INVALID_QUERY_BODY',
-          by,
-          '`by table.scope` is valid only on a sync query',
+          byToken,
+          '`by table.scope` is valid only on a sync query or an authority query',
         );
       }
-      const qualifier = this.#expectKind('identifier', 'sync table or alias');
-      this.#expectText('.');
-      const column = this.#expectKind('identifier', 'sync scope column');
-      syncBy = {
-        qualifier: qualifier.text,
-        column: column.text,
-        span: spanBetween(qualifier, column),
-      };
+      do {
+        if (by.length > 0) this.#take();
+        const qualifier = this.#expectKind('identifier', 'sync table or alias');
+        this.#expectText('.');
+        const column = this.#expectKind('identifier', 'sync scope column');
+        by.push({
+          qualifier: qualifier.text,
+          column: column.text,
+          span: spanBetween(qualifier, column),
+        });
+      } while (this.#peek().text === ',');
     }
+    const syncBy = by[0];
     const declaredRanges = new Set(
       parsedParameters.parameters.flatMap((parameter) =>
         parameter.kind === 'range' ? [parameter.name] : [],
@@ -623,8 +642,10 @@ class Parser {
     return {
       kind: 'query',
       name: name.text,
-      sync,
+      sync: keyword !== undefined,
+      authority: keyword === 'authority',
       ...(syncBy === undefined ? {} : { syncBy }),
+      syncByJoined: by.slice(1),
       parameters,
       statement: body.statement,
       ...(body.sort === undefined ? {} : { sort: body.sort }),

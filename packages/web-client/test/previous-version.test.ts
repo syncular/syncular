@@ -1015,14 +1015,14 @@ describe('RFC 0005 coverage exclusion', () => {
       await bumped.client.setWindow(base, ['p1']);
       const pending = bumped.client.querySnapshot({
         sql: 'SELECT 1 AS one',
-        coverage: [{ base, units: ['p1'] }],
+        coverage: [{ table: 'things', base, units: ['p1'] }],
       });
       expect(pending.coverage.complete).toBe(false);
       expect(containerTableCount(path)).toBe(1);
       await bumped.client.sync();
       const complete = bumped.client.querySnapshot({
         sql: 'SELECT 1 AS one',
-        coverage: [{ base, units: ['p1'] }],
+        coverage: [{ table: 'things', base, units: ['p1'] }],
       });
       expect(complete.coverage.complete).toBe(true);
       expect(containerTableCount(path)).toBe(0);

@@ -361,6 +361,7 @@ export interface NewClientOptions {
   /** The server this client reaches; absent ⇒ the scenario's server. */
   readonly server?: SyncEndpoint;
   readonly authorityReads?: ClientCreateOptions['authorityReads'];
+  readonly authorityColumns?: ClientCreateOptions['authorityColumns'];
   readonly securityPreflight?: boolean;
   readonly transportGate?: ClientCreateOptions['transportGate'];
   readonly retainFailedCommits?: boolean;
@@ -590,6 +591,9 @@ export class ScenarioContext {
         : {}),
       ...(options.previousVersionContext !== undefined
         ? { previousVersionContext: options.previousVersionContext }
+        : {}),
+      ...(options.authorityColumns !== undefined
+        ? { authorityColumns: options.authorityColumns }
         : {}),
       ...(options.authorityReads !== undefined
         ? { authorityReads: options.authorityReads }

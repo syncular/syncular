@@ -127,34 +127,50 @@ keyset pagination and bounded windows.
 
 ## Authority evidence before activation
 
-Declare authority reads at client creation with `defineAuthorityReads` from
-`@syncular/client/authority`. Each table declares plain columns, including its
-primary key and scope columns, and concrete scope selectors. The selectors stay
-fixed for that client. A declaration cannot include encrypted, bytes, blob, CRDT,
-or internal columns. Choose only authority fields; clinical fields and
-credentials do not belong in this policy.
+Declare the authority evidence as `authority query` declarations in your
+`.syql` files. An authority query is a `sync query` restricted to plain
+columns of schema tables: one statement, no dynamic sort, limit or conditional
+predicate, and no FTS. Choose only authority fields; clinical fields and
+credentials do not belong in it. `typegen` emits each one as a data-only
+declaration, `<name>Authority`, with its positional SQL, parameters, coverage
+entries and read set ([SYQL](/syql/#authority-query)).
+
+```syql title="schema/queries/authority.syql"
+authority query membershipOriginal(membershipId) {
+  select m.id, m.user_id, m.facility_id, m.status,
+    m._sync_version as server_version
+  from memberships as m
+  where m.id = :membershipId;
+}
+```
+
+Pass the declarations at client creation with `defineAuthorityReads` from
+`@syncular/client/authority`. The set stays fixed for that client.
 
 ```ts title="src/session.ts"
 import { defineAuthorityReads } from '@syncular/client/authority';
 import { createTauriAuthoritySyncClient } from '@syncular/tauri/authority';
+import { membershipOriginalAuthority } from './syncular.queries';
 
 const client = await createTauriAuthoritySyncClient({
   schema,
   securityPreflight: true,
   transportGate: 'closed',
-  authorityReads: defineAuthorityReads([{
-    table: 'memberships',
-    columns: ['id', 'user_id', 'facility_id', 'status', 'version'],
-    scopes: { membership_id: acceptedMembershipIds },
-  }]),
+  authorityReads: defineAuthorityReads([membershipOriginalAuthority]),
 });
-const evidence = await client.authoritySnapshot();
+const { revision, results } = await client.authorityRead(
+  acceptedMembershipIds.map((membershipId) => ({
+    query: 'membershipOriginal',
+    params: { membershipId },
+  })),
+);
+const complete = results.every((result) => result.complete);
 ```
 
 `createTauriAuthoritySyncClient` returns the bridge that exposes
-`authoritySnapshot()`. The ordinary `createTauriSyncClient` class contains
-neither that method nor its reply decoder, so importing the policy is opt-in and
-ordinary clients do not ship its reader.
+`authorityRead(requests)`. The ordinary `createTauriSyncClient` class contains
+neither that method nor its reply decoder, so ordinary clients do not ship the
+reader.
 
 The native application also sets an independent ceiling at plugin creation:
 
@@ -162,48 +178,53 @@ The native application also sets an independent ceiling at plugin creation:
 let config = SyncularConfig {
     authority_columns: [("memberships".into(), vec![
         "id".into(), "user_id".into(), "facility_id".into(),
-        "status".into(), "version".into(),
+        "status".into(), "_sync_version".into(),
     ])].into(),
     ..Default::default()
 };
 ```
 
-Rust rejects any webview declaration outside that ceiling and validates columns
-against the schema. `authoritySnapshot()` accepts zero arguments; forged IPC
-carrying SQL, replacement tables, or columns fails with
-`client.authority_read_forbidden`. Ordinary `query`, `querySnapshot`, and writes
-still fail with `client.security_preflight_required`.
+At `create` the native host prepares each declared statement under a SQLite
+authorizer and refuses it with `client.authority_read_forbidden` (details
+`{ query, reason: "ceiling", table, column }`) when the statement reads a
+column outside the ceiling. The check runs on the statement itself, so a
+webview that understates the read set gains nothing. A request naming an
+undeclared query fails with `client.authority_query_unknown`, and a missing,
+extra or mistyped parameter with `sync.invalid_request` and the details
+`{ query, param }`. Ordinary `query`, `querySnapshot`, and writes still fail
+with `client.security_preflight_required`.
 
-The result contains `revision: bigint`, `complete`, and `tables`. Each table
-holds:
+`authorityRead` runs every request in one SQLite read transaction and returns
+`revision: bigint` and one result per request:
 
 | Field | Content |
 |---|---|
-| `rows` | Accepted rows: `values`, server `version`, `hasLocalIntent`. |
-| `localIntentRowIds` | Scoped ids of rows with local intent. |
-| `scopes` | The declared scopes. |
-| `coverage` | `complete`, `pending`, or `missing`. |
-| `persisted` | Sanitized evidence per covering unit: `requestedScopes`, `effectiveScopes`, `cursor`, `status`, `complete`. |
+| `query` | The declared name. |
+| `rows` | The statement's rows over the accepted base. |
+| `coverage` | One entry per table and unit: `table`, `base`, `unit`, and `state` (`complete`, `pending`, `missing` or `revoked`). |
+| `complete` | `true` when every coverage entry is `complete`. |
 
-The result exposes no intended values, bootstrap tokens, unit ids, or keys. Both cores read rows, revision, and coverage in one SQLite
-snapshot. The native authority read runs on the mutable owner and uses neither
-the ordinary query read owner nor its latency contract.
+The statement reads each table's accepted base: the last state the server
+accepted, without pending, failed or protected ACK intent. A row created on
+the device and not yet accepted is absent, so it never makes a join or an
+aggregate positive. Rows are returned even while coverage is incomplete, and
+they are never evidence until `complete` is `true`. `pending` asks the host to
+wait for a bootstrap, `missing` to register the unit, and `revoked` reports
+lost access. A complete negative is `complete: true` with rows that say no
+qualifying record exists.
 
-`complete` coverage requires a completed unit for every requested scope tuple;
-several units can cover a selection together.
-Scope loss and an unfinished bootstrap invalidate completeness. Completed empty
-coverage has an empty row set. The application rejects admission when an
-expected authority row is absent, even when the set is complete.
-
-Accepted bases stay separate from pending, failed, and protected ACK intent. A
-local-only creation appears only in `localIntentRowIds`. The application
-validates the complete chain against independently accepted authority evidence,
-actor and device identity, a signed lease, and trusted time before it installs
-keys. The SDK does not authorize the application, and the read changes no
-lifecycle, transport, keyring, units, or rows.
+A unit proves a coverage entry when its scope variables are a subset of the
+entry's and its persisted echo restricts none of the others, so a unit
+registered on a wrap's recipient proves a query that also fixes the wrap's
+sealer. The application validates the evidence against independently accepted
+authority pins, actor and device identity, a signed lease, and trusted time
+before it installs keys. The SDK does not authorize the application, and the
+read changes no lifecycle, transport, keyring, units, or rows. The native
+authority read runs on the mutable owner and uses neither the ordinary query
+read owner nor its latency contract.
 
 The direct Bun and SQLite client and the worker handle expose the same policy
-and snapshot shape. Update npm packages and native crates together, and rebuild
+and result shape. Update npm packages and native crates together, and rebuild
 the app.
 
 ## Local activation with transport closed

@@ -20,10 +20,10 @@
 import type { IrColumnType } from './ir';
 import {
   type AnalyzedQuery,
+  authorityDeclaration,
   type QueryParam,
   type QuerySyqlPlanBind,
   syqlInput,
-  windowBases,
 } from './query';
 
 const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -99,22 +99,62 @@ function reactiveParam(query: AnalyzedQuery, name: string): string {
   return `String(params.${propertyKey(param.langName)})`;
 }
 
-/** The `coverage` member's opening line and one line per window base. */
+/** The `coverage` member's opening line and one line per read table. */
 function emitCoverage(query: AnalyzedQuery): string[] {
-  const coverage = windowBases(query.reactive.coverage);
+  const coverage = query.reactive.coverage;
   return [
     `  coverage: (${coverage.length > 0 ? 'params' : ''}) => [`,
     ...coverage.map((entry) => {
       const fixed = entry.fixedScopes
         .map(
           (scope) =>
-            `${propertyKey(scope.variable)}: ${reactiveParam(query, scope.param)}`,
+            `${propertyKey(scope.variable)}: ${reactiveParam(query, scope.params[0] as string)}`,
         )
         .join(', ');
       const fixedPart = fixed.length > 0 ? `, fixedScopes: { ${fixed} }` : '';
-      return `    { base: { variable: ${quote(entry.variable)}${fixedPart} }, units: [${entry.units.map((param) => reactiveParam(query, param)).join(', ')}] },`;
+      return `    { table: ${quote(entry.table)}, base: { variable: ${quote(entry.variable)}${fixedPart} }, units: [${entry.units.map((param) => reactiveParam(query, param)).join(', ')}] },`;
     }),
   ];
+}
+
+/** An `authority query`: its row type, input type, row mapper and the
+ * data-only declaration `defineAuthorityReads` accepts (SPEC §5.11). */
+function emitAuthorityQuery(query: AnalyzedQuery): string {
+  const Row = `${pascalCase(query.name)}Row`;
+  const declaration = authorityDeclaration(query);
+  const lines = [
+    `/** One row of the ${quote(query.name)} authority query (its projection). */`,
+    `export interface ${Row} {`,
+    ...query.columns.map(
+      (column) =>
+        `  ${propertyKey(column.langName)}: ${TS_TYPE[column.type]}${column.nullable ? ' | null' : ''};`,
+    ),
+    '}',
+    '',
+  ];
+  if (declaration.params.length > 0) {
+    lines.push(
+      `/** Request params of the ${quote(query.name)} authority query. */`,
+      `export interface ${pascalCase(query.name)}Params {`,
+      ...declaration.params.map(
+        (param) =>
+          `  ${propertyKey(param.name)}: ${TS_TYPE[param.type]}${param.nullable ? ' | null' : ''};`,
+      ),
+      '}',
+      '',
+    );
+  }
+  lines.push(
+    ...emitResultMapper(query, Row),
+    '',
+    `/** The ${quote(query.name)} authority query declaration (SYQL §13.3). */`,
+    `export const ${query.name}Authority: AuthorityQuery = {`,
+    ...Object.entries(declaration).map(
+      ([key, value]) => `  ${key}: ${JSON.stringify(value)},`,
+    ),
+    '};',
+  );
+  return lines.join('\n');
 }
 
 function syqlTsValueType(type: IrColumnType, nullable: boolean): string {
@@ -462,6 +502,7 @@ function scopeKeyExpression(
 }
 
 function emitQuery(query: AnalyzedQuery, hash: string): string {
+  if (query.syql?.authority !== undefined) return emitAuthorityQuery(query);
   if (query.syql !== undefined) return emitSyqlQuery(query, hash);
   const Row = `${pascalCase(query.name)}Row`;
   const Params = `${pascalCase(query.name)}Params`;
@@ -700,8 +741,9 @@ export function emitQueriesModule(
       '  readonly nullable: boolean;',
       '}',
       '',
-      '/** A window base (SPEC §4.8) and the unit values a query reads. */',
+      '/** A read table, its window base (SPEC §4.8) and the unit values a query reads. */',
       'export interface WindowCoverage {',
+      '  readonly table: string;',
       '  readonly base: {',
       '    readonly variable: string;',
       '    readonly fixedScopes?: Readonly<Record<string, string>>;',
@@ -710,6 +752,23 @@ export function emitQueriesModule(
       '}',
     ].join('\n'),
   );
+  if (queries.some((query) => query.syql?.authority !== undefined)) {
+    parts.push(
+      [
+        '/** A data-only authority query declaration (SPEC §5.11), structurally the',
+        ' *  `AuthorityQuery` that `defineAuthorityReads` accepts. */',
+        'export interface AuthorityQuery {',
+        '  readonly name: string;',
+        '  readonly sql: string;',
+        '  readonly bind: readonly string[];',
+        "  readonly params: readonly { readonly name: string; readonly type: 'string' | 'integer' | 'float' | 'boolean' | 'json'; readonly nullable: boolean }[];",
+        '  readonly coverage: readonly { readonly table: string; readonly variable: string; readonly units: readonly string[]; readonly fixedScopes?: Readonly<Record<string, string>> }[];',
+        '  readonly reads: Readonly<Record<string, readonly string[]>>;',
+        '  readonly resultColumns: readonly QueryResultColumn[];',
+        '}',
+      ].join('\n'),
+    );
+  }
   for (const query of queries) {
     parts.push(emitQuery(query, hash));
   }

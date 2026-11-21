@@ -4,51 +4,177 @@ use crate::values::encode_row_json;
 use crate::BlobUploadGrant;
 use serde_json::json;
 
-#[test]
-fn authority_policy_refuses_encrypted_and_undeclared_columns_before_open() {
-    let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
-        {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
-    ]}]});
-    for name in [
-        "secret",
-        "missing",
-        "*",
-        "id FROM authority; DELETE FROM authority",
-        "_syncular_version",
-    ] {
-        let limits = ClientLimits {
-            authority_reads: vec![crate::api::AuthorityReadDeclaration {
-                table: "authority".into(),
-                columns: vec!["id".into(), "actor_id".into(), name.into()],
-                scopes: [("actor_id".into(), vec!["a".into()])].into(),
-            }],
-            ..Default::default()
-        };
-        let error = SyncClient::new("authority".into(), &schema, limits)
-            .err()
-            .expect("forbidden policy");
-        assert!(
-            error.starts_with("client.authority_read_forbidden:"),
-            "{error}"
-        );
-    }
+/// One authority query over the `authority` table, keyed by `actorId`.
+fn actor_query(name: &str, sql: &str, reads: Value) -> Value {
+    json!({
+        "name": name,
+        "sql": sql,
+        "bind": ["actorId"],
+        "params": [{"name": "actorId", "type": "string", "nullable": false}],
+        "coverage": [{"table": "authority", "variable": "actor_id", "units": ["actorId"]}],
+        "reads": reads,
+        "resultColumns": []
+    })
 }
 
 #[test]
-fn authority_snapshot_observes_one_file_transaction_during_concurrent_writes() {
+fn authority_queries_are_refused_at_creation_with_their_reason() {
+    let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+        {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false},
+        {"name": "role", "type": "string", "nullable": false}, {"name": "photo", "type": "bytes", "nullable": true},
+        {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
+    ]}]});
+    let compiled = parse_schema_json(&schema).unwrap();
+    let role = "SELECT role FROM authority WHERE actor_id = ?";
+    let plain = actor_query("roleOf", role, json!({"authority": ["actor_id", "role"]}));
+    let with = |patch: Value| {
+        let mut query = plain.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            query[key] = value.clone();
+        }
+        query
+    };
+    let refusal = |query: &str, reason: &str, table: Option<&str>, column: Option<&str>| {
+        let mut details = json!({"query": query, "reason": reason});
+        if let Some(table) = table {
+            details["table"] = json!(table);
+        }
+        if let Some(column) = column {
+            details["column"] = json!(column);
+        }
+        details
+    };
+    let accepted = [
+        plain.clone(),
+        with(
+            json!({"name": "quoted", "sql": "SELECT role FROM authority WHERE actor_id = ? AND role <> '?'"}),
+        ),
+        with(
+            json!({"name": "versioned", "reads": {"authority": ["_sync_version", "actor_id", "role"]}}),
+        ),
+        with(
+            json!({"name": "counted", "sql": "SELECT count(*) AS n FROM authority WHERE actor_id = ?", "reads": {"authority": []}}),
+        ),
+    ];
+    for query in &accepted {
+        let queries = vec![serde_json::from_value(query.clone()).unwrap()];
+        validate_authority_reads(&compiled, &queries).unwrap();
+    }
+    for (queries, details) in [
+        (
+            vec![plain.clone(), plain.clone()],
+            refusal("roleOf", "shape", None, None),
+        ),
+        (
+            vec![with(json!({"bind": ["other"]}))],
+            refusal("roleOf", "shape", None, None),
+        ),
+        (
+            vec![with(
+                json!({"sql": "SELECT role FROM authority WHERE actor_id = ? AND role = ?"}),
+            )],
+            refusal("roleOf", "shape", None, None),
+        ),
+        (
+            vec![with(
+                json!({"coverage": [{"table": "missing", "variable": "actor_id", "units": ["actorId"]}]}),
+            )],
+            refusal("roleOf", "shape", Some("missing"), None),
+        ),
+        (
+            vec![with(
+                json!({"coverage": [{"table": "authority", "variable": "org_id", "units": ["actorId"]}]}),
+            )],
+            refusal("roleOf", "shape", Some("authority"), None),
+        ),
+        (
+            vec![with(
+                json!({"coverage": [{"table": "authority", "variable": "actor_id", "units": ["other"]}]}),
+            )],
+            refusal("roleOf", "shape", Some("authority"), None),
+        ),
+        (
+            vec![with(
+                json!({"coverage": [{"table": "authority", "variable": "actor_id", "units": ["actorId"], "fixedScopes": {"actor_id": "other"}}]}),
+            )],
+            refusal("roleOf", "shape", Some("authority"), None),
+        ),
+        (
+            vec![with(json!({"reads": {"missing": ["id"]}}))],
+            refusal("roleOf", "column", Some("missing"), None),
+        ),
+        (
+            vec![with(json!({"reads": {"_syncular_meta": ["key"]}}))],
+            refusal("roleOf", "column", Some("_syncular_meta"), None),
+        ),
+        (
+            vec![with(
+                json!({"reads": {"authority": ["actor_id", "missing"]}}),
+            )],
+            refusal("roleOf", "column", Some("authority"), Some("missing")),
+        ),
+        (
+            vec![with(
+                json!({"reads": {"authority": ["_sync_sealed", "actor_id"]}}),
+            )],
+            refusal("roleOf", "column", Some("authority"), Some("_sync_sealed")),
+        ),
+        (
+            vec![with(
+                json!({"reads": {"authority": ["actor_id", "secret"]}}),
+            )],
+            refusal("roleOf", "column", Some("authority"), Some("secret")),
+        ),
+        (
+            vec![with(json!({"reads": {"authority": ["actor_id", "photo"]}}))],
+            refusal("roleOf", "column", Some("authority"), Some("photo")),
+        ),
+        (
+            vec![with(
+                json!({"params": [{"name": "actorId", "type": "bytes", "nullable": false}]}),
+            )],
+            refusal("roleOf", "param", None, None),
+        ),
+    ] {
+        let queries: Vec<AuthorityQuery> = queries
+            .into_iter()
+            .map(|query| serde_json::from_value(query).unwrap())
+            .collect();
+        let error = validate_authority_reads(&compiled, &queries).unwrap_err();
+        assert_eq!(error.code, "client.authority_read_forbidden");
+        assert_eq!(error.details, Some(details));
+        let limits = ClientLimits {
+            authority_reads: queries,
+            ..Default::default()
+        };
+        let opened = SyncClient::new("authority".into(), &schema, limits)
+            .err()
+            .expect("refused policy");
+        assert!(
+            opened.starts_with("client.authority_read_forbidden:"),
+            "{opened}"
+        );
+    }
+    // An extra key is not a declaration.
+    assert!(serde_json::from_value::<AuthorityQuery>(with(json!({"columns": []}))).is_err());
+}
+
+#[test]
+fn authority_read_observes_one_file_transaction_during_concurrent_writes() {
     let path = std::env::temp_dir().join(format!(
-        "syncular-authority-snapshot-{}.db",
+        "syncular-authority-read-{}.db",
         uuid::Uuid::new_v4()
     ));
     let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
         {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "revision", "type": "integer", "nullable": false}
     ]}]});
     let limits = ClientLimits {
-        authority_reads: vec![crate::api::AuthorityReadDeclaration {
-            table: "authority".into(),
-            columns: vec!["id".into(), "actor_id".into(), "revision".into()],
-            scopes: [("actor_id".into(), vec!["a".into()])].into(),
-        }],
+        authority_reads: vec![serde_json::from_value(actor_query(
+            "revisionOf",
+            "SELECT revision FROM authority WHERE actor_id = ?",
+            json!({"authority": ["actor_id", "revision"]}),
+        ))
+        .unwrap()],
         ..Default::default()
     };
     let mut client =
@@ -56,11 +182,13 @@ fn authority_snapshot_observes_one_file_transaction_during_concurrent_writes() {
     client.begin_security_preflight().unwrap();
     let update = |conn: &Connection, revision: i64| {
         conn.execute_batch("BEGIN IMMEDIATE").unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO _syncular_base_authority VALUES('one','a',?1,1)",
-            [revision],
-        )
-        .unwrap();
+        for table in ["_syncular_base_authority", "authority"] {
+            conn.execute(
+                &format!("INSERT OR REPLACE INTO {table} VALUES('one','a',?1,1)"),
+                [revision],
+            )
+            .unwrap();
+        }
         conn.execute(
             "UPDATE _syncular_meta SET value=?1 WHERE key='localRevision'",
             [revision.to_string()],
@@ -83,22 +211,18 @@ fn authority_snapshot_observes_one_file_transaction_during_concurrent_writes() {
         }
     });
     barrier.wait();
+    let request = [(
+        "revisionOf".to_owned(),
+        json!({"actorId": "a"}).as_object().unwrap().clone(),
+    )];
     for _ in 0..100 {
-        let snapshot = client.authority_snapshot().unwrap();
-        let revision = snapshot["revision"]
-            .as_str()
-            .unwrap()
-            .parse::<i64>()
-            .unwrap();
-        assert_eq!(
-            snapshot["tables"][0]["rows"][0]["values"]["revision"],
-            revision
-        );
-        assert_eq!(snapshot["tables"][0]["persisted"][0]["cursor"], revision);
-        assert_eq!(snapshot["complete"], true);
+        let read = client.authority_read(&request).unwrap();
+        let revision = read.revision.parse::<i64>().unwrap();
+        assert_eq!(read.results[0].rows[0]["revision"], revision);
+        assert!(read.results[0].complete);
     }
     writer.join().unwrap();
-    assert_eq!(client.authority_snapshot().unwrap()["revision"], "100");
+    assert_eq!(client.authority_read(&request).unwrap().revision, "100");
     drop(client);
     let _ = std::fs::remove_file(path);
 }
@@ -7616,6 +7740,7 @@ fn file_snapshot_reader_matches_owner_rows_revision_and_coverage() {
         .expect("local mutate");
 
     let coverage = [WindowCoverage {
+        table: "tasks".to_owned(),
         base,
         units: vec!["one".to_owned(), "missing".to_owned()],
     }];

@@ -1184,38 +1184,50 @@ export interface ClientCommitOutcome {
   }[];
 }
 
-export interface DriverAuthorityRead {
-  readonly table: string;
-  readonly columns: readonly string[];
-  readonly scopes: DriverScopeMap;
-}
-export interface DriverAuthoritySnapshot {
-  readonly revision: string;
-  readonly complete: boolean;
-  readonly tables: readonly {
+/** SPEC §5.11: one generated authority query declaration (SYQL.md §13.3). */
+export interface DriverAuthorityQuery {
+  readonly name: string;
+  readonly sql: string;
+  readonly bind: readonly string[];
+  readonly params: readonly {
+    readonly name: string;
+    readonly type: 'string' | 'integer' | 'float' | 'boolean' | 'json';
+    readonly nullable: boolean;
+  }[];
+  readonly coverage: readonly {
     readonly table: string;
-    readonly rows: readonly {
-      readonly values: DriverRow;
-      readonly version: number;
-      readonly hasLocalIntent: boolean;
+    readonly variable: string;
+    readonly units: readonly string[];
+    readonly fixedScopes?: Readonly<Record<string, string>>;
+  }[];
+  readonly reads: Readonly<Record<string, readonly string[]>>;
+  readonly resultColumns: readonly {
+    readonly name: string;
+    readonly type: string;
+    readonly nullable: boolean;
+  }[];
+}
+export interface DriverAuthorityReadResult {
+  readonly revision: string;
+  readonly results: readonly {
+    readonly query: string;
+    readonly rows: readonly Record<string, DriverRowValue>[];
+    readonly coverage: readonly {
+      readonly table: string;
+      readonly base: DriverWindowBase;
+      readonly unit: string;
+      readonly state: 'complete' | 'pending' | 'missing' | 'revoked';
     }[];
-    readonly localIntentRowIds: readonly string[];
-    readonly coverage: string;
-    readonly scopes: DriverScopeMap;
-    readonly persisted: readonly {
-      readonly requestedScopes: DriverScopeMap;
-      readonly status: string;
-      readonly cursor: number;
-      readonly effectiveScopes: DriverScopeMap | null;
-      readonly complete: boolean;
-    }[];
+    readonly complete: boolean;
   }[];
 }
 /** SPEC §8.8 transport gate states. */
 export type DriverTransportGate = 'closed' | 'pull' | 'open';
 
 export interface ClientCreateOptions {
-  readonly authorityReads?: readonly DriverAuthorityRead[];
+  readonly authorityReads?: readonly DriverAuthorityQuery[];
+  /** Harness-only native ceiling (SPEC §5.11); Rust pairing only. */
+  readonly authorityColumns?: Readonly<Record<string, readonly string[]>>;
   readonly securityPreflight?: boolean;
   readonly transportGate?: DriverTransportGate;
   readonly retainFailedCommits?: boolean;
@@ -1351,7 +1363,12 @@ export interface ClientInstance {
     droppedCommits: number;
   }>;
   rebootstrapLocalData(rebootstrapId: string): Promise<void>;
-  authoritySnapshot(): Promise<DriverAuthoritySnapshot>;
+  authorityRead(
+    requests: readonly {
+      readonly query: string;
+      readonly params: Readonly<Record<string, DriverRowValue>>;
+    }[],
+  ): Promise<DriverAuthorityReadResult>;
   beginSecurityPreflight(): Promise<void>;
   /** §5.11: `encryption` installs that keyring on activation. */
   activateSecurity(encryption?: DriverEncryptionConfig): Promise<void>;
@@ -1406,6 +1423,7 @@ export interface ClientInstance {
     sql: string,
     params?: readonly DriverRowValue[],
     coverage?: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[],
@@ -1466,6 +1484,7 @@ export interface ClientInstance {
       readonly params?: readonly DriverRowValue[];
     }[];
     readonly coverage?: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];

@@ -132,7 +132,7 @@ export interface WorkerInitConfig {
    */
   readonly takeOverStorage?: boolean;
   /** Open the worker-owned replica behind the fail-closed security gate. */
-  readonly authorityReads?: readonly import('./authority').AuthorityReadDeclaration[];
+  readonly authorityReads?: readonly import('./authority').AuthorityQuery[];
   readonly securityPreflight?: boolean;
   readonly transportGate?: TransportGate;
   /**
@@ -237,7 +237,9 @@ export interface WorkerApi extends Omit<
   replaceCommitOutcome(input: ReplaceCommitOutcomeInput): string;
   resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
-  authoritySnapshot(): import('./authority').AuthoritySnapshot;
+  authorityRead(
+    requests: readonly import('./authority').AuthorityReadRequest[],
+  ): import('./authority').AuthorityReadResult;
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;
   localRevision(): LocalRevision;
   pendingCommits(): OutboxCommit[];

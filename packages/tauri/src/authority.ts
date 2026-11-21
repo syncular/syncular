@@ -1,6 +1,7 @@
 import type {
   AuthorityReadPolicy,
-  AuthoritySnapshot,
+  AuthorityReadRequest,
+  AuthorityReadResult,
 } from '@syncular/client/authority';
 import {
   createTauriSyncClient,
@@ -9,29 +10,25 @@ import {
   type TauriSyncClientConfig,
 } from './index';
 
-/** Explicit native bridge with the zero-argument preflight authority read. */
+/** Explicit native bridge with the preflight authority read. */
 export class TauriAuthoritySyncClient extends TauriSyncClient {
-  async authoritySnapshot(): Promise<AuthoritySnapshot> {
-    this.requireOpen();
-    if (arguments.length)
+  async authorityRead(
+    requests: readonly AuthorityReadRequest[],
+  ): Promise<AuthorityReadResult> {
+    if (arguments.length !== 1)
       throw new TauriSyncError(
         'client.authority_read_forbidden',
-        'authoritySnapshot accepts no arguments',
+        'authorityRead takes one requests list',
       );
-    const result = (await this.command('authoritySnapshot', {})) as Omit<
-      AuthoritySnapshot,
-      'revision'
-    > & { revision: string };
+    const result = (await this.command('authorityRead', {
+      requests,
+    })) as Omit<AuthorityReadResult, 'revision'> & { revision: string };
     this.requireOpen();
     return {
-      ...result,
       revision: BigInt(result.revision),
-      tables: result.tables.map((table) => ({
-        ...table,
-        rows: table.rows.map((row) => ({
-          ...row,
-          values: this.decodeRow(row.values),
-        })),
+      results: result.results.map((read) => ({
+        ...read,
+        rows: read.rows.map((row) => this.decodeRow(row)),
       })),
     };
   }

@@ -1056,9 +1056,10 @@ describe('§1.4 rule 4 coalesced apply transactions', () => {
     // The round start, two coalesced transactions (the 94th block would pass
     // 1,024 rows), then LIVE_END in its own.
     expect(db.committed).toEqual([0, 1023, 1320, 1320]);
-    // Each of the 120 blocks and LIVE_END publishes its own revision, in
-    // order; a SUB_END of an explicit unit changes nothing observable.
-    expect(batches).toHaveLength(121);
+    // Each of the 120 blocks, each of the 60 SUB_ENDs and the units joining
+    // live at LIVE_END (unit window changes, §4.8), and the round's earlier
+    // change publish their own revision, in order.
+    expect(batches).toHaveLength(182);
     expect(batches).toEqual([...batches].sort((a, b) => (a < b ? -1 : 1)));
     expect(client.units().every((unit) => unit.cursor === undefined)).toBe(
       true,
@@ -1494,7 +1495,7 @@ describe('§3.3 re-arming a revoked window value', () => {
     expect(
       client.querySnapshot({
         sql: 'SELECT 1',
-        coverage: [{ base, units: ['p1'] }],
+        coverage: [{ table: 'tasks', base, units: ['p1'] }],
       }).coverage.revoked,
     ).toEqual([{ baseKey: windowBaseKey(base), unit: 'p1' }]);
 

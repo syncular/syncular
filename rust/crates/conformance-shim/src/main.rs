@@ -830,7 +830,31 @@ fn main() {
                         )),
                     }
                 } else {
-                    dispatch(&mut io, &mut client, &mut effects, &method, &params)
+                    // §5.11: create `authorityColumns` stands in for the native
+                    // ceiling a Tauri host reads from its configuration; a
+                    // create without it has no ceiling.
+                    let ceiling = match params
+                        .get("authorityColumns")
+                        .filter(|_| method == "create")
+                    {
+                        Some(value) => serde_json::from_value::<
+                            std::collections::BTreeMap<String, Vec<String>>,
+                        >(value.clone())
+                        .map(Some)
+                        .map_err(|_| {
+                            CommandError::new(
+                                "harness.invalid_request",
+                                "authorityColumns must map tables to column lists",
+                            )
+                        }),
+                        None => Ok(None),
+                    };
+                    ceiling.and_then(|ceiling| {
+                        if method == "create" {
+                            effects.authority_ceiling = ceiling;
+                        }
+                        dispatch(&mut io, &mut client, &mut effects, &method, &params)
+                    })
                 };
                 // The shared router parses `create`'s signedUrls into effects;
                 // apply it to this stdio host's transport capability.

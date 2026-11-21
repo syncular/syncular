@@ -101,7 +101,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
         try {
           const snapshot = client.querySnapshot({
             sql: "SELECT id, title FROM tasks WHERE id IN ('first', 'second') ORDER BY id",
-            coverage: [{ base: BASE, units: ['p1'] }],
+            coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }],
           });
           expect(snapshot.rows).toEqual([
             { id: 'first', title: 'offline edit' },
@@ -741,7 +741,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const pending = client.client.querySnapshot({
       sql: 'SELECT * FROM tasks WHERE project_id = ?',
       params: ['empty'],
-      coverage: [{ base: BASE, units: ['empty'] }],
+      coverage: [{ table: 'tasks', base: BASE, units: ['empty'] }],
     });
     expect(pending.coverage.complete).toBe(false);
     expect(pending.coverage.pending).toHaveLength(1);
@@ -753,7 +753,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const ready = client.client.querySnapshot({
       sql: 'SELECT * FROM tasks WHERE project_id = ?',
       params: ['empty'],
-      coverage: [{ base: BASE, units: ['empty'] }],
+      coverage: [{ table: 'tasks', base: BASE, units: ['empty'] }],
     });
     expect(ready.coverage.complete).toBe(true);
     expect(ready.rows).toEqual([]);
@@ -763,6 +763,60 @@ describe('revisioned local observation (SPEC §7.5)', () => {
         batch.windows.some((window) => window.units.has('empty')),
       ),
     ).toBe(true);
+    // A windowed registration emits its window value only, never the base
+    // its scope map derives (`org_id` first).
+    batches.length = 0;
+    await client.client.setWindowCommand(DOC_BASE, ['p1']);
+    expect(batches.flatMap((batch) => batch.windows)).toEqual([
+      { baseKey: 'projectId\0{"org_id":"o1"}', units: new Set(['p1']) },
+    ]);
+  });
+
+  test('a unit registered outside the window completes a live view with no table change', async () => {
+    const client = await makeClient(makeServer(), { clientId: 'subset-unit' });
+    const batches: ClientChangeBatch[] = [];
+    client.client.onChange((batch) => batches.push(batch));
+    const store = new ReactiveClientStore(client.client);
+    store.start();
+    const drainMicrotasks = async (rounds = 16) => {
+      for (let i = 0; i < rounds; i++) await Promise.resolve();
+    };
+    // The entry fixes org_id; the explicit unit names projectId only (§7.5).
+    const entry = store.query<{ id: string }>({
+      id: 'subset-docs',
+      sql: 'SELECT id FROM docs WHERE project_id = ?',
+      params: ['p1'],
+      dependencies: [{ table: 'docs', scopeKeys: ['project:p1'] }],
+      coverage: [{ table: 'docs', base: DOC_BASE, units: ['p1'] }],
+      claimCoverage: false,
+    });
+    const off = entry.subscribe(() => undefined);
+    try {
+      await drainMicrotasks();
+      expect(entry.getSnapshot().phase).not.toBe('ready');
+      client.client.subscribe({ projectId: 'p1' });
+      await client.client.syncUntilIdle();
+      await drainMicrotasks();
+      expect(entry.getSnapshot()).toMatchObject({ phase: 'ready', rows: [] });
+      // A zero-row bootstrap and the unchanged unit of a later round are
+      // window-domain changes only.
+      await client.client.sync();
+      expect(batches.length).toBeGreaterThan(0);
+      expect(batches.every((batch) => batch.tables.length === 0)).toBe(true);
+      expect(
+        batches.some((batch) =>
+          batch.windows.some(
+            (window) =>
+              window.baseKey === 'projectId\0{}' && window.units.has('p1'),
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      off();
+      store.dispose();
+      await client.client.close();
+      client.db.close();
+    }
   });
 
   test('aggregate coverage stays incomplete until every table window is complete', async () => {
@@ -777,8 +831,8 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       sql: 'SELECT * FROM tasks WHERE project_id = ?',
       params: ['p1'],
       coverage: [
-        { base: BASE, units: ['p1'] },
-        { base: DOC_BASE, units: ['p1'] },
+        { table: 'tasks', base: BASE, units: ['p1'] },
+        { table: 'docs', base: DOC_BASE, units: ['p1'] },
       ],
     } as const;
     const partial = client.client.querySnapshot(spec);
@@ -823,7 +877,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const coverage = taskPriorityPeersQuery.coverage(params);
     // Both `tasks` instances carry the same proof, so the descriptor names
     // the base and its dependency once.
-    expect(coverage).toEqual([{ base: BASE, units: ['p1'] }]);
+    expect(coverage).toEqual([{ table: 'tasks', base: BASE, units: ['p1'] }]);
     expect(taskPriorityPeersQuery.dependencies(params)).toEqual([
       { table: 'tasks', scopeKeys: ['project:p1'] },
     ]);

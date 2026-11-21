@@ -83,8 +83,9 @@ export interface QueryResultColumn {
   readonly nullable: boolean;
 }
 
-/** A window base (SPEC §4.8) and the unit values a query reads. */
+/** A read table, its window base (SPEC §4.8) and the unit values a query reads. */
 export interface WindowCoverage {
+  readonly table: string;
   readonly base: {
     readonly variable: string;
     readonly fixedScopes?: Readonly<Record<string, string>>;
@@ -134,7 +135,7 @@ export const clinicPatientsQuery: NamedQuery<ClinicPatientsRow, ClinicPatientsPa
     { table: 'patients', scopeKeys: ['clinic:' + String(params.clinicId) + ''] },
   ],
   coverage: (params) => [
-    { base: { variable: 'clinic_id' }, units: [String(params.clinicId)] },
+    { table: 'patients', base: { variable: 'clinic_id' }, units: [String(params.clinicId)] },
   ],
   bind: (params: ClinicPatientsParams) => [params.clinicId],
   rowKey: (row) => [row.id],

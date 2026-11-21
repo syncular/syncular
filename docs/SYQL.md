@@ -105,9 +105,9 @@ predicate         = "predicate", camel_name, "(",
 predicate_param   = camel_name, [ ":", value_type ] ;
 
 query             = { acknowledgement },
-                    [ "sync" ], "query", camel_name, "(",
+                    [ "sync" | "authority" ], "query", camel_name, "(",
                     [ query_param, { ",", query_param }, [ "," ] ],
-                    ")", [ "by", sql_name, ".", sql_name ],
+                    ")", [ "by", unit_dimension, { ",", unit_dimension } ],
                     "{", SQL_TEMPLATE,
                     [ dynamic_order ], [ dynamic_limit ], ";", "}" ;
 
@@ -132,6 +132,8 @@ sort_profile      = camel_name, ":", ORDER_TERMS, ";" ;
 dynamic_limit     = "limit", camel_name, "default", INTEGER,
                     "max", INTEGER ;
 
+unit_dimension    = sql_name, ".", sql_name ;
+
 template_block    = "{", SQL_TEMPLATE, "}" ;
 
 acknowledgement   = "allow", ( plan_finding | "plan" ), [ sql_name ],
@@ -145,7 +147,9 @@ including dynamic `order by` and `limit` declarations. A semicolon inside the
 authored SQL statement is not permitted. Semicolons inside atomic SQL strings
 or comments are ordinary token contents.
 
-`by qualifier.column` is valid only on a `sync query`.
+`by qualifier.column` is valid only on a `sync query` or an `authority query`
+(§13.3). Its first entry is the anchor; every later entry names the unit
+dimension of one ambiguous joined table (§13.2).
 
 An `acknowledgement` precedes the query it belongs to and follows §14.5.
 
@@ -440,10 +444,11 @@ predicates. A multi-scope query MUST explicitly select its unit dimension with
 an unbound scope is omitted from the window base. The QueryIR contains one
 coverage entry per read table; a client may report the query complete only when
 all entries are complete. A generated descriptor's `coverage(params)` returns
-the window bases of those entries ([SPEC.md §4.8](./SPEC.md#48-windowed-subscriptions)),
-`{ base: { variable, fixedScopes? }, units }`. A base names no table, so
-entries of tables proven by the same base are emitted once, and each fixed
-scope holds one value.
+one entry per read table, `{ table, base: { variable, fixedScopes? }, units }`,
+whose base is a window base ([SPEC.md §4.8](./SPEC.md#48-windowed-subscriptions)).
+Each fixed scope holds one value. A window claim registers the units of each
+distinct base once, so tables proven by the same base share one claim; the
+client classifies each entry for its own table (SPEC.md §7.5).
 
 A scope proof may propagate between qualified scope columns joined by a
 required outer `WHERE` equality or by a simple mandatory `ON` equality. Either
@@ -509,16 +514,82 @@ sync query threadMessages(roomId, left, right) by messages.thread_id {
 ```
 
 The selected dimension may use equality or `IN`. Every other proven scope is
-fixed by exactly one required equality bind. `by` names the SQL table name or alias used
-by the selected anchor instance and one of its declared scope columns. A joined
-single-scope table uses its sole dimension. A joined multi-scope table must have
-exactly one proven dimension with the anchor's unit parameters and exact
-fixed-scope proofs for its other proven dimensions; otherwise the query must be
-split. A predicate binding two scope dimensions therefore produces their
-intersection, while a query that binds only one requests that scope alone.
+fixed by exactly one required equality bind. The first `by` entry names the SQL
+table name or alias used by the selected anchor instance and one of its
+declared scope columns.
+
+A joined table's unit dimension is the one scope dimension the query proves
+for it. A table that proves several takes the dimension whose parameters match
+the anchor's unit. When none or several match, the table is ambiguous, and a
+later `by` entry naming that table's alias and one of its proven scope columns
+selects the dimension. Otherwise compilation fails with
+`SYQL6005_INVALID_SYNC_QUERY`. A later `by` entry that names a table that is
+not ambiguous, or a column the query does not prove for that table, fails with
+the same code. The coverage entry names that unit, and every other proven
+dimension of the table is a fixed scope. A predicate binding two scope
+dimensions therefore produces their intersection, while a query that binds
+only one requests that scope alone.
+
+```syql
+sync query wrapsForCentre(workspaceId, centreId, sealerId)
+  by s.workspace_id, w.recipient_facility_id {
+  select w.id from surgeries as s
+  join record_key_wraps as w on w.sealer_facility_id = s.practice_facility_id
+  where s.workspace_id = :workspaceId
+    and s.practice_facility_id = :sealerId
+    and w.recipient_facility_id = :centreId;
+}
+```
+
+Here `surgeries` declares the scopes `workspace_id` and `practice_facility_id`,
+and `record_key_wraps` declares `recipient_facility_id` and
+`sealer_facility_id`. `record_key_wraps` proves `recipient_facility_id` and,
+through the join, `sealer_facility_id`; neither carries `:workspaceId`, so the
+second `by` entry
+selects the recipient dimension and the sealer dimension becomes a fixed
+scope.
 The server authorizes the requested scope values; declaring a scope on a table
 does not grant it. Scoped remote query registration retains its stricter
 requirement to cover every declared variable ([REMOTE.md §2.1](./REMOTE.md)).
+
+### 13.3 Authority query
+
+`authority query` declares a read that a client runs over the accepted base of
+its replica, during security preflight and while active
+([SPEC.md §5.11](./SPEC.md#511-client-side-encryption-e2ee--opt-in-per-column)).
+It follows every §13.2 coverage rule, and the compiler adds these
+restrictions:
+
+- The body is one `SELECT` or `WITH ... SELECT`. Joins, subqueries, `GROUP BY`
+  and the aggregates `count`, `min`, `max`, `sum`, `total` and `avg` are
+  allowed. A table read only inside a nested subquery has no scope proof, so
+  a query that needs `EXISTS` across scoped tables writes it as a top-level
+  join with an aggregate.
+- Every table instance names a schema table. Internal tables, local
+  projections and FTS tables are refused, and so is `MATCH`.
+- The query has no dynamic sort, no dynamic limit and no conditional
+  predicate, so it lowers to exactly one statement.
+- Every column the statement reads, in any clause, is a `string`, `integer`,
+  `float`, `boolean` or `json` column without encryption, or `_sync_version`.
+- Every parameter is a scalar value parameter of type `string`, `integer`,
+  `float`, `bool` or `json`, optionally `| null`.
+
+A violation fails with `SYQL6009_INVALID_AUTHORITY_QUERY`. An authority query
+is a separate declaration kind: it is never an ordinary reactive query.
+
+The compiler emits the query's read set `{ table: [columns] }`: every
+`alias.column` reference in every clause, with each unqualified reference
+resolved against the statement's `FROM` and `JOIN` sources. A reference it
+cannot resolve to one table fails with `SYQL6009_INVALID_AUTHORITY_QUERY`. A
+native host verifies the read set again at creation (SPEC.md §5.11).
+
+```syql
+authority query membershipOriginal(membershipId) {
+  select m.id, m.user_id, m.status, m._sync_version as server_version
+  from memberships as m
+  where m.id = :membershipId;
+}
+```
 
 ## 14. Result types and identity
 

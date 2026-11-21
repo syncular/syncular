@@ -1,428 +1,503 @@
+import type { ColumnType } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { ClientSyncError } from './errors';
+import {
+  classifySqliteFailure,
+  ClientSyncError,
+  invalidRequest,
+} from './errors';
 import { listOutbox, listOutboxBeforeImages } from './outbox';
 import { RETAINED_ROWS } from './failed-overlay';
 import {
-  bootstrapping,
-  covers,
+  coverageCandidates,
   getLocalRevision,
   getMeta,
   loadUnits,
-  pairScopes,
-  replicaCursor,
 } from './state';
-import { fromSqlValue, quoteIdent, SYNC_VERSION_COLUMN } from './schema';
+import { quoteIdent, SYNC_VERSION_COLUMN } from './schema';
 import type { CompiledClientSchema, JsonRowValue } from './schema';
+import type { WindowBase } from './window';
 
-/** Frozen at client creation. Scope selectors use the schema's variables. */
-export interface AuthorityReadDeclaration {
-  readonly table: string;
-  readonly columns: readonly string[];
-  readonly scopes: Readonly<Record<string, readonly string[]>>;
-}
-export interface AuthoritySnapshot {
-  readonly revision: bigint;
-  readonly complete: boolean;
-  readonly tables: readonly {
+type AuthorityParamType = 'string' | 'integer' | 'float' | 'boolean' | 'json';
+
+/** §5.11 generated authority query declaration (SYQL.md §13.3), data only. */
+export interface AuthorityQuery {
+  readonly name: string;
+  /** Positional SQL in its authored form, `?` placeholders. */
+  readonly sql: string;
+  /** The parameter name of each `?`, in order. */
+  readonly bind: readonly string[];
+  readonly params: readonly {
+    readonly name: string;
+    readonly type: AuthorityParamType;
+    readonly nullable: boolean;
+  }[];
+  /** One entry per read table; `units` and fixed scope values name params. */
+  readonly coverage: readonly {
     readonly table: string;
-    readonly rows: readonly {
-      readonly values: SqlRow;
-      readonly version: number;
-      readonly hasLocalIntent: boolean;
-    }[];
-    /** Includes local-only creations; no intended values are disclosed. */
-    readonly localIntentRowIds: readonly string[];
-    readonly coverage: 'complete' | 'pending' | 'missing';
-    readonly scopes: AuthorityReadDeclaration['scopes'];
-    readonly persisted: readonly {
-      readonly requestedScopes: AuthorityReadDeclaration['scopes'];
-      readonly status: string;
-      readonly cursor: number;
-      readonly effectiveScopes: AuthorityReadDeclaration['scopes'] | null;
-      readonly complete: boolean;
-    }[];
+    readonly variable: string;
+    readonly units: readonly string[];
+    readonly fixedScopes?: Readonly<Record<string, string>>;
+  }[];
+  /** Table → sorted columns the statement reads. */
+  readonly reads: Readonly<Record<string, readonly string[]>>;
+  readonly resultColumns: readonly {
+    readonly name: string;
+    readonly type: ColumnType;
+    readonly nullable: boolean;
   }[];
 }
 
-function validateAuthorityReads(
-  schema: CompiledClientSchema,
-  declarations: readonly AuthorityReadDeclaration[],
-): void {
-  if (!Array.isArray(declarations))
-    throw new ClientSyncError(
-      'client.authority_read_forbidden',
-      'authorityReads must be a list',
-    );
-  const seen = new Set<string>();
-  for (const read of declarations) {
-    if (
-      !read ||
-      typeof read !== 'object' ||
-      !Array.isArray(read.columns) ||
-      !read.scopes ||
-      typeof read.scopes !== 'object' ||
-      Array.isArray(read.scopes)
-    )
-      throw new ClientSyncError(
-        'client.authority_read_forbidden',
-        'invalid authority declaration',
-      );
-    const table = schema.tables.get(read.table);
-    const plain = (name: string) =>
-      table?.columns.some(
-        (c) =>
-          c.name === name &&
-          name !== 'authority_version' &&
-          !name.startsWith('_sync') &&
-          !c.encrypted &&
-          ['string', 'integer', 'float', 'boolean', 'json'].includes(c.type),
-      );
-    if (
-      Object.keys(read).sort().join() !== 'columns,scopes,table' ||
-      !table ||
-      seen.has(read.table) ||
-      !read.columns.length ||
-      new Set(read.columns).size !== read.columns.length ||
-      !read.columns.includes(table.primaryKey) ||
-      !read.columns.every(plain) ||
-      !Object.keys(read.scopes).length ||
-      !Object.entries(read.scopes).every(
-        ([variable, values]) =>
-          read.columns.includes(
-            table.scopeColumnByVariable.get(variable) ?? '',
-          ) &&
-          plain(table.scopeColumnByVariable.get(variable) ?? '') &&
-          Array.isArray(values) &&
-          values.length > 0 &&
-          values.every(
-            (v) => typeof v === 'string' && v.length > 0 && v !== '*',
-          ),
-      )
-    ) {
-      throw new ClientSyncError(
-        'client.authority_read_forbidden',
-        'authority reads require declared tables, plain columns, a primary key and nonempty plain scope selectors',
-      );
-    }
-    Object.freeze(read.columns);
-    for (const values of Object.values(read.scopes)) Object.freeze(values);
-    Object.freeze(read.scopes);
-    Object.freeze(read);
-    seen.add(read.table);
-  }
+export interface AuthorityReadRequest {
+  readonly query: string;
+  readonly params: Readonly<
+    Record<string, string | number | bigint | boolean | null>
+  >;
 }
 
-/** Read accepted bases without restoring or replaying the visible projection. */
-function readAuthoritySnapshot(
-  db: ClientDatabase,
-  schema: CompiledClientSchema,
-  declarations: readonly AuthorityReadDeclaration[],
-): AuthoritySnapshot {
-  if (!declarations.length)
-    throw new ClientSyncError(
-      'client.authority_read_forbidden',
-      'no authority reads were declared at client creation',
-    );
-  return db.transaction(() => {
-    const raw = getMeta(db, 'localRevision');
-    if (
-      raw === undefined ||
-      !/^(0|[1-9][0-9]*)$/.test(raw) ||
-      BigInt(raw) > 18446744073709551615n
-    )
-      throw new ClientSyncError(
-        'sync.local_corrupt',
-        'authority revision is missing or invalid',
-      );
-    const revision = getLocalRevision(db);
-    const units = loadUnits(db);
-    const cursor = replicaCursor(db);
-    const tables = declarations.map((read) => {
-      const table = schema.tables.get(read.table)!;
-      const columns = [
-        ...new Set([
-          ...read.columns,
-          ...Object.keys(read.scopes).map((v) =>
-            table.scopeColumnByVariable.get(v)!,
-          ),
-        ]),
-      ];
-      const scalar = (
-        column: string,
-        value: SqlValue | JsonRowValue,
-      ): string => {
-        if (value === null || typeof value === 'object')
-          throw new ClientSyncError(
-            'sync.local_corrupt',
-            'authority scalar is missing or invalid',
-          );
-        return String(
-          fromSqlValue(table.columns[table.columnIndex.get(column)!]!, value),
-        );
-      };
-      const matches = (values: Record<string, SqlValue | JsonRowValue>) =>
-        Object.entries(read.scopes).every(([v, held]) => {
-          const column = table.scopeColumnByVariable.get(v)!;
-          return (
-            values[column] !== null &&
-            values[column] !== undefined &&
-            held.includes(scalar(column, values[column]!))
-          );
-        });
-      const bases = new Map<
-        string,
-        {
-          values: Record<string, JsonRowValue | SqlValue> | null;
-          version: number;
-        }
-      >();
-      const intent = new Set<string>();
-      const relevantIntent = new Set<string>();
-      // FIFO before-images precede the earliest still-pending intent.
-      for (const commit of listOutbox(db)) {
-        const images = listOutboxBeforeImages(db, commit.clientCommitId);
-        for (const [idx, op] of commit.operations.entries())
-          if (op.table === read.table) {
-            intent.add(op.rowId);
-            if (op.values && matches(op.values)) relevantIntent.add(op.rowId);
-            if (bases.has(op.rowId)) continue;
-            const image = images.find((i) => i.opIndex === idx);
-            if (
-              !image ||
-              (image.existed &&
-                (image.values === undefined || image.syncVersion === undefined))
-            )
-              throw new ClientSyncError(
-                'sync.local_corrupt',
-                'authority intent before-image is missing',
-              );
-            bases.set(op.rowId, {
-              values: image.values ?? null,
-              version: image.syncVersion ?? -1,
-            });
-          }
-      }
-      // A retained/ACK base precedes pending edits stacked over that intent.
-      const retained = new Set<string>();
-      for (const row of db.query(
-        `SELECT id,base,version,intent FROM ${RETAINED_ROWS} WHERE tbl=? ORDER BY commit_seq,at,commit_id,idx`,
-        [read.table],
-      )) {
-        const id = String(row.id);
-        if (row.base !== null && row.version === null)
-          throw new ClientSyncError(
-            'sync.local_corrupt',
-            'authority base version is missing',
-          );
-        intent.add(id);
-        if (row.intent !== null && matches(JSON.parse(String(row.intent))))
-          relevantIntent.add(id);
-        if (!retained.has(id))
-          bases.set(id, {
-            values: row.base === null ? null : JSON.parse(String(row.base)),
-            version: Number(row.version ?? -1),
-          });
-        retained.add(id);
-      }
-      const visible = db.query(
-        `SELECT ${columns.map(quoteIdent).join(',')},${SYNC_VERSION_COLUMN} FROM ${quoteIdent(read.table)}`,
-      );
-      for (const row of visible) {
-        const id = scalar(table.primaryKey, row[table.primaryKey]!);
-        if (!bases.has(id))
-          bases.set(id, {
-            values: row,
-            version: Number(row[SYNC_VERSION_COLUMN]),
-          });
-      }
-      const rows = [...bases]
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .flatMap(([id, base]) => {
-          if (
-            !Number.isSafeInteger(base.version) ||
-            base.version < -1 ||
-            (base.values &&
-              base.version >= 0 &&
-              !read.columns.every((c) => Object.hasOwn(base.values!, c)))
-          )
-            throw new ClientSyncError(
-              'sync.local_corrupt',
-              'authority base evidence is incomplete',
-            );
-          if (!base.values || base.version < 0 || !matches(base.values))
-            return [];
-          return [
-            {
-              values: Object.fromEntries(
-                read.columns.map((c) => [
-                  c,
-                  typeof base.values![c] === 'boolean'
-                    ? base.values![c]
-                      ? 1
-                      : 0
-                    : (base.values![c] ?? null),
-                ]),
-              ) as SqlRow,
-              version: base.version,
-              hasLocalIntent: intent.has(id),
-            },
-          ];
-        });
-      // Every unit covering the table, as its (unit, table) pair (§4.4).
-      const persisted = units
-        .filter((unit) => covers(table, unit.scopes))
-        .map((unit) => {
-          const effective =
-            unit.echo === undefined
-              ? undefined
-              : pairScopes(unit.scopes, read.table, unit.echo);
-          return {
-            requestedScopes: Object.fromEntries(
-              Object.keys(read.scopes).map((v) => [
-                v,
-                unit.scopes[v] === undefined ? [] : [unit.scopes[v]],
-              ]),
-            ),
-            status: unit.status,
-            cursor: unit.cursor ?? cursor,
-            effectiveScopes:
-              effective === undefined
-                ? null
-                : Object.fromEntries(
-                    Object.keys(read.scopes).map((v) => [
-                      v,
-                      effective[v] ?? [],
-                    ]),
-                  ),
-            complete:
-              effective !== undefined &&
-              Object.keys(effective).length ===
-                Object.keys(read.scopes).length &&
-              unit.status === 'active' &&
-              !bootstrapping(unit),
-          };
-        });
-      const selectors = Object.entries(read.scopes);
-      const covered = (at: number, candidates: typeof persisted): boolean =>
-        at === selectors.length
-          ? candidates.length > 0
-          : selectors[at]![1].every((value) =>
-              covered(
-                at + 1,
-                candidates.filter((p) =>
-                  p.effectiveScopes?.[selectors[at]![0]]?.some(
-                    (held) => held === value || held === '*',
-                  ),
-                ),
-              ),
-            );
-      const coverage = covered(
-        0,
-        persisted.filter((p) => p.complete),
-      )
-        ? 'complete'
-        : persisted.some(
-              (p) =>
-                p.status === 'active' &&
-                selectors.every(([v, values]) =>
-                  values.some((value) => p.requestedScopes[v]?.includes(value)),
-                ),
-            )
-          ? 'pending'
-          : 'missing';
-      return {
-        table: read.table,
-        rows,
-        localIntentRowIds: [...intent]
-          .filter(
-            (id) =>
-              relevantIntent.has(id) ||
-              rows.some(
-                (row) =>
-                  scalar(table.primaryKey, row.values[table.primaryKey]!) ===
-                  id,
-              ) ||
-              visible.some(
-                (row) =>
-                  scalar(table.primaryKey, row[table.primaryKey]!) === id &&
-                  matches(row),
-              ),
-          )
-          .sort(),
-        scopes: read.scopes,
-        coverage,
-        persisted,
-      } as AuthoritySnapshot['tables'][number];
-    });
-    return {
-      revision,
-      complete: tables.every((t) => t.coverage === 'complete'),
-      tables,
-    };
-  });
+export interface AuthorityReadResult {
+  readonly revision: bigint;
+  readonly results: readonly {
+    readonly query: string;
+    readonly rows: readonly SqlRow[];
+    readonly coverage: readonly {
+      readonly table: string;
+      readonly base: WindowBase;
+      readonly unit: string;
+      readonly state: 'complete' | 'pending' | 'missing' | 'revoked';
+    }[];
+    /** Every coverage entry is complete; rows are evidence only then. */
+    readonly complete: boolean;
+  }[];
 }
+
+const refuse = (
+  query: unknown,
+  reason: 'shape' | 'column' | 'param',
+  table?: string,
+  column?: string,
+) =>
+  new ClientSyncError(
+    'client.authority_read_forbidden',
+    'authority query declaration refused',
+    false,
+    {
+      query,
+      reason,
+      ...(table === undefined ? {} : { table }),
+      ...(column === undefined ? {} : { column }),
+    },
+  );
+
+const object = (
+  value: unknown,
+  keys: string,
+): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  (keys === '' || Object.keys(value).sort().join() === keys);
+
+const strings = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
+
+const freeze = <T>(value: T): T => {
+  if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
 
 /** Opt-in policy module; ordinary clients ship no authority reader. */
 export class AuthorityReadPolicy {
-  readonly #declarations: readonly AuthorityReadDeclaration[];
-  get declarations(): readonly AuthorityReadDeclaration[] {
-    return this.#declarations;
-  }
-  constructor(declarations: readonly AuthorityReadDeclaration[]) {
-    if (!Array.isArray(declarations))
-      throw new ClientSyncError(
-        'client.authority_read_forbidden',
-        'authorityReads must be a list',
-      );
-    this.#declarations = structuredClone(declarations);
-    for (const read of this.#declarations) {
+  readonly declarations: readonly AuthorityQuery[];
+  readonly #queries = new Map<string, AuthorityQuery>();
+
+  constructor(queries: readonly AuthorityQuery[]) {
+    if (!Array.isArray(queries)) throw refuse(null, 'shape');
+    for (const query of queries) {
+      // Checked as data: a declaration crosses postMessage and IPC.
+      const raw: unknown = query;
+      const name = object(raw, '') ? raw['name'] : undefined;
       if (
-        !read ||
-        typeof read !== 'object' ||
-        !Array.isArray(read.columns) ||
-        !read.scopes ||
-        typeof read.scopes !== 'object' ||
-        Array.isArray(read.scopes)
+        !object(raw, 'bind,coverage,name,params,reads,resultColumns,sql') ||
+        typeof name !== 'string' ||
+        this.#queries.has(name) ||
+        typeof query.sql !== 'string' ||
+        !Array.isArray(query.params) ||
+        !query.params.every(
+          (p: unknown) =>
+            object(p, 'name,nullable,type') &&
+            typeof p.name === 'string' &&
+            typeof p.type === 'string' &&
+            typeof p.nullable === 'boolean',
+        )
       )
-        throw new ClientSyncError(
-          'client.authority_read_forbidden',
-          'invalid authority declaration',
-        );
-      Object.freeze(read.columns);
-      for (const values of Object.values(read.scopes)) Object.freeze(values);
-      Object.freeze(read.scopes);
-      Object.freeze(read);
+        throw refuse(name ?? null, 'shape');
+      const params = new Set(
+        query.params.map((p: AuthorityQuery['params'][number]) => p.name),
+      );
+      const param = (p: unknown) => typeof p === 'string' && params.has(p);
+      if (
+        params.size !== query.params.length ||
+        !strings(query.bind) ||
+        !query.bind.every(param) ||
+        query.sql.replace(/'[^']*'/g, '').split('?').length - 1 !==
+          query.bind.length ||
+        !Array.isArray(query.coverage) ||
+        !query.coverage.every(
+          (entry: unknown) =>
+            object(entry, '') &&
+            Object.keys(entry).every((k) =>
+              ['table', 'variable', 'units', 'fixedScopes'].includes(k),
+            ) &&
+            typeof entry.table === 'string' &&
+            typeof entry.variable === 'string' &&
+            strings(entry.units) &&
+            entry.units.every(param) &&
+            (entry.fixedScopes === undefined ||
+              (object(entry.fixedScopes, '') &&
+                Object.values(entry.fixedScopes).every(param))),
+        ) ||
+        !object(query.reads, '') ||
+        !Object.values(query.reads).every(strings) ||
+        !Array.isArray(query.resultColumns) ||
+        !query.resultColumns.every(
+          (c: unknown) =>
+            object(c, 'name,nullable,type') &&
+            typeof c.name === 'string' &&
+            typeof c.type === 'string' &&
+            typeof c.nullable === 'boolean',
+        )
+      )
+        throw refuse(name, 'shape');
+      if (
+        !query.params.every((p: AuthorityQuery['params'][number]) =>
+          ['string', 'integer', 'float', 'boolean', 'json'].includes(p.type),
+        )
+      )
+        throw refuse(name, 'param');
+      this.#queries.set(name, query);
     }
-    Object.freeze(this.#declarations);
+    this.declarations = freeze(structuredClone(queries));
+    for (const query of this.declarations) this.#queries.set(query.name, query);
     Object.freeze(this);
   }
-  /** @internal */
+
+  /** @internal Check coverage and read sets against the client schema. */
   validate(schema: CompiledClientSchema): void {
-    validateAuthorityReads(schema, this.declarations);
-    Object.freeze(this.declarations);
-    Object.freeze(this);
+    for (const query of this.declarations) {
+      for (const entry of query.coverage) {
+        const table = schema.tables.get(entry.table);
+        if (
+          !table ||
+          ![entry.variable, ...Object.keys(entry.fixedScopes ?? {})].every(
+            (v) => table.scopeColumnByVariable.has(v),
+          )
+        )
+          throw refuse(query.name, 'shape', entry.table);
+      }
+      for (const [name, columns] of Object.entries(query.reads)) {
+        const table = name.startsWith('_syncular_')
+          ? undefined
+          : schema.tables.get(name);
+        if (!table) throw refuse(query.name, 'column', name);
+        for (const column of columns)
+          if (
+            column !== SYNC_VERSION_COLUMN &&
+            !table.columns.some(
+              (c) =>
+                c.name === column &&
+                !column.startsWith('_sync') &&
+                !c.encrypted &&
+                ['string', 'integer', 'float', 'boolean', 'json'].includes(
+                  c.type,
+                ),
+            )
+          )
+            throw refuse(query.name, 'column', name, column);
+      }
+    }
   }
-  /** @internal */
-  snapshot(
+
+  /** @internal Run requests over accepted bases in one read transaction. */
+  read(
     db: ClientDatabase,
     schema: CompiledClientSchema,
-  ): AuthoritySnapshot {
-    validateAuthorityReads(schema, this.declarations);
+    requests: readonly AuthorityReadRequest[],
+  ): AuthorityReadResult {
+    if (
+      !Array.isArray(requests) ||
+      !requests.every(
+        (r) =>
+          object(r, 'params,query') &&
+          typeof r.query === 'string' &&
+          object(r.params, ''),
+      )
+    )
+      throw new ClientSyncError(
+        'client.authority_read_forbidden',
+        'authority read denied',
+      );
+    const runs = requests.map(({ query: name, params }) => {
+      const query = this.#queries.get(name);
+      if (!query)
+        throw new ClientSyncError(
+          'client.authority_query_unknown',
+          'authority query is not declared',
+          false,
+          { query: name },
+        );
+      const bad = (param: string) =>
+        invalidRequest(
+          'authority query parameter is missing, extra or mistyped',
+          false,
+          { query: name, param },
+        );
+      for (const key of Object.keys(params))
+        if (!query.params.some((p) => p.name === key)) throw bad(key);
+      for (const { name: param, type, nullable } of query.params) {
+        const v = Object.hasOwn(params, param) ? params[param] : undefined;
+        if (
+          !(v === null
+            ? nullable
+            : type === 'string'
+              ? typeof v === 'string'
+              : type === 'integer'
+                ? Number.isSafeInteger(v) ||
+                  (typeof v === 'bigint' && BigInt.asIntN(64, v) === v)
+                : type === 'float'
+                  ? Number.isFinite(v)
+                  : type === 'boolean'
+                    ? typeof v === 'boolean'
+                    : typeof v === 'string' &&
+                      (() => {
+                        try {
+                          JSON.parse(v);
+                          return true;
+                        } catch {
+                          return false;
+                        }
+                      })())
+        )
+          throw bad(param);
+      }
+      const scope = (param: string) => {
+        const v = params[param];
+        if (
+          typeof v !== 'string' &&
+          !Number.isSafeInteger(v) &&
+          typeof v !== 'bigint'
+        )
+          throw bad(param);
+        return String(v);
+      };
+      return {
+        query,
+        binds: query.bind.map((p): SqlValue => {
+          const v = params[p] ?? null;
+          return typeof v === 'boolean' ? (v ? 1 : 0) : v;
+        }),
+        coverage: query.coverage.flatMap((entry) => {
+          const base: WindowBase = {
+            variable: entry.variable,
+            ...(Object.keys(entry.fixedScopes ?? {}).length > 0 && {
+              fixedScopes: Object.fromEntries(
+                Object.entries(entry.fixedScopes ?? {}).map(([v, p]) => [
+                  v,
+                  scope(p),
+                ]),
+              ),
+            }),
+          };
+          return entry.units.map((p) => ({
+            table: entry.table,
+            base,
+            unit: scope(p),
+          }));
+        }),
+      };
+    });
     try {
-      return readAuthoritySnapshot(db, schema, this.declarations);
+      return db.transaction(() => {
+        const raw = getMeta(db, 'localRevision');
+        if (
+          raw === undefined ||
+          !/^(0|[1-9][0-9]*)$/.test(raw) ||
+          BigInt(raw) > 18446744073709551615n
+        )
+          throw new ClientSyncError(
+            'sync.local_corrupt',
+            'authority revision is missing or invalid',
+          );
+        const revision = getLocalRevision(db);
+        const units = loadUnits(db);
+        const outbox = listOutbox(db);
+        // Per table: row id → its accepted base, for every row with intent.
+        const intent = new Map<
+          string,
+          Map<
+            string,
+            {
+              values: Readonly<Record<string, JsonRowValue>> | null;
+              version: number;
+            }
+          >
+        >();
+        const basesOf = (name: string) => {
+          let bases = intent.get(name);
+          if (bases) return bases;
+          intent.set(name, (bases = new Map()));
+          // FIFO before-images precede the earliest still-pending intent.
+          for (const commit of outbox) {
+            const images = listOutboxBeforeImages(db, commit.clientCommitId);
+            for (const [idx, op] of commit.operations.entries()) {
+              if (op.table !== name || bases.has(op.rowId)) continue;
+              const image = images.find((i) => i.opIndex === idx);
+              if (
+                !image ||
+                (image.existed &&
+                  (image.values === undefined ||
+                    image.syncVersion === undefined))
+              )
+                throw new ClientSyncError(
+                  'sync.local_corrupt',
+                  'authority intent before-image is missing',
+                );
+              bases.set(op.rowId, {
+                values: image.values ?? null,
+                version: image.syncVersion ?? -1,
+              });
+            }
+          }
+          // A retained/ACK base precedes pending edits stacked over that intent.
+          const retained = new Set<string>();
+          for (const row of db.query(
+            `SELECT id,base,version FROM ${RETAINED_ROWS} WHERE tbl=? ORDER BY commit_seq,at,commit_id,idx`,
+            [name],
+          )) {
+            const id = String(row.id);
+            if (row.base !== null && row.version === null)
+              throw new ClientSyncError(
+                'sync.local_corrupt',
+                'authority base version is missing',
+              );
+            if (!retained.has(id))
+              bases.set(id, {
+                values: row.base === null ? null : JSON.parse(String(row.base)),
+                version: Number(row.version ?? -1),
+              });
+            retained.add(id);
+          }
+          return bases;
+        };
+        return {
+          revision,
+          results: runs.map(({ query, binds, coverage }) => {
+            const shadows: string[] = [];
+            const shadowBinds: SqlValue[] = [];
+            for (const name of Object.keys(query.reads).sort()) {
+              const bases = basesOf(name);
+              if (!bases.size) continue;
+              const pk = schema.tables.get(name)!.primaryKey;
+              const columns = [
+                pk,
+                ...query.reads[name]!.filter(
+                  (c) => c !== pk && c !== SYNC_VERSION_COLUMN,
+                ),
+                SYNC_VERSION_COLUMN,
+              ];
+              const ids = [...bases.keys()].sort();
+              shadows.push(
+                `${quoteIdent(name)} AS (SELECT ${columns.map(quoteIdent).join(',')} FROM main.${quoteIdent(name)} WHERE CAST(${quoteIdent(pk)} AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT ${columns.map((_, i) => `json_extract(value,'$[${i}]')`).join(',')} FROM json_each(?))`,
+              );
+              shadowBinds.push(
+                JSON.stringify(ids),
+                JSON.stringify(
+                  ids.flatMap((id) => {
+                    const { values, version } = bases.get(id)!;
+                    if (
+                      !Number.isSafeInteger(version) ||
+                      version < -1 ||
+                      (values &&
+                        version >= 0 &&
+                        !columns.every(
+                          (c) =>
+                            c === SYNC_VERSION_COLUMN ||
+                            Object.hasOwn(values, c),
+                        ))
+                    )
+                      throw new ClientSyncError(
+                        'sync.local_corrupt',
+                        'authority base evidence is incomplete',
+                      );
+                    return values && version >= 0
+                      ? [
+                          columns.map((c) =>
+                            c === SYNC_VERSION_COLUMN
+                              ? version
+                              : typeof values[c] === 'boolean'
+                                ? values[c]
+                                  ? 1
+                                  : 0
+                                : values[c],
+                          ),
+                        ]
+                      : [];
+                  }),
+                ),
+              );
+            }
+            const authored = /^\s*WITH\s+(RECURSIVE\s+)?/i.exec(query.sql);
+            const result = coverage.map((entry) => {
+              const found = coverageCandidates(
+                units,
+                schema.tables.get(entry.table)!,
+                entry.base,
+                entry.unit,
+              );
+              return {
+                ...entry,
+                state:
+                  found === true
+                    ? ('complete' as const)
+                    : !found.length
+                      ? ('missing' as const)
+                      : found.some((unit) => unit.status !== 'active')
+                        ? ('revoked' as const)
+                        : ('pending' as const),
+              };
+            });
+            return {
+              query: query.name,
+              rows: db.queryReadOnly(
+                !shadows.length
+                  ? query.sql
+                  : authored
+                    ? `WITH ${authored[1] ? 'RECURSIVE ' : ''}${shadows.join(',')}, ${query.sql.slice(authored[0].length)}`
+                    : `WITH ${shadows.join(',')} ${query.sql}`,
+                [...shadowBinds, ...binds],
+              ),
+              coverage: result,
+              complete: result.every((entry) => entry.state === 'complete'),
+            };
+          }),
+        };
+      });
     } catch (error) {
       if (error instanceof SyntaxError)
         throw new ClientSyncError(
           'sync.local_corrupt',
           'authority persisted evidence is invalid',
         );
-      throw error;
+      throw classifySqliteFailure(error).error;
     }
   }
 }
-/** Declare authority tables, plain columns and scope selectors at creation. */
+
+/** Declare the generated authority queries a client may run, at creation. */
 export function defineAuthorityReads(
-  declarations: readonly AuthorityReadDeclaration[],
+  queries: readonly AuthorityQuery[],
 ): AuthorityReadPolicy {
-  return new AuthorityReadPolicy(declarations);
+  return new AuthorityReadPolicy(queries);
 }

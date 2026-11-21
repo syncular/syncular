@@ -34,6 +34,7 @@ import {
   last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { ScenarioSkip } from '../scenario';
 import {
   DecryptError,
   MessageStreamScanner,
@@ -430,6 +431,11 @@ async function constructClient(
                   { status: 401 },
                 )) as typeof fetch,
         });
+  // SPEC §5.11: the native ceiling exists only on native hosts.
+  if (options.authorityColumns !== undefined)
+    throw new ScenarioSkip(
+      'the TypeScript core has no native authority ceiling',
+    );
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
@@ -754,6 +760,7 @@ class TsClientInstance implements ClientInstance {
     sql: string,
     params: readonly DriverRowValue[] = [],
     coverage: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[] = [],
@@ -793,6 +800,7 @@ class TsClientInstance implements ClientInstance {
       readonly params?: readonly DriverRowValue[];
     }[];
     readonly coverage?: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];
@@ -989,13 +997,24 @@ class TsClientInstance implements ClientInstance {
     };
   }
 
-  async authoritySnapshot(): Promise<
-    import('../driver').DriverAuthoritySnapshot
-  > {
-    const snapshot = this.#client.authoritySnapshot();
-    return JSON.parse(
-      JSON.stringify({ ...snapshot, revision: snapshot.revision.toString() }),
-    );
+  async authorityRead(
+    requests: Parameters<ClientInstance['authorityRead']>[0],
+  ): Promise<import('../driver').DriverAuthorityReadResult> {
+    const read = this.#client.authorityRead(requests);
+    return {
+      revision: read.revision.toString(),
+      results: read.results.map((result) => ({
+        ...result,
+        rows: result.rows.map((row) =>
+          Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [
+              key,
+              toDriverValue(typeof value === 'bigint' ? Number(value) : value),
+            ]),
+          ),
+        ),
+      })),
+    };
   }
   async beginSecurityPreflight(): Promise<void> {
     await this.#client.beginSecurityPreflight();

@@ -147,38 +147,6 @@ export interface QueryCoverageBinding {
   }[];
 }
 
-/** The window bases (SPEC §4.8) a query's coverage needs, for generated
- * descriptors. A base names no table, so tables proven by the same base share
- * one entry; a fixed scope bound to several params yields one base per value
- * combination, since a base holds one value per fixed variable. Ordered by
- * code point of the JSON so emitted metadata is byte-identical across
- * locales. */
-export function windowBases(coverage: readonly QueryCoverageBinding[]): {
-  readonly variable: string;
-  readonly units: readonly string[];
-  readonly fixedScopes: readonly { variable: string; param: string }[];
-}[] {
-  const bases = coverage.flatMap((entry) => {
-    let combinations: { variable: string; param: string }[][] = [[]];
-    for (const scope of entry.fixedScopes) {
-      combinations = combinations.flatMap((combination) =>
-        scope.params.map((param) => [
-          ...combination,
-          { variable: scope.variable, param },
-        ]),
-      );
-    }
-    return combinations.map((fixedScopes) => ({
-      variable: entry.variable,
-      units: entry.units,
-      fixedScopes,
-    }));
-  });
-  return [...new Map(bases.map((base) => [JSON.stringify(base), base]))]
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([, base]) => base);
-}
-
 export interface QueryReactiveMetadata {
   readonly dependencies: readonly {
     readonly table: string;
@@ -307,6 +275,11 @@ export interface QuerySyqlMetadata {
   readonly inputs: readonly QuerySyqlPublicInput[];
   readonly plan: QuerySyqlExecutionPlan;
   readonly identity?: readonly string[];
+  /** Present for an `authority query` (SYQL §13.3), which is never emitted
+   * as a reactive query. `reads`: table -> sorted columns, tables sorted. */
+  readonly authority?: {
+    readonly reads: Readonly<Record<string, readonly string[]>>;
+  };
 }
 
 /** Physical relation boundaries in the exact positional SQL statement. */
@@ -362,6 +335,86 @@ export interface AnalyzedQuery {
   readonly syql?: QuerySyqlMetadata;
   /** Plan findings the author acknowledged on the statement. */
   readonly acknowledgements: readonly QueryAcknowledgement[];
+}
+
+/** The data-only declaration of an `authority query` (SPEC §5.11), in the
+ * exact key order every emitter serializes: `sql` holds one `?` per bind
+ * occurrence and `bind` names its input; coverage units and fixed scopes
+ * name inputs. */
+export function authorityDeclaration(query: AnalyzedQuery) {
+  const statement = query.syql?.plan.statements[0];
+  const reads = query.syql?.authority?.reads;
+  if (
+    statement === undefined ||
+    reads === undefined ||
+    query.syql?.plan.statements.length !== 1
+  ) {
+    throw new Error(`${query.name} is not a single-statement authority query`);
+  }
+  const langName = (name: string): string => syqlInput(query, name).langName;
+  // The one-line, comment-free form of `toPositionalSql`, with one `?` per
+  // bind occurrence.
+  const bind: string[] = [];
+  let sql = '';
+  let space = false;
+  for (const token of lexSyqlSqlSource(query.file, statement.sql)) {
+    if (isSyqlTrivia(token) || token.kind === 'eof') {
+      space = sql.length > 0;
+      continue;
+    }
+    if (space) sql += ' ';
+    space = false;
+    if (token.kind !== 'bind') {
+      sql += token.text;
+      continue;
+    }
+    const planBind = statement.binds.find(
+      (candidate) => candidate.name === token.text.slice(1),
+    );
+    if (planBind?.kind !== 'value')
+      throw new Error(
+        `${query.name}: authority bind ${token.text} is not a value input`,
+      );
+    bind.push(langName(planBind.input));
+    sql += '?';
+  }
+  return {
+    name: query.name,
+    sql,
+    bind,
+    params: query.syql.inputs.map((input) => {
+      if (input.kind !== 'value')
+        throw new Error(
+          `${query.name}: authority input ${input.name} is not a value`,
+        );
+      return {
+        name: input.langName,
+        type: input.type,
+        nullable: input.nullable,
+      };
+    }),
+    coverage: query.reactive.coverage.map((entry) => ({
+      table: entry.table,
+      variable: entry.variable,
+      units: entry.units.map(langName),
+      ...(entry.fixedScopes.length === 0
+        ? {}
+        : {
+            fixedScopes: Object.fromEntries(
+              entry.fixedScopes.map((scope) => [
+                scope.variable,
+                langName(scope.params[0] as string),
+              ]),
+            ),
+          }),
+    })),
+    reads,
+    resultColumns: query.columns.map((column) => ({
+      name: column.langName,
+      type: column.type,
+      nullable: column.nullable,
+    })),
+  };
 }
 
 /** The public SYQL input an emitter binds by name. */
@@ -1628,7 +1681,12 @@ function inferReactiveMetadata(
           });
         }
       }
-      if (table.scopes.length > 0 && scopes.length === table.scopes.length) {
+      // A coverage entry's fixed scopes hold one value each (SYQL §13.2).
+      if (
+        table.scopes.length > 0 &&
+        scopes.length === table.scopes.length &&
+        scopes.slice(1).every((scope) => scope.params.length === 1)
+      ) {
         const variable = scopes[0] as QueryScopeBinding;
         coverage.push({
           table: tableName,

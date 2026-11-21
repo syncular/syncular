@@ -15,6 +15,7 @@ import { encryptionScenarios } from './encryption';
 import { erasureScenarios } from './erasure';
 import { errorScenarios } from './errors';
 import { leaseScenarios } from './leases';
+import { authorityScenarios } from './authority';
 import { lifecycleScenarios } from './lifecycle';
 import { localProjectionScenarios } from './local-projections';
 import { localAuthorityScenarios } from './local-authority';
@@ -58,6 +59,7 @@ export const CATALOG: readonly Scenario[] = [
   ...leaseScenarios,
   ...erasureScenarios,
   ...lifecycleScenarios,
+  ...authorityScenarios,
   ...schemaBumpScenarios,
   ...previousVersionScenarios,
   ...realtimeScenarios,

@@ -202,7 +202,7 @@ export interface SyncClientHandleConfig {
   readonly endpoints: WorkerEndpoints;
   /** Structured-clone-safe E2EE keyring installed only in the leader worker. */
   readonly encryption?: EncryptionKeyringConfig;
-  /** Fixed plain authority reads permitted before security activation. */
+  /** Declared authority queries permitted before security activation. */
   readonly authorityReads?: import('./authority').AuthorityReadPolicy;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
@@ -788,13 +788,10 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('query', [sql, params]);
   }
 
-  authoritySnapshot(): Promise<import('./authority').AuthoritySnapshot> {
-    if (arguments.length)
-      throw new ClientSyncError(
-        'client.authority_read_forbidden',
-        'authoritySnapshot accepts no arguments',
-      );
-    return this.#call('authoritySnapshot', []);
+  authorityRead(
+    requests: readonly import('./authority').AuthorityReadRequest[],
+  ): Promise<import('./authority').AuthorityReadResult> {
+    return this.#call('authorityRead', [requests]);
   }
 
   querySnapshot<Row = SqlRow>(

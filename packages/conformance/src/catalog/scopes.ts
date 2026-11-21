@@ -165,7 +165,10 @@ export const scopeScenarios: readonly Scenario[] = [
       );
       const before = await host.api.snapshotRead({
         statements: [],
-        coverage: [{ base: facility, units: ['o1'] }],
+        coverage: [
+          { table: 'calendars', base: facility, units: ['o1'] },
+          { table: 'theatres', base: facility, units: ['o1'] },
+        ],
       });
       check(
         !before.coverage.complete,
@@ -176,7 +179,10 @@ export const scopeScenarios: readonly Scenario[] = [
       await syncIdle(intersection);
       const ready = await host.api.snapshotRead({
         statements: [],
-        coverage: [{ base: facility, units: ['o1'] }],
+        coverage: [
+          { table: 'calendars', base: facility, units: ['o1'] },
+          { table: 'theatres', base: facility, units: ['o1'] },
+        ],
       });
       check(ready.coverage.complete, 'the facility window becomes complete');
       for (const table of ['calendars', 'theatres']) {
@@ -225,7 +231,10 @@ export const scopeScenarios: readonly Scenario[] = [
       if (!host.api.snapshotRead) return;
       const revoked = await host.api.snapshotRead({
         statements: [],
-        coverage: [{ base: facility, units: ['o1'] }],
+        coverage: [
+          { table: 'calendars', base: facility, units: ['o1'] },
+          { table: 'theatres', base: facility, units: ['o1'] },
+        ],
       });
       check(!revoked.coverage.complete, 'revoked coverage is incomplete');
       checkEqual(

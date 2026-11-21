@@ -662,6 +662,9 @@ export function lowerSyqlQuery(
     ...(validated.identity === undefined
       ? {}
       : { identity: validated.identity }),
+    ...(validated.authorityReads === undefined
+      ? {}
+      : { authority: { reads: validated.authorityReads } }),
   };
   const analysis: AnalyzedQuery = {
     ...canonical,

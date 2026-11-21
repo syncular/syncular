@@ -80,7 +80,7 @@ The methods the router executes. `subscribe` takes `{"scopes": {"list_id": "groc
 | Group | Methods |
 |---|---|
 | Lifecycle | `create`, `shutdown`, `recreateWithSchema` |
-| Security | `securityLifecycle`, `beginSecurityPreflight`, `activateSecurity`, `authoritySnapshot` |
+| Security | `securityLifecycle`, `beginSecurityPreflight`, `activateSecurity`, `authorityRead` |
 | Units | `subscribe`, `subscribeMany`, `unsubscribe`, `units`, `unit`, `setWindow`, `windowState` |
 | Writes & reads | `mutate`, `patch`, `readRows`, `query`, `querySnapshot`, `snapshotRead`, `pendingCommitIds`, `pendingPayloads` |
 | Authorized local purge | `purgeLocalData`, `rebootstrapLocalData` |

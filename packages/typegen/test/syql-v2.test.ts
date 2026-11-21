@@ -5,6 +5,7 @@ import {
   lexSyqlSource,
   parseSyqlSyntaxFile,
   SyqlFrontendError,
+  toSyqlSemanticAst,
 } from '../src';
 
 function frontendError(run: () => unknown): SyqlFrontendError {
@@ -124,6 +125,38 @@ describe('SYQL container parser', () => {
       defaultSize: 50,
       maxSize: 200,
     });
+  });
+
+  test('parses an authority query and a multi-entry `by` list', () => {
+    const file = parseSyqlSyntaxFile(
+      'authority.syql',
+      `authority query cover(workspaceId, centreId) by s.workspace_id, w.recipient_id {
+        select count(w.id) as wraps from surgeries as s
+        join wraps as w on w.sealer_id = s.facility_id
+        where s.workspace_id = :workspaceId and w.recipient_id = :centreId;
+      }
+      query authority(authority) { select id from todos where id = :authority; }`,
+    );
+    const [authority, ordinary] = file.queries;
+    expect(authority).toMatchObject({
+      sync: true,
+      authority: true,
+      syncBy: { qualifier: 's', column: 'workspace_id' },
+      syncByJoined: [{ qualifier: 'w', column: 'recipient_id' }],
+    });
+    expect(ordinary).toMatchObject({ name: 'authority', sync: false });
+    expect(toSyqlSemanticAst(file).declarations[0]).toMatchObject({
+      authority: true,
+      syncByJoined: [{ qualifier: 'w', column: 'recipient_id' }],
+    });
+    expect(
+      frontendError(() =>
+        parseSyqlSyntaxFile(
+          'by.syql',
+          'query q(a) by t.a { select id from todos where id = :a; }',
+        ),
+      ).code,
+    ).toBe('SYQL2012_INVALID_QUERY_BODY');
   });
 
   test('parses explicit presence and compound when bodies', () => {

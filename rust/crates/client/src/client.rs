@@ -32,7 +32,8 @@ use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, R
 use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessage, PresenceKind};
 
 use crate::api::{
-    AppliedServerCommit, AppliedServerCommitSource, ClientChangeBatch, ClientDiagnosticsHost,
+    AppliedServerCommit, AppliedServerCommitSource, AuthorityCoverageState, AuthorityQuery,
+    AuthorityQueryResult, AuthorityReadResult, ClientChangeBatch, ClientDiagnosticsHost,
     ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsSchema,
     ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects,
     CommitDelivery, CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
@@ -904,6 +905,65 @@ fn pair_scopes(
     Some(effective.into_iter().collect())
 }
 
+/// §7.5 subset rule for one coverage value of `table`: its authority state
+/// (`complete`, `pending`, `missing` or `revoked`) and whether a candidate is
+/// `revoked`. A candidate is a persisted unit whose variables are a subset of
+/// the entry's and whose values equal the entry's on them. `declared` also
+/// requires that the table declares every variable of the unit; the read
+/// sidecar holds no schema, and there the subset of the entry's variables,
+/// which the table declares, implies it.
+fn entry_coverage(
+    units: &[UnitRecord],
+    table: &str,
+    declared: Option<&TableSchema>,
+    base: &WindowBase,
+    value: &str,
+) -> (&'static str, bool) {
+    let entry = window_unit_scopes(base, value);
+    let candidates: Vec<&UnitRecord> = units
+        .iter()
+        .filter(|unit| {
+            declared.is_none_or(|schema| covers(schema, &unit.scopes))
+                && unit
+                    .scopes
+                    .iter()
+                    .all(|(variable, held)| entry.get(variable) == Some(held))
+        })
+        .collect();
+    let complete = candidates.iter().any(|unit| {
+        unit.status == UnitStatus::Active
+            && !unit.bootstrapping()
+            && unit.echo.is_some()
+            && pair_scopes(&unit.scopes, table, unit.echo.as_deref()).is_some_and(|effective| {
+                entry
+                    .keys()
+                    .filter(|variable| !unit.scopes.contains_key(*variable))
+                    .all(|variable| {
+                        effective
+                            .iter()
+                            .find(|(name, _)| name == variable)
+                            .is_none_or(|(_, values)| values.iter().any(|held| held == "*"))
+                    })
+            })
+    });
+    let revoked = candidates
+        .iter()
+        .any(|unit| unit.status == UnitStatus::Revoked);
+    let state = if complete {
+        "complete"
+    } else if candidates.is_empty() {
+        "missing"
+    } else if candidates
+        .iter()
+        .any(|unit| matches!(unit.status, UnitStatus::Revoked | UnitStatus::Failed))
+    {
+        "revoked"
+    } else {
+        "pending"
+    };
+    (state, revoked)
+}
+
 /// §3.3 row ownership: the pair scopes of every owner of `table` except
 /// `except_id`. An owner is active with a persisted echo and live or
 /// post-bootstrap, or bootstrapping with a segment of the table in its
@@ -1474,6 +1534,7 @@ fn run_snapshot_read_hook() {
 /// read back and releases the connection.
 fn snapshot_read_connection(
     conn: &Connection,
+    schema: Option<&ClientSchema>,
     request: &SnapshotReadRequest<'_>,
 ) -> Result<SnapshotRead, QueryReadFailure> {
     conn.execute_batch("SAVEPOINT syncular_snapshot_read")?;
@@ -1523,21 +1584,57 @@ fn snapshot_read_connection(
         let mut pending = Vec::new();
         let mut missing = Vec::new();
         let mut revoked = Vec::new();
+        let persisted = if request.coverage.is_empty() {
+            Vec::new()
+        } else {
+            load_units(conn)
+                .map_err(|error| stored_failure(error, "persisted unit state is invalid"))?
+        };
         for requested in request.coverage {
+            let declared = match schema {
+                Some(schema) => {
+                    Some(
+                        schema
+                            .table(&requested.table)
+                            .ok_or_else(|| QueryReadFailure {
+                                code: Some("sync.invalid_request"),
+                                sqlite_code: None,
+                                sqlite_message: None,
+                                rollback_failure: None,
+                                message: "unknown coverage table".to_owned(),
+                            })?,
+                    )
+                }
+                None => None,
+            };
             let base_key = window_base_key(&requested.base);
-            let state = persisted_window_state(conn, &requested.base)?;
             for unit in BTreeSet::from_iter(requested.units.iter().cloned()) {
+                let (state, revoked_candidate) = entry_coverage(
+                    &persisted,
+                    &requested.table,
+                    declared,
+                    &requested.base,
+                    &unit,
+                );
                 let reference = WindowUnitRef {
                     base_key: base_key.clone(),
-                    unit: unit.clone(),
+                    unit,
                 };
-                if state.revoked.iter().any(|held| held == &unit) {
-                    revoked.push(reference.clone());
+                // Refs dedupe across entries of several tables on one base.
+                let add = |list: &mut Vec<WindowUnitRef>, reference: &WindowUnitRef| {
+                    if !list.iter().any(|held| {
+                        held.base_key == reference.base_key && held.unit == reference.unit
+                    }) {
+                        list.push(reference.clone());
+                    }
+                };
+                match state {
+                    "complete" => continue,
+                    "missing" => add(&mut missing, &reference),
+                    _ => add(&mut pending, &reference),
                 }
-                if !state.units.iter().any(|held| held == &unit) {
-                    missing.push(reference);
-                } else if state.pending.iter().any(|held| held == &unit) {
-                    pending.push(reference);
+                if revoked_candidate {
+                    add(&mut revoked, &reference);
                 }
             }
         }
@@ -1643,12 +1740,14 @@ fn snapshot_read_connection(
 
 fn snapshot_connection(
     conn: &Connection,
+    schema: Option<&ClientSchema>,
     sql: &str,
     params: &[Value],
     coverage: &[WindowCoverage],
 ) -> Result<QuerySnapshot, QueryReadFailure> {
     let read = snapshot_read_connection(
         conn,
+        schema,
         &SnapshotReadRequest {
             statements: vec![SnapshotStatement { sql, params }],
             coverage,
@@ -1707,7 +1806,7 @@ impl FileQuerySnapshotReader {
         &mut self,
         request: &SnapshotReadRequest<'_>,
     ) -> Result<SnapshotRead, QueryReadFailure> {
-        snapshot_read_connection(self.connection()?, request)
+        snapshot_read_connection(self.connection()?, None, request)
     }
 
     /// The current durable local revision. A host can skip a read when it is
@@ -1753,53 +1852,263 @@ impl FileQuerySnapshotReader {
         params: &[Value],
         coverage: &[WindowCoverage],
     ) -> Result<QuerySnapshot, QueryReadFailure> {
-        snapshot_connection(self.connection()?, sql, params, coverage)
+        snapshot_connection(self.connection()?, None, sql, params, coverage)
     }
 }
 
-fn validate_authority_reads(
+/// `client.authority_read_forbidden` with static text; `details` carries the
+/// query, the reason and, where one applies, the table and column (§5.11).
+fn authority_forbidden(details: Option<Value>) -> ClientError {
+    ClientError {
+        code: "client.authority_read_forbidden".to_owned(),
+        message: "authority read denied".to_owned(),
+        details,
+        retryable: false,
+    }
+}
+
+/// `sync.local_corrupt` for missing or invalid authority read evidence.
+fn authority_corrupt() -> ClientError {
+    ClientError {
+        code: "sync.local_corrupt".to_owned(),
+        message: "authority revision or base evidence is missing or invalid".to_owned(),
+        details: None,
+        retryable: false,
+    }
+}
+
+/// A storage failure of an authority read: a value that does not convert is
+/// corrupt evidence; every other failure keeps its storage classification.
+fn authority_stored(error: rusqlite::Error) -> ClientError {
+    match error {
+        rusqlite::Error::Utf8Error(..)
+        | rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..) => authority_corrupt(),
+        other => ClientError::from(QueryReadFailure::from(other)),
+    }
+}
+
+fn authority_refusal(
+    query: &str,
+    reason: &str,
+    table: Option<&str>,
+    column: Option<&str>,
+) -> ClientError {
+    let mut details = json!({ "query": query, "reason": reason });
+    if let Some(table) = table {
+        details["table"] = Value::from(table);
+    }
+    if let Some(column) = column {
+        details["column"] = Value::from(column);
+    }
+    authority_forbidden(Some(details))
+}
+
+/// §5.11 creation check of every declared authority query against `schema`.
+/// A refusal is `client.authority_read_forbidden` with the details
+/// `{ query, reason, table?, column? }`.
+pub fn validate_authority_reads(
     schema: &ClientSchema,
-    declarations: &[crate::api::AuthorityReadDeclaration],
-) -> Result<(), String> {
-    let mut seen = BTreeSet::new();
-    for read in declarations {
-        let table = schema
-            .table(&read.table)
-            .ok_or("client.authority_read_forbidden: authority table is not declared")?;
-        let plain = |name: &str| {
-            table.columns.iter().enumerate().any(|(i, c)| {
-                c.name == name
-                    && name != "authority_version"
-                    && !name.starts_with("_sync")
-                    && !table.encrypted_columns.iter().any(|e| e.index == i)
-                    && matches!(
-                        c.ty,
-                        ssp2::segment::ColumnType::String
-                            | ssp2::segment::ColumnType::Integer
-                            | ssp2::segment::ColumnType::Float
-                            | ssp2::segment::ColumnType::Boolean
-                            | ssp2::segment::ColumnType::Json
-                    )
-            })
+    queries: &[AuthorityQuery],
+) -> Result<(), ClientError> {
+    let mut names = BTreeSet::new();
+    for query in queries {
+        let refuse = |reason: &str, table: Option<&str>, column: Option<&str>| {
+            authority_refusal(&query.name, reason, table, column)
         };
-        if !seen.insert(&read.table)
-            || read.columns.is_empty()
-            || read.columns.iter().collect::<BTreeSet<_>>().len() != read.columns.len()
-            || !read.columns.contains(&table.primary_key)
-            || !read.columns.iter().all(|c| plain(c))
-            || read.scopes.is_empty()
-            || !read.scopes.iter().all(|(v, values)| {
-                table
-                    .scope_column(v)
-                    .is_some_and(|c| read.columns.iter().any(|column| column == c) && plain(c))
-                    && !values.is_empty()
-                    && values.iter().all(|v| !v.is_empty() && v != "*")
+        let declared = |param: &String| query.params.iter().any(|held| &held.name == param);
+        if !names.insert(query.name.as_str()) {
+            return Err(refuse("shape", None, None));
+        }
+        if !query.params.iter().all(|param| {
+            matches!(
+                param.ty.as_str(),
+                "string" | "integer" | "float" | "boolean" | "json"
+            )
+        }) {
+            return Err(refuse("param", None, None));
+        }
+        let mut quoted = false;
+        let holes = query
+            .sql
+            .chars()
+            .filter(|c| {
+                if *c == '\'' {
+                    quoted = !quoted;
+                }
+                !quoted && *c == '?'
             })
-        {
-            return Err("client.authority_read_forbidden: authority reads require plain columns, a primary key and nonempty plain scope selectors".into());
+            .count();
+        if !query.bind.iter().all(declared) || holes != query.bind.len() {
+            return Err(refuse("shape", None, None));
+        }
+        for entry in &query.coverage {
+            let well_formed = schema.table(&entry.table).is_some_and(|table| {
+                table.scope_column(&entry.variable).is_some()
+                    && entry.fixed_scopes.iter().all(|(variable, param)| {
+                        table.scope_column(variable).is_some() && declared(param)
+                    })
+                    && entry.units.iter().all(declared)
+            });
+            if !well_formed {
+                return Err(refuse("shape", Some(entry.table.as_str()), None));
+            }
+        }
+        for (name, columns) in &query.reads {
+            let table = schema
+                .table(name)
+                .filter(|_| !name.starts_with("_syncular_"))
+                .ok_or_else(|| refuse("column", Some(name.as_str()), None))?;
+            for column in columns {
+                if column == "_sync_version" {
+                    continue;
+                }
+                let plain = !column.starts_with("_sync")
+                    && table.columns.iter().enumerate().any(|(index, held)| {
+                        &held.name == column
+                            && !table.encrypted_columns.iter().any(|e| e.index == index)
+                            && matches!(
+                                held.ty,
+                                ColumnType::String
+                                    | ColumnType::Integer
+                                    | ColumnType::Float
+                                    | ColumnType::Boolean
+                                    | ColumnType::Json
+                            )
+                    });
+                if !plain {
+                    return Err(refuse("column", Some(name.as_str()), Some(column.as_str())));
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// §5.11 native ceiling: prepare the authored statement of `query` on `conn`
+/// under the SQLite authorizer and return its read set, table to columns. An
+/// empty column is a read of the table without a column (`count(*)`). Any
+/// action other than SELECT, READ, or a deterministic core function refuses
+/// with reason `ceiling`; a statement that does not prepare refuses with
+/// reason `shape`. The authorizer sees the authored statement only, never
+/// the accepted-base shadows `authority_read` adds.
+pub fn authority_read_set(
+    conn: &mut Connection,
+    query: &AuthorityQuery,
+) -> Result<BTreeMap<String, BTreeSet<String>>, ClientError> {
+    const DETERMINISTIC: &[&str] = &[
+        "abs",
+        "avg",
+        "char",
+        "coalesce",
+        "concat",
+        "concat_ws",
+        "count",
+        "format",
+        "glob",
+        "group_concat",
+        "hex",
+        "if",
+        "ifnull",
+        "iif",
+        "instr",
+        "json",
+        "json_array",
+        "json_array_length",
+        "json_extract",
+        "json_group_array",
+        "json_group_object",
+        "json_object",
+        "json_quote",
+        "json_type",
+        "json_valid",
+        "length",
+        "like",
+        "likelihood",
+        "likely",
+        "lower",
+        "ltrim",
+        "max",
+        "min",
+        "nullif",
+        "octet_length",
+        "printf",
+        "quote",
+        "replace",
+        "round",
+        "rtrim",
+        "sign",
+        "string_agg",
+        "substr",
+        "substring",
+        "sum",
+        "total",
+        "trim",
+        "typeof",
+        "unhex",
+        "unicode",
+        "unlikely",
+        "upper",
+        "->",
+        "->>",
+    ];
+    let reads = Arc::new(std::sync::Mutex::new(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+    ));
+    let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (seen, denied) = (Arc::clone(&reads), Arc::clone(&refused));
+    let sqlite = |error: rusqlite::Error| ClientError::from(QueryReadFailure::from(error));
+    conn.authorizer(Some(
+        move |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+            rusqlite::hooks::AuthAction::Select => rusqlite::hooks::Authorization::Allow,
+            rusqlite::hooks::AuthAction::Read {
+                table_name,
+                column_name,
+            } => {
+                // The Rust mirror stores the public `_sync_version` as
+                // `_syncular_version` (query_guard lowers it).
+                let column = if column_name == "_syncular_version" {
+                    "_sync_version"
+                } else {
+                    column_name
+                };
+                seen.lock()
+                    .expect("authority read set lock")
+                    .entry(table_name.to_owned())
+                    .or_default()
+                    .insert(column.to_owned());
+                rusqlite::hooks::Authorization::Allow
+            }
+            rusqlite::hooks::AuthAction::Function { function_name }
+                if DETERMINISTIC
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(function_name)) =>
+            {
+                rusqlite::hooks::Authorization::Allow
+            }
+            _ => {
+                denied.store(true, std::sync::atomic::Ordering::Relaxed);
+                rusqlite::hooks::Authorization::Deny
+            }
+        },
+    ))
+    .map_err(sqlite)?;
+    let prepared = crate::query_guard::prepare_read_only(
+        conn,
+        &crate::query_guard::lower_public_query_sql(&query.sql),
+    )
+    .map(drop);
+    conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>)
+        .map_err(sqlite)?;
+    if refused.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(authority_refusal(&query.name, "ceiling", None, None));
+    }
+    if prepared.is_err() {
+        return Err(authority_refusal(&query.name, "shape", None, None));
+    }
+    let mut set = reads.lock().expect("authority read set lock");
+    Ok(std::mem::take(&mut *set))
 }
 
 // §7.4.2: every open and recreation checks before any persistent writes.
@@ -2117,7 +2426,8 @@ impl SyncClient {
     ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
         let schema = parse_schema_json(schema_json)?;
-        validate_authority_reads(&schema, &limits.authority_reads)?;
+        validate_authority_reads(&schema, &limits.authority_reads)
+            .map_err(|error| error.to_string())?;
         // RFC 0005 D8: resolve the previous-version config before the opening
         // reset runs — the capture happens inside it. Bad bounds fail loud.
         let previous_version = match limits.previous_version_context {
@@ -2976,16 +3286,18 @@ impl SyncClient {
         request: &SnapshotReadRequest<'_>,
         owner: Option<QueryOwner<'_>>,
     ) -> Result<SnapshotRead, QueryReadFailure> {
-        let result = snapshot_read_connection(&self.conn, request).and_then(|mut read| {
-            for delivery in &mut read.deliveries {
-                if let CommitDelivery::Known { outcome, .. } = delivery {
-                    *outcome = self
-                        .attach_retained_rows(outcome.clone())
-                        .map_err(QueryReadFailure::from)?;
+        let result = snapshot_read_connection(&self.conn, Some(&self.schema), request).and_then(
+            |mut read| {
+                for delivery in &mut read.deliveries {
+                    if let CommitDelivery::Known { outcome, .. } = delivery {
+                        *outcome = self
+                            .attach_retained_rows(outcome.clone())
+                            .map_err(QueryReadFailure::from)?;
+                    }
                 }
-            }
-            Ok(read)
-        });
+                Ok(read)
+            },
+        );
         if let Some(owner) = owner {
             self.record_query_read(owner, result.as_ref().err());
         }
@@ -3961,7 +4273,8 @@ impl SyncClient {
     /// schema, outbox, tables) on refusal.
     pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
         let new_schema = parse_schema_json(schema_json)?;
-        validate_authority_reads(&new_schema, &self.limits.authority_reads)?;
+        validate_authority_reads(&new_schema, &self.limits.authority_reads)
+            .map_err(|error| error.to_string())?;
         // §3.3: a reopened client remembers no re-armed window unit.
         self.window_armed.clear();
         self.conn
@@ -4325,8 +4638,8 @@ impl SyncClient {
         {
             batch.table(&table.name);
         }
-        for (base_key, value) in self.load_window_registry()? {
-            batch.window(&base_key, &value);
+        for unit in self.stored(load_units(&self.conn))? {
+            self.record_unit_windows(batch, &unit)?;
         }
         if capture {
             self.prune_unknown_units(true)?;
@@ -5424,6 +5737,7 @@ impl SyncClient {
         let proof = (|| {
             let snapshot = snapshot_read_connection(
                 &self.conn,
+                Some(&self.schema),
                 &SnapshotReadRequest {
                     units: prepared.units.iter().map(|unit| unit.id.clone()).collect(),
                     commit_ids: vec![prepared.client_commit_id.clone()],
@@ -5680,24 +5994,30 @@ impl SyncClient {
     /// changes nothing; a revoked unit re-arms (§3.3). A call that registers or
     /// re-arms a unit raises sync-needed with an interactive intent.
     pub fn subscribe_many(&mut self, units: Vec<UnitScopes>) -> Result<Vec<String>, String> {
+        let rollback = self.capture();
         self.begin_observation("syncular_subscribe")?;
         let mut changed = false;
         let registered = (|| {
             let mut ids = Vec::with_capacity(units.len());
+            let mut batch = ChangeAccumulator::default();
             for scopes in units {
                 let (id, held) = self.hold_unit(scopes, true)?;
+                if held {
+                    if let Some(unit) = self.stored(get_unit(&self.conn, &id))? {
+                        self.record_unit_windows(&mut batch, &unit)?;
+                    }
+                }
                 changed |= held;
                 ids.push(id);
             }
-            self.conn
-                .execute_batch("RELEASE syncular_subscribe")
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.finish_observation("syncular_subscribe", batch)?;
             Ok(ids)
         })();
         let ids = match registered {
             Ok(ids) => ids,
             Err(error) => {
                 self.rollback_observation("syncular_subscribe");
+                self.restore(rollback);
                 return Err(error);
             }
         };
@@ -5726,9 +6046,21 @@ impl SyncClient {
                 },
             ));
         }
-        self.conn
-            .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let rollback = self.capture();
+        self.begin_observation("syncular_unsubscribe")?;
+        let removed = (|| {
+            self.conn
+                .execute("DELETE FROM _syncular_units WHERE id = ?1", [id])
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let mut batch = ChangeAccumulator::default();
+            self.record_unit_windows(&mut batch, &unit)?;
+            self.finish_observation("syncular_unsubscribe", batch)
+        })();
+        if let Err(error) = removed {
+            self.rollback_observation("syncular_unsubscribe");
+            self.restore(rollback);
+            return Err(error);
+        }
         self.registration_epoch = self.registration_epoch.wrapping_add(1);
         if unit.status == UnitStatus::Active {
             self.set_sync_needed(true, true);
@@ -5838,6 +6170,13 @@ impl SyncClient {
                         )
                         .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                     batch.window(&base_key, value);
+                    // A registered or re-armed unit is a transition for every
+                    // window value that references it.
+                    if registered {
+                        if let Some(unit) = self.stored(get_unit(&self.conn, &id))? {
+                            self.record_unit_windows(&mut batch, &unit)?;
+                        }
+                    }
                 }
                 batch.status = true;
                 self.finish_observation("syncular_window", batch)
@@ -5901,17 +6240,31 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    /// Every window registry row: (base key, value).
-    fn load_window_registry(&self) -> Result<Vec<(String, String)>, String> {
-        let mut statement = self
-            .conn
-            .prepare_cached("SELECT base, unit FROM _syncular_windows ORDER BY base, unit")
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        let rows = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        rows.collect::<Result<_, _>>()
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+    /// §4.8: the window-domain changes of one unit transition, the one path
+    /// every transition site takes: one per window value that references the
+    /// unit or, when none does, one for the base derived from its scope map
+    /// (the variable first in code-unit order and its value; the other
+    /// variables its fixed scopes). A transition adds no table change.
+    fn record_unit_windows(
+        &self,
+        batch: &mut ChangeAccumulator,
+        unit: &UnitRecord,
+    ) -> Result<(), String> {
+        let refs = self.stored(window_refs(&self.conn, &unit.id))?;
+        if refs.is_empty() {
+            let mut pairs = scope_pairs(&unit.scopes).into_iter();
+            if let Some((variable, value)) = pairs.next() {
+                let base = WindowBase {
+                    variable,
+                    fixed_scopes: pairs.collect(),
+                };
+                batch.window(&window_base_key(&base), &value);
+            }
+        }
+        for (base_key, value) in refs {
+            batch.window(&base_key, &value);
+        }
+        Ok(())
     }
 
     /// §4.8: release a window value's reference inside the caller's
@@ -7778,225 +8131,338 @@ impl SyncClient {
         Ok(self.benchmark_phases.snapshot())
     }
 
-    /// One serialized, read-only authority observation, including durable coverage.
-    pub fn authority_snapshot(&self) -> Result<Value, String> {
-        validate_authority_reads(&self.schema, &self.limits.authority_reads)?;
+    /// §5.11 native ceiling: refuse a declared authority query whose authored
+    /// statement reads a table or column outside `ceiling` (table to permitted
+    /// columns) or performs an action other than SELECT, READ, or a
+    /// deterministic core function. The refusal is
+    /// `client.authority_read_forbidden` with `{ query, reason: "ceiling",
+    /// table, column }`.
+    pub fn check_authority_ceiling(
+        &mut self,
+        ceiling: &BTreeMap<String, Vec<String>>,
+    ) -> Result<(), ClientError> {
+        for query in &self.limits.authority_reads {
+            for (table, columns) in authority_read_set(&mut self.conn, query)? {
+                let Some(allowed) = ceiling.get(&table) else {
+                    return Err(authority_refusal(
+                        &query.name,
+                        "ceiling",
+                        Some(table.as_str()),
+                        None,
+                    ));
+                };
+                if let Some(column) = columns
+                    .iter()
+                    .find(|column| !column.is_empty() && !allowed.contains(column))
+                {
+                    return Err(authority_refusal(
+                        &query.name,
+                        "ceiling",
+                        Some(table.as_str()),
+                        Some(column.as_str()),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// §5.11: run declared authority queries over the accepted base in one
+    /// SQLite read transaction. Each request is a query name and its params
+    /// keyed by param name; each result carries its rows, its coverage per
+    /// table and unit, and whether every entry is complete.
+    pub fn authority_read(
+        &self,
+        requests: &[(String, Map<String, Value>)],
+    ) -> Result<AuthorityReadResult, ClientError> {
         if self.limits.authority_reads.is_empty() {
-            return Err("client.authority_read_forbidden: no authority reads were declared at client creation".into());
+            return Err(authority_forbidden(None));
+        }
+        // Every request resolves and types its params before the read opens.
+        let mut prepared = Vec::with_capacity(requests.len());
+        for (name, params) in requests {
+            let query = self
+                .limits
+                .authority_reads
+                .iter()
+                .find(|query| &query.name == name)
+                .ok_or_else(|| ClientError {
+                    code: "client.authority_query_unknown".to_owned(),
+                    message: "authority query is not declared".to_owned(),
+                    details: Some(json!({ "query": name })),
+                    retryable: false,
+                })?;
+            let invalid = |param: &str| ClientError {
+                code: "sync.invalid_request".to_owned(),
+                message: "authority query parameter is missing, extra or mistyped".to_owned(),
+                details: Some(json!({ "query": name, "param": param })),
+                retryable: false,
+            };
+            if let Some(extra) = params
+                .keys()
+                .find(|key| !query.params.iter().any(|param| &param.name == *key))
+            {
+                return Err(invalid(extra.as_str()));
+            }
+            let mut bound = BTreeMap::new();
+            for param in &query.params {
+                let value = params
+                    .get(&param.name)
+                    .ok_or_else(|| invalid(param.name.as_str()))?;
+                let sql = match (param.ty.as_str(), value) {
+                    (_, Value::Null) if param.nullable => Value::Null,
+                    ("string", Value::String(_)) | ("float", Value::Number(_)) => value.clone(),
+                    ("integer", Value::Number(number))
+                        if number
+                            .as_i64()
+                            .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER) =>
+                    {
+                        value.clone()
+                    }
+                    ("boolean", Value::Bool(flag)) => Value::from(i64::from(*flag)),
+                    ("json", Value::String(text))
+                        if serde_json::from_str::<Value>(text).is_ok() =>
+                    {
+                        value.clone()
+                    }
+                    _ => return Err(invalid(param.name.as_str())),
+                };
+                bound.insert(param.name.as_str(), sql);
+            }
+            // A coverage param names a unit value: a string or an integer.
+            let scalar = |param: &str| match params.get(param) {
+                Some(Value::String(text)) => Ok(text.clone()),
+                Some(Value::Number(number))
+                    if number
+                        .as_i64()
+                        .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER) =>
+                {
+                    Ok(number.to_string())
+                }
+                _ => Err(invalid(param)),
+            };
+            let mut coverage = Vec::new();
+            for entry in &query.coverage {
+                let base = WindowBase {
+                    variable: entry.variable.clone(),
+                    fixed_scopes: entry
+                        .fixed_scopes
+                        .iter()
+                        .map(
+                            |(variable, param)| -> Result<(String, String), ClientError> {
+                                Ok((variable.clone(), scalar(param.as_str())?))
+                            },
+                        )
+                        .collect::<Result<UnitScopes, ClientError>>()?,
+                };
+                for unit in &entry.units {
+                    coverage.push((entry.table.as_str(), base.clone(), scalar(unit.as_str())?));
+                }
+            }
+            prepared.push((query, bound, coverage));
         }
         self.conn
-            .execute_batch("SAVEPOINT authority_snapshot")
-            .map_err(|e| e.to_string())?;
-        let result = (|| {
-            let revision = self
-                .get_meta(LOCAL_REVISION_KEY)?
-                .ok_or("sync.local_corrupt: authority revision is missing")?;
-            let parsed_revision = revision
-                .parse::<u64>()
-                .map_err(|_| "sync.local_corrupt: authority revision is invalid")?;
-            if parsed_revision.to_string() != revision {
-                return Err("sync.local_corrupt: authority revision is invalid".into());
-            }
-            let mut tables = Vec::new();
-            for read in &self.limits.authority_reads {
-                let table = self
-                    .schema
-                    .table(&read.table)
-                    .ok_or("client.authority_read_forbidden: authority table is not declared")?;
-                let scalar = |column: &str, value: &Value| -> Result<String, String> {
-                    let ty = table
-                        .columns
-                        .iter()
-                        .find(|c| c.name == column)
-                        .expect("validated authority column")
-                        .ty;
-                    if ty == ColumnType::Boolean {
-                        if let Some(value) = value.as_bool() {
-                            return Ok(value.to_string());
-                        }
-                        return match value.as_i64() {
-                            Some(0) => Ok("false".into()),
-                            Some(1) => Ok("true".into()),
-                            _ => Err("sync.local_corrupt: authority boolean is invalid".into()),
-                        };
-                    }
-                    match value {
-                        Value::String(s) => Ok(s.clone()),
-                        Value::Number(n) => Ok(n.to_string()),
-                        Value::Object(o) if ty == ColumnType::Integer && o.len() == 1 => o
-                            .get("$bigint")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .ok_or("sync.local_corrupt: authority integer is invalid".into()),
-                        _ => {
-                            Err("sync.local_corrupt: authority scalar is missing or invalid".into())
-                        }
-                    }
-                };
-                let matches = |row: &QueryRow| -> Result<bool, String> {
-                    for (variable, values) in &read.scopes {
-                        let column = table
-                            .scope_column(variable)
-                            .expect("validated authority scope");
-                        let value = row
-                            .get(column)
-                            .ok_or("sync.local_corrupt: authority scope column is missing")?;
-                        if value.is_null() || !values.contains(&scalar(column, value)?) {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(true)
-                };
-                let selected = read
-                    .columns
+            .execute_batch("SAVEPOINT syncular_authority_read")
+            .map_err(authority_stored)?;
+        let result = (|| -> Result<AuthorityReadResult, ClientError> {
+            let revision = meta_get(&self.conn, LOCAL_REVISION_KEY)
+                .map_err(authority_stored)?
+                .filter(|revision| {
+                    revision
+                        .parse::<u64>()
+                        .is_ok_and(|parsed| &parsed.to_string() == revision)
+                })
+                .ok_or_else(authority_corrupt)?;
+            let units = load_units(&self.conn).map_err(authority_stored)?;
+            let mut results = Vec::with_capacity(prepared.len());
+            for (query, bound, coverage) in &prepared {
+                let (sql, mut params) = self.authority_statement(query)?;
+                params.extend(query.bind.iter().map(|name| bound[name.as_str()].clone()));
+                let rows =
+                    query_connection(&self.conn, &sql, &params).map_err(ClientError::from)?;
+                let coverage = coverage
                     .iter()
-                    .map(|c| quote_ident(c))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let mut intent = BTreeSet::new();
-                let mut relevant = BTreeSet::new();
-                for row in query_connection(&self.conn,
-                    "SELECT id,values_json FROM (SELECT json_extract(value,'$.table') AS tbl,json_extract(value,'$.rowId') AS id,json_extract(value,'$.values') AS values_json FROM _syncular_outbox,json_each(ops_json) UNION ALL SELECT json_extract(value,'$.table'),json_extract(value,'$.rowId'),json_extract(value,'$.values') FROM _syncular_failed_commits,json_each(operations_json) UNION ALL SELECT tbl,id,intent_json FROM _syncular_acked_rows) WHERE tbl=?",
-                    &[Value::String(read.table.clone())]).map_err(|e| e.to_string())? {
-                    let id = row.get("id").and_then(Value::as_str).ok_or("sync.local_corrupt: authority intent id is invalid")?.to_owned();
-                    intent.insert(id.clone());
-                    if let Some(raw) = row.get("values_json").and_then(Value::as_str) {
-                        let values: QueryRow = serde_json::from_str(raw).map_err(|_| "sync.local_corrupt: authority intent values are invalid")?;
-                        if read.scopes.keys().all(|v| values.contains_key(table.scope_column(v).expect("validated scope"))) && matches(&values)? {relevant.insert(id);}
-                    }
-                }
-                let mut rows = BTreeMap::new();
-                for full in [base_table(&read.table), visible_table(&read.table)] {
-                    for mut values in query_connection(
-                        &self.conn,
-                        &format!(
-                            "SELECT {selected},_syncular_version AS authority_version FROM {full}"
-                        ),
-                        &[],
-                    )
-                    .map_err(|e| e.to_string())?
-                    {
-                        if !matches(&values)? {
-                            continue;
+                    .map(|(table, base, unit)| {
+                        let mut json_base = json!({ "variable": base.variable });
+                        if !base.fixed_scopes.is_empty() {
+                            json_base["fixedScopes"] = json!(base.fixed_scopes);
                         }
-                        let id = scalar(
-                            &table.primary_key,
-                            values
-                                .get(&table.primary_key)
-                                .expect("selected primary key"),
-                        )?;
-                        relevant.insert(id.clone());
-                        if full == base_table(&read.table) {
-                            let version = values
-                                .remove("authority_version")
-                                .expect("selected version");
-                            let version = version
-                                .as_i64()
-                                .ok_or("sync.local_corrupt: authority server version is invalid")?;
-                            if version >= 0 {
-                                rows.insert(id.clone(), json!({"values": values, "version": version, "hasLocalIntent": intent.contains(&id)}));
-                            }
+                        AuthorityCoverageState {
+                            table: (*table).to_owned(),
+                            base: json_base,
+                            unit: unit.clone(),
+                            state: entry_coverage(
+                                &units,
+                                table,
+                                self.schema.table(table),
+                                base,
+                                unit,
+                            )
+                            .0,
                         }
-                    }
-                }
-                intent.retain(|id| relevant.contains(id));
-                let rows = rows.into_values().collect::<Vec<_>>();
-                // Every unit covering the table, as its (unit, table) pair (§4.4).
-                let replica = self.stored(replica_cursor(&self.conn))?;
-                let persisted = self
-                    .stored(load_units(&self.conn))?
-                    .into_iter()
-                    .filter(|unit| covers(table, &unit.scopes))
-                    .map(|unit| {
-                        let effective = unit.echo.as_deref().and_then(|echo| {
-                            pair_scopes(&unit.scopes, &read.table, Some(echo))
-                        });
-                        let requested = read
-                            .scopes
-                            .keys()
-                            .map(|v| (v.clone(), json!(unit.scopes.get(v).into_iter().collect::<Vec<_>>())))
-                            .collect::<Map<_, _>>();
-                        let complete = effective
-                            .as_ref()
-                            .is_some_and(|scopes| scopes.len() == read.scopes.len())
-                            && unit.status == UnitStatus::Active
-                            && !unit.bootstrapping();
-                        let exposed = effective.map(|scopes| {
-                            read.scopes
-                                .keys()
-                                .map(|v| {
-                                    let held = scopes.iter().find(|(variable, _)| variable == v);
-                                    (v.clone(), json!(held.map_or(&Vec::new(), |(_, values)| values)))
-                                })
-                                .collect::<Map<_, _>>()
-                        });
-                        json!({"requestedScopes": requested, "status": unit.status, "cursor": unit.cursor.unwrap_or(replica), "effectiveScopes": exposed, "complete": complete})
                     })
                     .collect::<Vec<_>>();
-                fn covered(selectors: &[(&String, &Vec<String>)], candidates: &[&Value]) -> bool {
-                    match selectors.split_first() {
-                        None => !candidates.is_empty(),
-                        Some(((variable, values), rest)) => values.iter().all(|value| {
-                            covered(
-                                rest,
-                                &candidates
-                                    .iter()
-                                    .copied()
-                                    .filter(|p| {
-                                        p["effectiveScopes"][variable.as_str()]
-                                            .as_array()
-                                            .is_some_and(|held| {
-                                                held.contains(&Value::String(value.clone()))
-                                                    || held.contains(&Value::String("*".into()))
-                                            })
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        }),
-                    }
-                }
-                let coverage = if covered(
-                    &read.scopes.iter().collect::<Vec<_>>(),
-                    &persisted
-                        .iter()
-                        .filter(|p| p["complete"] == true)
-                        .collect::<Vec<_>>(),
-                ) {
-                    "complete"
-                } else if persisted.iter().any(|p| {
-                    p["status"] == "active"
-                        && read.scopes.iter().all(|(v, values)| {
-                            values.iter().any(|value| {
-                                p["requestedScopes"][v].as_array().is_some_and(|held| {
-                                    held.contains(&Value::String(value.clone()))
-                                })
-                            })
-                        })
-                }) {
-                    "pending"
-                } else {
-                    "missing"
-                };
-                tables.push(json!({"table": read.table, "rows": rows, "localIntentRowIds": intent, "scopes": read.scopes, "coverage": coverage, "persisted": persisted}));
+                results.push(AuthorityQueryResult {
+                    query: query.name.clone(),
+                    rows,
+                    complete: coverage.iter().all(|entry| entry.state == "complete"),
+                    coverage,
+                });
             }
-            Ok(
-                json!({"revision": revision, "complete": tables.iter().all(|t| t["coverage"] == "complete"), "tables": tables}),
-            )
+            Ok(AuthorityReadResult { revision, results })
         })();
         match result {
-            Ok(snapshot) => {
+            Ok(read) => {
                 self.conn
-                    .execute_batch("RELEASE authority_snapshot")
-                    .map_err(|e| e.to_string())?;
-                Ok(snapshot)
+                    .execute_batch("RELEASE syncular_authority_read")
+                    .map_err(authority_stored)?;
+                Ok(read)
             }
             Err(error) => {
                 self.conn
-                    .execute_batch("ROLLBACK TO authority_snapshot; RELEASE authority_snapshot")
-                    .map_err(|e| format!("{error}; rollback failed: {e}"))?;
+                    .execute_batch(
+                        "ROLLBACK TO syncular_authority_read; RELEASE syncular_authority_read",
+                    )
+                    .map_err(authority_stored)?;
                 Err(error)
             }
         }
+    }
+
+    /// §5.11: the statement `authority_read` runs for `query` and its shadow
+    /// params, which precede the authored binds. Every read table with
+    /// intent reads its accepted base through a common table expression of
+    /// the same name; the text is identical in the TypeScript core. The Rust
+    /// mirror keeps the accepted base in `_syncular_base_<table>`: retained,
+    /// acknowledged and pending intent replay only onto the visible table, so
+    /// the base row of an intent id is the earliest accepted state.
+    fn authority_statement(
+        &self,
+        query: &AuthorityQuery,
+    ) -> Result<(String, Vec<Value>), ClientError> {
+        let mut shadows = Vec::new();
+        let mut params = Vec::new();
+        for (name, reads) in &query.reads {
+            let table = self.schema.table(name).expect("validated authority table");
+            let mut ids = Vec::new();
+            let mut statement = self
+                .conn
+                .prepare_cached(
+                    "SELECT DISTINCT id FROM (\
+                     SELECT json_extract(value,'$.table') AS tbl,json_extract(value,'$.rowId') AS id \
+                     FROM _syncular_outbox,json_each(ops_json) \
+                     UNION ALL SELECT json_extract(value,'$.table'),json_extract(value,'$.rowId') \
+                     FROM _syncular_failed_commits,json_each(operations_json) \
+                     UNION ALL SELECT tbl,id FROM _syncular_acked_rows) WHERE tbl=?1",
+                )
+                .map_err(authority_stored)?;
+            let mut rows = statement.query([name]).map_err(authority_stored)?;
+            while let Some(row) = rows.next().map_err(authority_stored)? {
+                ids.push(row.get::<_, String>(0).map_err(authority_stored)?);
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            ids.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+            let columns: Vec<&str> =
+                std::iter::once(table.primary_key.as_str())
+                    .chain(reads.iter().map(String::as_str).filter(|column| {
+                        *column != table.primary_key && *column != "_sync_version"
+                    }))
+                    .chain(std::iter::once("_sync_version"))
+                    .collect();
+            let physical = columns
+                .iter()
+                .map(|column| {
+                    if *column == "_sync_version" {
+                        "_syncular_version".to_owned()
+                    } else {
+                        quote_ident(column)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let key = quote_ident(&table.primary_key);
+            let mut statement = self
+                .conn
+                .prepare(&format!(
+                    "SELECT CAST({key} AS TEXT),{physical} FROM {} \
+                     WHERE CAST({key} AS TEXT) IN (SELECT value FROM json_each(?1))",
+                    base_table(name),
+                ))
+                .map_err(authority_stored)?;
+            let mut rows = statement
+                .query([serde_json::to_string(&ids).expect("intent ids serialize")])
+                .map_err(authority_stored)?;
+            let mut bases = Vec::new();
+            while let Some(row) = rows.next().map_err(authority_stored)? {
+                let id = row.get::<_, String>(0).map_err(authority_stored)?;
+                let mut values = Vec::with_capacity(columns.len());
+                for index in 1..=columns.len() {
+                    values.push(match row.get_ref(index).map_err(authority_stored)? {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Integer(integer) => Value::from(integer),
+                        ValueRef::Real(real) => serde_json::Number::from_f64(real)
+                            .map(Value::Number)
+                            .ok_or_else(authority_corrupt)?,
+                        ValueRef::Text(text) => {
+                            Value::from(std::str::from_utf8(text).map_err(|_| authority_corrupt())?)
+                        }
+                        ValueRef::Blob(_) => return Err(authority_corrupt()),
+                    });
+                }
+                let version = values
+                    .last()
+                    .and_then(Value::as_i64)
+                    .ok_or_else(authority_corrupt)?;
+                if version >= 0 {
+                    bases.push((id, Value::Array(values)));
+                }
+            }
+            bases.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            let shadow = quote_ident(name);
+            shadows.push(format!(
+                "{shadow} AS (SELECT {} FROM main.{shadow} WHERE CAST({key} AS TEXT) NOT IN \
+                 (SELECT value FROM json_each(?)) UNION ALL SELECT {} FROM json_each(?))",
+                columns
+                    .iter()
+                    .map(|column| quote_ident(column))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                (0..columns.len())
+                    .map(|index| format!("json_extract(value,'$[{index}]')"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+            params.push(Value::from(
+                serde_json::to_string(&ids).expect("intent ids serialize"),
+            ));
+            params.push(Value::from(
+                Value::from_iter(bases.into_iter().map(|(_, row)| row)).to_string(),
+            ));
+        }
+        let sql = if shadows.is_empty() {
+            query.sql.clone()
+        } else {
+            let keyword = |text: &str, word: &str| {
+                text.get(..word.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(word))
+                    && text[word.len()..].starts_with(char::is_whitespace)
+            };
+            let shadows = shadows.join(",");
+            let authored = query.sql.trim_start();
+            if keyword(authored, "WITH") {
+                let rest = authored[4..].trim_start();
+                if keyword(rest, "RECURSIVE") {
+                    format!("WITH RECURSIVE {shadows}, {}", rest[9..].trim_start())
+                } else {
+                    format!("WITH {shadows}, {rest}")
+                }
+            } else {
+                format!("WITH {shadows} {}", query.sql)
+            }
+        };
+        Ok((sql, params))
     }
 
     /// Rows, coverage, and local revision from one SQLite read snapshot.
@@ -8009,7 +8475,7 @@ impl SyncClient {
         coverage: &[WindowCoverage],
         owner: Option<QueryOwner<'_>>,
     ) -> Result<QuerySnapshot, String> {
-        let result = snapshot_connection(&self.conn, sql, params, coverage);
+        let result = snapshot_connection(&self.conn, Some(&self.schema), sql, params, coverage);
         if let Some(owner) = owner {
             self.record_query_read(owner, result.as_ref().err());
         }
@@ -9725,9 +10191,7 @@ impl SyncClient {
                     // §4.6 replica reset: every live unit bootstraps again;
                     // post-bootstrap units keep their cursors.
                     LiveStatus::Reset if unit.cursor.is_none() => {
-                        for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
-                            batch.window(&base_key, &value);
-                        }
+                        self.record_unit_windows(&mut batch, &unit)?;
                         report.resets.push(unit.id.clone());
                         self.stored(save_unit(
                             &self.conn,
@@ -9746,6 +10210,10 @@ impl SyncClient {
                             cursor = joined;
                         }
                         if unit.cursor.is_some() {
+                            // A post-bootstrap unit that joins live transitions.
+                            if next >= joined {
+                                self.record_unit_windows(&mut batch, &unit)?;
+                            }
                             self.stored(save_unit(
                                 &self.conn,
                                 &UnitRecord {
@@ -10456,9 +10924,7 @@ impl SyncClient {
                     .map_err(storage)?;
                 let failed = (|| {
                     let mut batch = ChangeAccumulator::default();
-                    for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
-                        batch.window(&base_key, &value);
-                    }
+                    self.record_unit_windows(&mut batch, &unit)?;
                     batch.status = true;
                     self.stored(save_unit(
                         &self.conn,
@@ -10584,9 +11050,7 @@ impl SyncClient {
         else {
             return Ok(batch);
         };
-        for (base_key, value) in self.stored(window_refs(&self.conn, &unit.id))? {
-            batch.window(&base_key, &value);
-        }
+        self.record_unit_windows(&mut batch, &unit)?;
         if start.status == SubStatus::Reset {
             // §4.6: staleness, never a purge; the rows stay until the
             // bootstrap replaces them.

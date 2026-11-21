@@ -126,6 +126,8 @@ export const SYQL_DIAGNOSTIC_REMEDIES = {
     'Use the declared limit control and keep its default and maximum within the supported range.',
   SYQL6008_INVALID_IDENTITY:
     'Declare identity columns that are selected, non-null, and sufficient to identify each result row.',
+  SYQL6009_INVALID_AUTHORITY_QUERY:
+    'Write the authority query as one statement over schema tables that reads only plain, unencrypted columns or _sync_version, with qualified column references and required scalar inputs.',
   SYQL7001_ENUMERATION_LIMIT:
     'Use the auto or neutralize backend, reduce control combinations, or raise the explicit compiler limit.',
   SYQL7002_INTERNAL_LOWERING:

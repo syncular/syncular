@@ -81,10 +81,15 @@ export type SyqlSemanticDeclaration =
       readonly kind: 'query';
       readonly name: string;
       readonly sync: boolean;
+      readonly authority?: true;
       readonly syncBy?: {
         readonly qualifier: string;
         readonly column: string;
       };
+      readonly syncByJoined?: readonly {
+        readonly qualifier: string;
+        readonly column: string;
+      }[];
       readonly parameters: readonly SyqlSemanticQueryParameter[];
       readonly statement: SyqlSemanticTemplate;
       readonly sort?: {
@@ -232,6 +237,7 @@ function semanticDeclaration(
     kind: 'query',
     name: declaration.name,
     sync: declaration.sync,
+    ...(declaration.authority ? { authority: true } : {}),
     ...(declaration.syncBy === undefined
       ? {}
       : {
@@ -239,6 +245,14 @@ function semanticDeclaration(
             qualifier: declaration.syncBy.qualifier,
             column: declaration.syncBy.column,
           },
+        }),
+    ...(declaration.syncByJoined.length === 0
+      ? {}
+      : {
+          syncByJoined: declaration.syncByJoined.map((dimension) => ({
+            qualifier: dimension.qualifier,
+            column: dimension.column,
+          })),
         }),
     parameters: declaration.parameters.map(semanticParameter),
     statement: semanticTemplate(declaration.statement),

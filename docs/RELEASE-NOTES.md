@@ -13,6 +13,32 @@ instance starts in its construction state (SPEC §8.8).
 
 [The transport gate](https://syncular.dev/platform-web-realtime/#transport-gate)
 
+### Authority queries over the accepted base
+
+Declare preflight evidence as `authority query` declarations in `.syql`
+files. `typegen` emits each as a data-only declaration with its positional
+SQL, parameters, coverage entries and read set. `authorityRead(requests)`
+runs one or more declared queries in one SQLite read transaction over the
+accepted base, the last state the server accepted, so a pending local
+creation never answers positively. Joins, subqueries, `GROUP BY` and
+aggregates are allowed, so one bounded row answers whether a qualifying
+record exists across three relations. Each result carries one coverage entry
+per table and unit (`complete`, `pending`, `missing` or `revoked`), and
+`complete` tells a complete negative from coverage the device does not hold
+yet. A native host prepares each declared statement under a SQLite authorizer
+at creation and refuses it when it reads a column outside
+`SyncularConfig.authority_columns` (SPEC §5.11, SYQL §13.3).
+
+Coverage uses the subset rule everywhere: a unit proves an entry when its
+scope variables are a subset of the entry's and its echo restricts none of the
+others. Window claims register the same units as before. A joined table's
+unit dimension is its sole proven dimension, else the one matching the
+anchor, else a later `by` entry; sync queries that failed with
+`SYQL6005_INVALID_SYNC_QUERY` because a joined table proved one dimension on
+other parameters now compile and report coverage on that unit.
+
+[Authority evidence before activation](https://syncular.dev/platform-tauri-specifics/#authority-evidence-before-activation)
+
 ### Upgrading
 
 - `transportEnabled: false` becomes `transportGate: 'closed'` on the direct
@@ -27,6 +53,16 @@ instance starts in its construction state (SPEC §8.8).
   becomes `transport_gate()`.
 - The native command `setTransportEnabled { enabled }` becomes
   `setTransportGate { state }`.
+- `authoritySnapshot()` and the `{ table, columns, scopes }` declaration are
+  removed. Write each declaration as an `authority query` that selects the same
+  columns with the scope as a bound equality, alias `_sync_version` where you
+  used the row version, pass the generated declarations to
+  `defineAuthorityReads`, and call `authorityRead` with one request per scope
+  value. `snapshot.complete` becomes the conjunction of the results'
+  `complete`, and `hasLocalIntent` and `localIntentRowIds` have no replacement.
+- Coverage entries carry their table: `querySnapshot` and `snapshotRead` take
+  `{ table, base, units }`. Regenerate the queries file; hand-written coverage
+  adds `table`.
 
 ## 0.101.0 release notes
 

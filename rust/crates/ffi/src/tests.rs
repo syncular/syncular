@@ -138,8 +138,9 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
         "only SQLite binding conversion and output materialization allocate the text payload"
     );
     let coverage = syncular_client::WindowCoverage {
+        table: "todo".to_owned(),
         base: syncular_client::WindowBase {
-            variable: "bucket".to_owned(),
+            variable: "list_id".to_owned(),
             fixed_scopes: Default::default(),
         },
         units: vec!["missing".to_owned()],
@@ -156,7 +157,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
     assert_eq!(expected["coverage"]["complete"], false);
     let result = handle.command(&json!({"method": "querySnapshot", "params": {
         "sql": "SELECT 1 AS id WHERE 0", "params": null,
-        "coverage": [{"base": {"variable": "bucket", "fixedScopes": {}}, "units": ["missing"]}]
+        "coverage": [{"table": "todo", "base": {"variable": "list_id", "fixedScopes": {}}, "units": ["missing"]}]
     }}));
     assert_eq!(result["result"], expected);
     for method in ["query", "querySnapshot"] {

@@ -304,6 +304,25 @@
           "items": {
             "$ref": "#/$defs/identifier"
           }
+        },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reads"
+          ],
+          "properties": {
+            "reads": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },

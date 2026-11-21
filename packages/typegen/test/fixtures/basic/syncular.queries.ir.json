@@ -1245,6 +1245,559 @@
       }
     },
     {
+      "name": "taskRevisions",
+      "file": "ambiguous-sync-coverage.syql",
+      "sourceSql": "select t.id AS \"taskId\", r.id AS \"revisionId\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId\n    and r.project_id = :revisionProjectId\n  order by t.id, r.id",
+      "sql": "select t.id AS \"taskId\", r.id AS \"revisionId\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId\n    and r.project_id = :revisionProjectId\n  order by t.id, r.id",
+      "positionalSql": "select t.id AS \"taskId\", r.id AS \"revisionId\" from tasks as t join doc_revisions as r on r.doc_id = t.id where t.project_id = ? and r.org_id = ? and r.project_id = ? order by t.id, r.id",
+      "relations": [
+        {
+          "table": "tasks",
+          "start": 51,
+          "end": 56,
+          "alias": "t"
+        },
+        {
+          "table": "doc_revisions",
+          "start": 67,
+          "end": 80,
+          "alias": "r"
+        }
+      ],
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        },
+        {
+          "name": "revisionProjectId",
+          "langName": "revisionProjectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "task_id",
+          "langName": "taskId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "revision_id",
+          "langName": "revisionId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "doc_revisions",
+            "column": "id"
+          }
+        }
+      ],
+      "tables": [
+        "doc_revisions",
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "doc_revisions",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              },
+              {
+                "variable": "projectId",
+                "pattern": "project:{projectId}",
+                "params": [
+                  "revisionProjectId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "doc_revisions",
+            "variable": "projectId",
+            "units": [
+              "revisionProjectId"
+            ],
+            "fixedScopes": [
+              {
+                "variable": "org_id",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "taskId",
+          "revisionId"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "orgId",
+            "langName": "orgId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "revisionProjectId",
+            "langName": "revisionProjectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select t.id AS \"taskId\", r.id AS \"revisionId\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId\n    and r.project_id = :revisionProjectId\n  order by t.id, r.id",
+              "positionalSql": "select t.id AS \"taskId\", r.id AS \"revisionId\" from tasks as t join doc_revisions as r on r.doc_id = t.id where t.project_id = ? and r.org_id = ? and r.project_id = ? order by t.id, r.id",
+              "relations": [
+                {
+                  "table": "tasks",
+                  "start": 51,
+                  "end": 56,
+                  "alias": "t"
+                },
+                {
+                  "table": "doc_revisions",
+                  "start": 67,
+                  "end": 80,
+                  "alias": "r"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "value",
+                  "name": "orgId",
+                  "type": "string",
+                  "input": "orgId"
+                },
+                {
+                  "kind": "value",
+                  "name": "revisionProjectId",
+                  "type": "string",
+                  "input": "revisionProjectId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "taskId",
+          "revisionId"
+        ]
+      }
+    },
+    {
+      "name": "taskOriginal",
+      "file": "authority-reads.syql",
+      "sourceSql": "select t.id, t.title, t.done, t._sync_version AS \"serverVersion\" from tasks as t\n  where t.project_id = :projectId\n    and t.id = :taskId",
+      "sql": "select t.id, t.title, t.done, t._sync_version AS \"serverVersion\" from tasks as t\n  where t.project_id = :projectId\n    and t.id = :taskId",
+      "positionalSql": "select t.id, t.title, t.done, t._sync_version AS \"serverVersion\" from tasks as t where t.project_id = ? and t.id = ?",
+      "relations": [
+        {
+          "table": "tasks",
+          "start": 70,
+          "end": 75,
+          "alias": "t"
+        }
+      ],
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "taskId",
+          "langName": "taskId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
+        },
+        {
+          "name": "server_version",
+          "langName": "serverVersion",
+          "type": "integer",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "taskId",
+            "langName": "taskId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select t.id, t.title, t.done, t._sync_version AS \"serverVersion\" from tasks as t\n  where t.project_id = :projectId\n    and t.id = :taskId",
+              "positionalSql": "select t.id, t.title, t.done, t._sync_version AS \"serverVersion\" from tasks as t where t.project_id = ? and t.id = ?",
+              "relations": [
+                {
+                  "table": "tasks",
+                  "start": 70,
+                  "end": 75,
+                  "alias": "t"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "value",
+                  "name": "taskId",
+                  "type": "string",
+                  "input": "taskId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ],
+        "authority": {
+          "reads": {
+            "tasks": [
+              "_sync_version",
+              "done",
+              "id",
+              "project_id",
+              "title"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projectRevisionCover",
+      "file": "authority-reads.syql",
+      "sourceSql": "select count(r.id) AS \"revisionCount\", cast(max(t.priority) as integer) AS \"topPriority\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId",
+      "sql": "select count(r.id) AS \"revisionCount\", cast(max(t.priority) as integer) AS \"topPriority\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId",
+      "positionalSql": "select count(r.id) AS \"revisionCount\", cast(max(t.priority) as integer) AS \"topPriority\" from tasks as t join doc_revisions as r on r.doc_id = t.id where t.project_id = ? and r.org_id = ?",
+      "relations": [
+        {
+          "table": "tasks",
+          "start": 94,
+          "end": 99,
+          "alias": "t"
+        },
+        {
+          "table": "doc_revisions",
+          "start": 110,
+          "end": 123,
+          "alias": "r"
+        }
+      ],
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "revision_count",
+          "langName": "revisionCount",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "fallback"
+        },
+        {
+          "name": "top_priority",
+          "langName": "topPriority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "fallback"
+        }
+      ],
+      "tables": [
+        "doc_revisions",
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "doc_revisions",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "doc_revisions",
+            "variable": "org_id",
+            "units": [
+              "orgId"
+            ],
+            "fixedScopes": []
+          },
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "orgId",
+            "langName": "orgId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select count(r.id) AS \"revisionCount\", cast(max(t.priority) as integer) AS \"topPriority\" from tasks as t\n  join doc_revisions as r on r.doc_id = t.id\n  where t.project_id = :projectId\n    and r.org_id = :orgId",
+              "positionalSql": "select count(r.id) AS \"revisionCount\", cast(max(t.priority) as integer) AS \"topPriority\" from tasks as t join doc_revisions as r on r.doc_id = t.id where t.project_id = ? and r.org_id = ?",
+              "relations": [
+                {
+                  "table": "tasks",
+                  "start": 94,
+                  "end": 99,
+                  "alias": "t"
+                },
+                {
+                  "table": "doc_revisions",
+                  "start": 110,
+                  "end": 123,
+                  "alias": "r"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "value",
+                  "name": "orgId",
+                  "type": "string",
+                  "input": "orgId"
+                }
+              ]
+            }
+          ]
+        },
+        "authority": {
+          "reads": {
+            "doc_revisions": [
+              "doc_id",
+              "id",
+              "org_id"
+            ],
+            "tasks": [
+              "id",
+              "priority",
+              "project_id"
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "facilityDocs",
       "file": "facility-docs.syql",
       "sourceSql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs\n  where docs.org_id = :orgId\n  order by docs.id",

@@ -109,6 +109,9 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
               ...(query.syql.identity === undefined
                 ? {}
                 : { identity: query.syql.identity }),
+              ...(query.syql.authority === undefined
+                ? {}
+                : { authority: { reads: query.syql.authority.reads } }),
             },
           }),
     })),

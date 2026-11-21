@@ -329,12 +329,16 @@ function emitRunner(query: AnalyzedQuery): string[] {
 }
 
 export function emitQueriesKotlinModule(
-  queries: readonly AnalyzedQuery[],
+  analyzed: readonly AnalyzedQuery[],
   hash: string,
   irVersion: number,
   packageName: string,
   objectName: string,
 ): string {
+  // Kotlin has no authority read; authority queries emit nothing here.
+  const queries = analyzed.filter(
+    (query) => query.syql?.authority === undefined,
+  );
   const parts: string[] = [];
   parts.push(
     [

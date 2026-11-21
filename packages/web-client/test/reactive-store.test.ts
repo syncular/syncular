@@ -313,7 +313,7 @@ describe('leader link recovery', () => {
       retryable: true,
     });
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks();
@@ -363,7 +363,7 @@ describe('leader link recovery', () => {
       'the follower link was closed',
     );
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks();
@@ -514,7 +514,7 @@ describe('rejected claim recovery (SPEC §7.8)', () => {
     await drainMicrotasks();
     client.setWindowFailure = failure();
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks(24);
@@ -762,7 +762,7 @@ describe('revision race gates', () => {
     client.setWindowGate = gate.promise;
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const phases: string[] = [];
     const off = entry.subscribe(() => phases.push(entry.getSnapshot().phase));
@@ -826,7 +826,7 @@ describe('failed sync rounds', () => {
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
       querySpec({
-        coverage: [{ base: BASE, units: ['p1'] }],
+        coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }],
         publishFirstAnswer: true,
       }),
     );
@@ -906,7 +906,7 @@ describe('failed sync rounds', () => {
     client.snapshots.push(cached, cached);
     const store = new ReactiveClientStore(client);
     const partial = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const offPartial = partial.subscribe(() => {});
     await drainMicrotasks();
@@ -995,7 +995,7 @@ describe('reads during an import (SPEC §7.8)', () => {
   function mount(client: ImportingClient, units = ['p1']) {
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units }] }),
     );
     const phases: string[] = [];
     const off = entry.subscribe(() => phases.push(entry.getSnapshot().phase));
@@ -1300,7 +1300,7 @@ describe('local snapshots during window registration', () => {
     );
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks();
@@ -1338,7 +1338,9 @@ describe('local snapshots during window registration', () => {
       });
       const store = new ReactiveClientStore(client);
       const entry = store.query<Row>(
-        querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+        querySpec({
+          coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }],
+        }),
       );
       const off = entry.subscribe(() => {});
       await drainMicrotasks();
@@ -1375,7 +1377,7 @@ describe('local snapshots during window registration', () => {
     });
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks();
@@ -1400,7 +1402,7 @@ describe('local snapshots during window registration', () => {
     client.snapshots.push(read.promise);
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }] }),
     );
     const off = entry.subscribe(() => {});
     await drainMicrotasks();
@@ -1490,13 +1492,13 @@ describe('composable windows and domain routing', () => {
     const left = store.query<Row>(
       querySpec({
         params: ['b'],
-        coverage: [{ base: BASE, units: ['b', 'a', 'a'] }],
+        coverage: [{ table: 'tasks', base: BASE, units: ['b', 'a', 'a'] }],
       }),
     );
     const right = store.query<Row>(
       querySpec({
         params: ['c'],
-        coverage: [{ base: BASE, units: ['c', 'b'] }],
+        coverage: [{ table: 'tasks', base: BASE, units: ['c', 'b'] }],
       }),
     );
     const offLeft = left.subscribe(() => undefined);
@@ -1529,9 +1531,9 @@ describe('composable windows and domain routing', () => {
     const entry = store.query<Row>(
       querySpec({
         coverage: [
-          { base: BASE, units: ['p1'] },
-          { base: { variable: 'org_id' }, units: ['o1'] },
-          { base: BASE, units: ['p2'] },
+          { table: 'tasks', base: BASE, units: ['p1'] },
+          { table: 'docs', base: { variable: 'org_id' }, units: ['o1'] },
+          { table: 'docs', base: BASE, units: ['p2'] },
         ],
       }),
     );
@@ -1539,7 +1541,8 @@ describe('composable windows and domain routing', () => {
     await drainMicrotasks();
 
     // The composed spec's later entry for the same base accumulates, so the
-    // first entry's units survive registration.
+    // first entry's units survive registration. Entries name tables, but a
+    // claim registers exactly the units of its base (§4.8): one claim per base.
     expect(client.setWindowCalls).toEqual([
       { base: BASE, units: ['p1', 'p2'] },
       { base: { variable: 'org_id' }, units: ['o1'] },
@@ -1887,7 +1890,11 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
     const store = new ReactiveClientStore(client);
     const off = store
-      .query<Row>(querySpec({ coverage: [{ base: BASE, units: ['r3'] }] }))
+      .query<Row>(
+        querySpec({
+          coverage: [{ table: 'tasks', base: BASE, units: ['r3'] }],
+        }),
+      )
       .subscribe(() => undefined);
     await drainMicrotasks();
     expect(client.setWindowCalls).toEqual([{ base: BASE, units: HELD }]);
@@ -2240,7 +2247,9 @@ describe('observation ownership', () => {
   test('same-microtask remount preserves rows, sharing and window claims', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);
-    const spec = querySpec({ coverage: [{ base: BASE, units: ['p1'] }] });
+    const spec = querySpec({
+      coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }],
+    });
     client.snapshots.push({
       revision: 1n,
       rows: [{ id: 'id', title: 'kept' }],
@@ -2342,7 +2351,7 @@ describe('observation ownership', () => {
       (error: unknown) => error,
     );
     const query = store.query<Row>(
-      querySpec({ coverage: [{ base: BASE, units: ['old'] }] }),
+      querySpec({ coverage: [{ table: 'tasks', base: BASE, units: ['old'] }] }),
     );
     query.subscribe(() => undefined);
     store.dispose();
@@ -2556,7 +2565,7 @@ describe('schema bump availability (SPEC §7.4.5)', () => {
       querySpec({
         id: 'queries:listReset:hash',
         params: ['p2'],
-        coverage: [{ base: BASE, units: ['p2'] }],
+        coverage: [{ table: 'tasks', base: BASE, units: ['p2'] }],
       }),
     );
     const offKept = kept.subscribe(() => {});

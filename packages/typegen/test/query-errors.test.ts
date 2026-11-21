@@ -19,7 +19,6 @@ import {
   toPositionalSql,
   TypegenError,
 } from '../src';
-import { windowBases } from '../src/query';
 
 const IR: IrDocument = {
   irVersion: 1,
@@ -318,41 +317,45 @@ describe('reactive metadata is proof-based', () => {
     expect(grouped.reactive.rowKey).toBeUndefined();
   });
 
-  test('window bases name no table and hold one value per fixed scope', () => {
-    expect(
-      windowBases([
+  test('a fixed scope bound to several values claims no coverage', () => {
+    const messages: IrDocument = {
+      ...IR,
+      tables: [
         {
-          table: 'messages',
-          variable: 'thread_id',
-          units: ['thread'],
-          fixedScopes: [{ variable: 'room_id', params: ['a', 'b'] }],
+          name: 'messages',
+          primaryKey: 'id',
+          columns: [
+            { name: 'id', type: 'string', nullable: false },
+            { name: 'room_id', type: 'string', nullable: false },
+            { name: 'thread_id', type: 'string', nullable: false },
+          ],
+          scopes: [
+            {
+              pattern: 'thread:{thread_id}',
+              variable: 'thread_id',
+              column: 'thread_id',
+            },
+            {
+              pattern: 'room:{room_id}',
+              variable: 'room_id',
+              column: 'room_id',
+            },
+          ],
+          references: [],
+          indexes: [],
+          ftsIndexes: [],
+          extensions: {},
         },
-        {
-          table: 'todos',
-          variable: 'list_id',
-          units: ['list'],
-          fixedScopes: [],
-        },
-        {
-          table: 'todo_details',
-          variable: 'list_id',
-          units: ['list'],
-          fixedScopes: [],
-        },
-      ]),
-    ).toEqual([
-      { variable: 'list_id', units: ['list'], fixedScopes: [] },
-      {
-        variable: 'thread_id',
-        units: ['thread'],
-        fixedScopes: [{ variable: 'room_id', param: 'a' }],
-      },
-      {
-        variable: 'thread_id',
-        units: ['thread'],
-        fixedScopes: [{ variable: 'room_id', param: 'b' }],
-      },
-    ]);
+      ],
+    };
+    const query = analyzeQuery(
+      'q.sql',
+      'SELECT id FROM messages WHERE thread_id = :thread AND room_id IN (:a, :b)',
+      messages,
+      makeQueryDb(messages).db,
+    );
+    expect(query.reactive.coverage).toEqual([]);
+    expect(query.reactive.dependencies[0]?.scopes).toHaveLength(2);
   });
 });
 

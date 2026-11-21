@@ -20,7 +20,9 @@ import type {
 } from './invalidation';
 import type { LeadershipState } from './multi-tab';
 import type { SyncProgressListener } from './progress';
-import { type WindowBase, windowBaseKey } from './window';
+import { subsetScopes } from './state';
+import type { WindowBase } from './window';
+import { windowBaseKey, windowKeyScopes, windowUnitScopes } from './window';
 
 export interface QueryDependency {
   readonly table: string;
@@ -224,12 +226,19 @@ function batchMatches<Row>(
       }
     }
   }
-  for (const change of batch.windows) {
-    for (const coverage of spec.coverage ?? []) {
-      if (windowBaseKey(coverage.base) !== change.baseKey) continue;
-      if (coverage.units.some((unit) => change.units.has(unit))) return true;
+  // §4.8: a unit change reaches every entry it can prove (§7.5 subset
+  // predicate); for the entry's own base that is the exact value match.
+  for (const change of batch.windows)
+    for (const unit of change.units) {
+      const scopes = windowKeyScopes(change.baseKey, unit);
+      for (const coverage of spec.coverage ?? [])
+        if (
+          coverage.units.some((value) =>
+            subsetScopes(scopes, windowUnitScopes(coverage.base, value)),
+          )
+        )
+          return true;
     }
-  }
   return false;
 }
 
@@ -1208,6 +1217,7 @@ export class ReactiveClientStore {
         : { scopeKeys: [...new Set(dependency.scopeKeys)].sort() }),
     }));
     const coverage = (spec.coverage ?? []).map((item) => ({
+      table: item.table,
       baseKey: windowBaseKey(item.base),
       units: [...new Set(item.units)].sort(),
     }));

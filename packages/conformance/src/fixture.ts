@@ -3,7 +3,12 @@
  * multi-variable scope declarations (§3.1) and every non-bytes column
  * type (§2.4; bytes columns are pinned by the golden vectors).
  */
-import type { DriverRow, DriverSchema, DriverTable } from './driver';
+import type {
+  DriverAuthorityQuery,
+  DriverRow,
+  DriverSchema,
+  DriverTable,
+} from './driver';
 
 export const PARTITION = 'part-1';
 
@@ -201,4 +206,244 @@ export function item(
     cascade_parent: parents.cascade ?? null,
     nullify_parent: parents.nullify ?? null,
   };
+}
+
+/**
+ * SPEC §5.11 authority fixture: an OP pointer (`surgeries`), its seal
+ * (`surgery_sealed_identities`), the record-key wrap (`record_key_wraps`,
+ * scoped by recipient and sealer) and the workspace participant table.
+ */
+export const AUTHORITY_FIXTURE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'surgeries',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'workspace_id', type: 'string', nullable: false },
+        { name: 'practice_facility_id', type: 'string', nullable: false },
+        { name: 'sealed_identity_id', type: 'string', nullable: true },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'opread:{op_read_workspace_id}', column: 'workspace_id' },
+      ],
+    },
+    {
+      name: 'surgery_sealed_identities',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'workspace_id', type: 'string', nullable: false },
+        { name: 'record_key_id', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'opread:{op_read_workspace_id}', column: 'workspace_id' },
+      ],
+    },
+    {
+      name: 'record_key_wraps',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'record_key_id', type: 'string', nullable: false },
+        { name: 'recipient_facility_id', type: 'string', nullable: false },
+        { name: 'sealer_facility_id', type: 'string', nullable: false },
+        { name: 'epoch_id', type: 'string', nullable: false },
+        { name: 'expires_at_ms', type: 'integer', nullable: true },
+        { name: 'revoked_at_ms', type: 'integer', nullable: true },
+        { name: 'wrapped_key', type: 'bytes', nullable: true },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'key-wraps:{recipient_facility_id}' },
+        { pattern: 'sealer:{sealer_facility_id}' },
+      ],
+    },
+    {
+      name: 'workspace_participants',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'workspace_id', type: 'string', nullable: false },
+        { name: 'facility_id', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'access:{workspace_access_id}', column: 'workspace_id' },
+      ],
+    },
+  ],
+};
+
+const WRAP_COVER_SQL =
+  'select count(w.id) > 0 as qualifying, max(w.expires_at_ms) as latest_expires_at_ms, ' +
+  'coalesce(max(w.expires_at_ms is null), 0) as unbounded_expiry ' +
+  'from surgeries as s ' +
+  'join surgery_sealed_identities as i on i.id = s.sealed_identity_id and i.workspace_id = s.workspace_id ' +
+  'join record_key_wraps as w on w.record_key_id = i.record_key_id ' +
+  'join workspace_participants as p on p.workspace_id = s.workspace_id ' +
+  'where s.workspace_id = ? and w.recipient_facility_id = ? and p.facility_id = ? ' +
+  'and w.epoch_id = ? and w.revoked_at_ms is null ' +
+  'and (w.expires_at_ms is null or w.expires_at_ms > ?)';
+
+const WRAP_COVER_PARAMS: DriverAuthorityQuery['params'] = [
+  { name: 'centreFacilityId', type: 'string', nullable: false },
+  { name: 'workspaceId', type: 'string', nullable: false },
+  { name: 'epochId', type: 'string', nullable: false },
+  { name: 'trustedNowMs', type: 'integer', nullable: false },
+];
+
+const WRAP_COVER_READS: DriverAuthorityQuery['reads'] = {
+  record_key_wraps: [
+    'epoch_id',
+    'expires_at_ms',
+    'id',
+    'recipient_facility_id',
+    'record_key_id',
+    'revoked_at_ms',
+  ],
+  surgeries: ['sealed_identity_id', 'workspace_id'],
+  surgery_sealed_identities: ['id', 'record_key_id', 'workspace_id'],
+  workspace_participants: ['facility_id', 'workspace_id'],
+};
+
+const WRAP_COVER_RESULT: DriverAuthorityQuery['resultColumns'] = [
+  { name: 'qualifying', type: 'boolean', nullable: false },
+  { name: 'latest_expires_at_ms', type: 'integer', nullable: true },
+  { name: 'unbounded_expiry', type: 'boolean', nullable: false },
+];
+
+/** Diego's centre query as typegen emits it (SYQL.md §13.3). */
+export const CENTRE_WRAP_COVER: DriverAuthorityQuery = {
+  name: 'centreRecordWrapCover',
+  sql: WRAP_COVER_SQL,
+  bind: [
+    'workspaceId',
+    'centreFacilityId',
+    'centreFacilityId',
+    'epochId',
+    'trustedNowMs',
+  ],
+  params: WRAP_COVER_PARAMS,
+  coverage: [
+    {
+      table: 'record_key_wraps',
+      variable: 'recipient_facility_id',
+      units: ['centreFacilityId'],
+    },
+    {
+      table: 'surgeries',
+      variable: 'op_read_workspace_id',
+      units: ['workspaceId'],
+    },
+    {
+      table: 'surgery_sealed_identities',
+      variable: 'op_read_workspace_id',
+      units: ['workspaceId'],
+    },
+    {
+      table: 'workspace_participants',
+      variable: 'workspace_access_id',
+      units: ['workspaceId'],
+    },
+  ],
+  reads: WRAP_COVER_READS,
+  resultColumns: WRAP_COVER_RESULT,
+};
+
+/**
+ * The centre query with the sealer integrity chain: the wrap's sealer is
+ * the OP's practice. The chain proves `sealer_facility_id`, a fixed scope of
+ * the wrap entry, so a recipient-only unit proves it by the subset rule.
+ */
+export const CENTRE_WRAP_COVER_SEALED: DriverAuthorityQuery = {
+  ...CENTRE_WRAP_COVER,
+  name: 'centreRecordWrapCoverSealed',
+  sql: `${WRAP_COVER_SQL} and w.sealer_facility_id = ? and s.practice_facility_id = ?`,
+  bind: [...CENTRE_WRAP_COVER.bind, 'sealerFacilityId', 'sealerFacilityId'],
+  params: [
+    ...WRAP_COVER_PARAMS,
+    { name: 'sealerFacilityId', type: 'string', nullable: false },
+  ],
+  coverage: CENTRE_WRAP_COVER.coverage.map((entry) =>
+    entry.table === 'record_key_wraps'
+      ? { ...entry, fixedScopes: { sealer_facility_id: 'sealerFacilityId' } }
+      : entry,
+  ),
+  reads: {
+    ...WRAP_COVER_READS,
+    record_key_wraps: [
+      ...(WRAP_COVER_READS['record_key_wraps'] ?? []),
+      'sealer_facility_id',
+    ].sort(),
+    surgeries: ['practice_facility_id', 'sealed_identity_id', 'workspace_id'],
+  },
+};
+
+/** A per-project lookup of accepted task originals (SPEC §5.11). */
+export const TASK_ORIGINALS: DriverAuthorityQuery = {
+  name: 'taskOriginals',
+  sql: 'select t.id, t.project_id, t.title, t._sync_version as server_version from tasks as t where t.project_id = ? order by t.id',
+  bind: ['projectId'],
+  params: [{ name: 'projectId', type: 'string', nullable: false }],
+  coverage: [{ table: 'tasks', variable: 'project_id', units: ['projectId'] }],
+  reads: { tasks: ['_sync_version', 'id', 'project_id', 'title'] },
+  resultColumns: [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+    { name: 'title', type: 'string', nullable: false },
+    { name: 'server_version', type: 'integer', nullable: false },
+  ],
+};
+
+export function surgery(
+  id: string,
+  workspaceId: string,
+  sealedIdentityId: string | null,
+  practiceFacilityId = 'p1',
+): DriverRow {
+  return {
+    id,
+    workspace_id: workspaceId,
+    practice_facility_id: practiceFacilityId,
+    sealed_identity_id: sealedIdentityId,
+  };
+}
+
+export function sealedIdentity(
+  id: string,
+  workspaceId: string,
+  recordKeyId: string,
+): DriverRow {
+  return { id, workspace_id: workspaceId, record_key_id: recordKeyId };
+}
+
+export function wrap(
+  id: string,
+  recordKeyId: string,
+  expiresAtMs: number | null,
+  options: {
+    readonly recipient?: string;
+    readonly sealer?: string;
+    readonly epoch?: string;
+    readonly revokedAtMs?: number | null;
+  } = {},
+): DriverRow {
+  return {
+    id,
+    record_key_id: recordKeyId,
+    recipient_facility_id: options.recipient ?? 'c1',
+    sealer_facility_id: options.sealer ?? 'p1',
+    epoch_id: options.epoch ?? 'e1',
+    expires_at_ms: expiresAtMs,
+    revoked_at_ms: options.revokedAtMs ?? null,
+    wrapped_key: null,
+  };
+}
+
+export function participant(
+  id: string,
+  workspaceId: string,
+  facilityId: string,
+): DriverRow {
+  return { id, workspace_id: workspaceId, facility_id: facilityId };
 }

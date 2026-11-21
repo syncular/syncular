@@ -25,7 +25,11 @@ import {
   facilityDocsQuery,
   joinedSyncCoverageQuery,
   outerJoinValues,
+  projectRevisionCoverAuthority,
   QueryResultDecodeError,
+  taskOriginalAuthority,
+  taskOriginalMapRow,
+  taskRevisionsQuery,
 } from './fixtures/basic/syncular.queries';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'basic');
@@ -49,6 +53,7 @@ describe('named-query emitter goldens', () => {
   test('an independent scope emits a facility-only window and dependency', () => {
     expect(facilityDocsQuery.coverage({ orgId: 'host' })).toEqual([
       {
+        table: 'docs',
         base: { variable: 'org_id' },
         units: ['host'],
       },
@@ -150,11 +155,73 @@ describe('named-query emitter goldens', () => {
       joinedSyncCoverageQuery.coverage({ orgId: 'o1', projectId: 'p1' }),
     ).toEqual([
       {
+        table: 'docs',
         base: { variable: 'projectId', fixedScopes: { org_id: 'o1' } },
         units: ['p1'],
       },
-      { base: { variable: 'project_id' }, units: ['p1'] },
+      { table: 'tasks', base: { variable: 'project_id' }, units: ['p1'] },
     ]);
+  });
+
+  test('a joined table whose sole proven scope binds another input covers that unit', () => {
+    expect(projectRevisionCoverAuthority.coverage).toEqual([
+      { table: 'doc_revisions', variable: 'org_id', units: ['orgId'] },
+      { table: 'tasks', variable: 'project_id', units: ['projectId'] },
+    ]);
+  });
+
+  test('a later `by` entry selects the unit of an ambiguous joined table', () => {
+    expect(
+      taskRevisionsQuery.coverage({
+        projectId: 'p1',
+        orgId: 'o1',
+        revisionProjectId: 'p2',
+      }),
+    ).toEqual([
+      {
+        table: 'doc_revisions',
+        base: { variable: 'projectId', fixedScopes: { org_id: 'o1' } },
+        units: ['p2'],
+      },
+      { table: 'tasks', base: { variable: 'project_id' }, units: ['p1'] },
+    ]);
+  });
+
+  test('an authority query emits a data-only declaration and no reactive query', async () => {
+    expect(taskOriginalAuthority).toEqual({
+      name: 'taskOriginal',
+      sql: 'select t.id, t.title, t.done, t._sync_version AS "serverVersion" from tasks as t where t.project_id = ? and t.id = ?',
+      bind: ['projectId', 'taskId'],
+      params: [
+        { name: 'projectId', type: 'string', nullable: false },
+        { name: 'taskId', type: 'string', nullable: false },
+      ],
+      coverage: [
+        { table: 'tasks', variable: 'project_id', units: ['projectId'] },
+      ],
+      reads: { tasks: ['_sync_version', 'done', 'id', 'project_id', 'title'] },
+      resultColumns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        { name: 'done', type: 'boolean', nullable: false },
+        { name: 'serverVersion', type: 'integer', nullable: false },
+      ],
+    });
+    expect(structuredClone(taskOriginalAuthority)).toEqual(
+      taskOriginalAuthority,
+    );
+    expect(
+      taskOriginalMapRow({ id: 't1', title: 'a', done: 1, serverVersion: 3 }),
+    ).toEqual({ id: 't1', title: 'a', done: true, serverVersion: 3 });
+    const generated = await import('./fixtures/basic/syncular.queries');
+    expect('taskOriginalQuery' in generated).toBe(false);
+    expect('taskOriginal' in generated).toBe(false);
+    const native = ['swift', 'kotlin', 'dart'] as const;
+    for (const lang of native)
+      expect(outputFor(QUERY_FILES[lang])).not.toContain('askOriginal');
+    expect(outputFor(QUERY_FILES.rust)).toContain(
+      `pub const TASK_ORIGINAL_AUTHORITY: &str = r#"${JSON.stringify(taskOriginalAuthority)}"#;`,
+    );
   });
 
   test('required-only SYQL Rust output has no unused activation mask', () => {

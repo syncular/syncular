@@ -10,7 +10,6 @@ import {
 } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { ClientSyncReport, DriverRow, DriverUnitScopes } from '../driver';
-import { ALL_SCOPES } from '../fixture';
 import {
   decodeResponse,
   rawPushCommit,
@@ -125,15 +124,14 @@ export async function seedRows(
   rows: readonly DriverRow[],
   actorId = 'seed-actor',
 ): Promise<void> {
-  // Grant every fixture variable the server schema declares; a resolver
-  // that returns an undeclared variable fails the request (§3.2).
-  const declared = JSON.stringify(ctx.serverSchema.tables.map((t) => t.scopes));
+  // Grant every variable the server schema declares; a resolver that
+  // returns an undeclared variable fails the request (§3.2).
   await ctx.server.setAllowedScopes(
     actorId,
     Object.fromEntries(
-      Object.entries(ALL_SCOPES).filter(([variable]) =>
-        declared.includes(`{${variable}}`),
-      ),
+      JSON.stringify(ctx.serverSchema.tables.map((t) => t.scopes))
+        .match(/\{\w+\}/g)
+        ?.map((variable) => [variable.slice(1, -1), ['*']]) ?? [],
     ),
   );
   seedCounter += 1;

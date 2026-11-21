@@ -123,6 +123,7 @@
         "kind": { "const": "query" },
         "name": { "$ref": "#/$defs/camelName" },
         "sync": { "type": "boolean" },
+        "authority": { "const": true },
         "syncBy": {
           "type": "object",
           "additionalProperties": false,
@@ -130,6 +131,19 @@
           "properties": {
             "qualifier": { "type": "string" },
             "column": { "type": "string" }
+          }
+        },
+        "syncByJoined": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["qualifier", "column"],
+            "properties": {
+              "qualifier": { "type": "string" },
+              "column": { "type": "string" }
+            }
           }
         },
         "parameters": {

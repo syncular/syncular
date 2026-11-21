@@ -142,7 +142,7 @@ describe('local querySnapshot performance lanes', () => {
         sql: 'SELECT id, title FROM tasks WHERE project_id = ?',
         params: [unit],
         dependencies: [{ table: 'tasks', scopeKeys: [`project:${unit}`] }],
-        coverage: [{ base, units: [unit] }],
+        coverage: [{ table: 'tasks', base, units: [unit] }],
         rowKey: (row) => [row.id],
       });
       const started = performance.now();

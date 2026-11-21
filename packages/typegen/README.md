@@ -780,14 +780,16 @@ sync query compareLists(left, right) {
 
 Coverage must resolve every read schema table and bind at least one declared
 scope on every table instance. Select the unit with `by` for a multi-scope
-table. The descriptor includes all proven dimensions; unbound dimensions are
-omitted. A required scope bind can propagate across a qualified
+table. A joined table's unit dimension is the one dimension the query proves
+for it; a table that proves several takes the one whose parameters match the
+anchor's unit, and when none or several match, a later `by` entry such as
+`by s.workspace_id, w.recipient_facility_id` names it. The descriptor includes
+all proven dimensions; unbound dimensions are omitted. A required scope bind can propagate across a qualified
 scope-column equality in an unconditional outer `WHERE` clause or a simple
 mandatory `ON` clause. The analysis holds aggregate coverage for every table,
 and readiness requires all of it. The generated descriptor's `coverage(params)`
-returns window bases (SPEC §4.8), `{ base: { variable, fixedScopes? }, units }`:
-a base names no table, so tables proven by the same base share one entry, and
-a fixed scope holds one value. A self-join claims coverage when
+returns one entry per read table, `{ table, base: { variable, fixedScopes? }, units }`,
+whose base is a window base (SPEC §4.8); a fixed scope holds one value. A self-join claims coverage when
 every instance of the table carries the same proof (the same scopes, operators,
 and parameters); the descriptor then holds one coverage entry and one
 dependency for that table. An unproven instance or differing proofs fail with
@@ -803,6 +805,19 @@ completeness.
 Use explicit `JOIN ... ON` relations. SQLite comma joins are rejected because
 the compiler will not emit reactive metadata unless every read relation is
 represented by the same proof model.
+
+`authority query` declares a read that the client runs over the accepted base
+of its replica (SPEC §5.11). It follows every `sync query` coverage rule and
+adds the SYQL §13.3 restrictions: one statement over schema tables, no dynamic
+sort, limit or conditional predicate, required scalar inputs, and only plain,
+unencrypted columns or `_sync_version` read in any clause. A violation fails
+with `SYQL6009_INVALID_AUTHORITY_QUERY`. The TS output holds a row type, a
+params type, a row mapper and `<name>Authority: AuthorityQuery`, a data-only
+declaration with the positional `sql`, `bind`, `params`, `coverage`, the
+read set `reads` and `resultColumns` for `defineAuthorityReads`. The Rust
+output holds the same declaration as the JSON constant
+`<NAME>_AUTHORITY`. Swift, Kotlin and Dart emit nothing for an authority
+query, and no target emits it as a reactive query.
 
 **Emitted shape, per language** (abbreviated):
 

@@ -397,6 +397,16 @@ impl SyncularCore {
         self.transport.set_header_source(source);
     }
 
+    /// §5.11: install the native authority ceiling, table to permitted
+    /// columns. Every later `create` prepares each declared authority query
+    /// under the SQLite authorizer and refuses one that reads outside it.
+    pub fn set_authority_ceiling(
+        &mut self,
+        ceiling: std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        self.effects.authority_ceiling = Some(ceiling);
+    }
+
     /// Release the socket/reader thread. Idempotent.
     pub fn shutdown(&mut self) {
         if let Some(mut client) = self.client.take() {

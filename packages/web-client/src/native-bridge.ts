@@ -422,7 +422,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     if (
       this.#securityLifecycle === 'preflight' &&
       ![
-        'authoritySnapshot',
+        'authorityRead',
         'securityLifecycle',
         'beginSecurityPreflight',
         'activateSecurity',

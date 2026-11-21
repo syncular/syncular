@@ -7,6 +7,7 @@
  * opfs-sahpool in Chromium).
  */
 import { defineAuthorityReads } from '@syncular/client/authority';
+import type { AuthorityQuery } from '@syncular/client';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { unitId, decodeMessage } from '@syncular/core';
 import {
@@ -517,31 +518,52 @@ test('worker re-registration of an active unit keeps its completeness', async ()
   expect(await handle.unit(p2)).toEqual(complete);
 });
 
+const projectTitles: AuthorityQuery = {
+  name: 'projectTitles',
+  sql: 'SELECT id, title FROM tasks WHERE project_id = ? ORDER BY id',
+  bind: ['projectId'],
+  params: [{ name: 'projectId', type: 'string', nullable: false }],
+  coverage: [{ table: 'tasks', variable: 'project_id', units: ['projectId'] }],
+  reads: { tasks: ['id', 'project_id', 'title'] },
+  resultColumns: [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'title', type: 'string', nullable: false },
+  ],
+};
+
 test('worker preflight gates protected RPCs and activates the host loop later', async () => {
   const { handle, events } = await makeHandle({
     clientId: 'rpc-security-preflight',
     securityPreflight: true,
     transportGate: 'closed',
-    authorityReads: defineAuthorityReads([
-      {
-        table: 'tasks',
-        columns: ['id', 'project_id', 'title'],
-        scopes: { project_id: ['p1'] },
-      },
-    ]),
+    authorityReads: defineAuthorityReads([projectTitles]),
   });
 
   expect(await handle.securityLifecycle()).toBe('preflight');
-  expect(await handle.authoritySnapshot()).toMatchObject({
-    complete: false,
-    tables: [{ table: 'tasks', rows: [], coverage: 'missing' }],
-  });
-  expect(() =>
-    Reflect.apply(handle.authoritySnapshot, handle, [
+  const read = await handle.authorityRead([
+    { query: 'projectTitles', params: { projectId: 'p1' } },
+  ]);
+  expect(typeof read.revision).toBe('bigint');
+  expect(read.results).toEqual([
+    {
+      query: 'projectTitles',
+      rows: [],
+      coverage: [
+        {
+          table: 'tasks',
+          base: { variable: 'project_id' },
+          unit: 'p1',
+          state: 'missing',
+        },
+      ],
+      complete: false,
+    },
+  ]);
+  await expectRejectsWithCode(
+    Reflect.apply(handle.authorityRead, handle, [
       { sql: 'SELECT title FROM tasks' },
     ]),
-  ).toThrow(
-    expect.objectContaining({ code: 'client.authority_read_forbidden' }),
+    'client.authority_read_forbidden',
   );
   expect((await handle.statusSnapshot()).currentSchemaVersion).toBe(1);
   await expectRejectsWithCode(
@@ -1501,19 +1523,13 @@ test('ordinary worker rejects authority declarations before opening storage', as
       autoSync: false,
       multiTab: false,
       securityPreflight: true,
-      authorityReads: defineAuthorityReads([
-        {
-          table: 'tasks',
-          columns: ['id', 'project_id'],
-          scopes: { project_id: ['p1'] },
-        },
-      ]),
+      authorityReads: defineAuthorityReads([projectTitles]),
     }),
     'client.authority_read_forbidden',
   );
 });
 
-test('forged worker authority RPC arguments reach the core zero-argument refusal', async () => {
+test('forged worker authority RPC arguments reach the core one-argument refusal', async () => {
   const worker = new Worker(WORKER_URL);
   const handle = await createSyncClientHandle({
     leaderLock: singleOwnerLock(),
@@ -1524,13 +1540,7 @@ test('forged worker authority RPC arguments reach the core zero-argument refusal
     autoSync: false,
     multiTab: false,
     securityPreflight: true,
-    authorityReads: defineAuthorityReads([
-      {
-        table: 'tasks',
-        columns: ['id', 'project_id'],
-        scopes: { project_id: ['p1'] },
-      },
-    ]),
+    authorityReads: defineAuthorityReads([projectTitles]),
   });
   try {
     const reply = new Promise<WorkerErrorShape>((resolve) => {
@@ -1550,8 +1560,8 @@ test('forged worker authority RPC arguments reach the core zero-argument refusal
     worker.postMessage({
       t: 'call',
       id: 987654,
-      method: 'authoritySnapshot',
-      args: [{ sql: 'SELECT title FROM tasks' }],
+      method: 'authorityRead',
+      args: [[], { sql: 'SELECT title FROM tasks' }],
     });
     expect((await reply).code).toBe('client.authority_read_forbidden');
     expect(await handle.securityLifecycle()).toBe('preflight');

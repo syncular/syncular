@@ -536,7 +536,7 @@ export function startSyncWorkerCore(
     'previousVersionAudit',
     'previousVersionDiscard',
     'query',
-    'authoritySnapshot',
+    'authorityRead',
     'querySnapshot',
     'snapshotRead',
     'statusSnapshot',

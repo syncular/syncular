@@ -88,4 +88,16 @@ describe('revision-1 formatSyql', () => {
       expect(out).toContain(spelling);
     }
   });
+
+  test('formats an authority query and a multi-entry `by` list', () => {
+    const source = `authority query cover( workspaceId,centreId ) by s.workspace_id,w.recipient_id{select count(w.id) as wraps from surgeries as s join wraps as w on w.sealer_id = s.facility_id where s.workspace_id = :workspaceId and w.recipient_id = :centreId;}`;
+    expect(formatSyql('x.syql', source))
+      .toBe(`authority query cover(workspaceId, centreId) by s.workspace_id, w.recipient_id {
+  select count(w.id) as wraps
+  from surgeries as s join wraps as w on w.sealer_id = s.facility_id
+  where s.workspace_id = :workspaceId
+    and w.recipient_id = :centreId;
+}
+`);
+  });
 });

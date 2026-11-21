@@ -1464,6 +1464,7 @@ class RustClientInstance implements ClientInstance {
     sql: string,
     params: readonly DriverRowValue[] = [],
     coverage: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[] = [],
@@ -1501,6 +1502,7 @@ class RustClientInstance implements ClientInstance {
       readonly params?: readonly DriverRowValue[];
     }[];
     readonly coverage?: readonly {
+      readonly table: string;
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[];
@@ -1518,6 +1520,7 @@ class RustClientInstance implements ClientInstance {
         : {}),
     }));
     const coverage: JsonValue[] = (request.coverage ?? []).map((item) => ({
+      table: item.table,
       base: windowBaseJson(item.base),
       units: [...item.units],
     }));
@@ -1674,10 +1677,12 @@ class RustClientInstance implements ClientInstance {
     return typed;
   }
 
-  async authoritySnapshot(): Promise<
-    import('../driver').DriverAuthoritySnapshot
-  > {
-    const value = await this.#shim.call('authoritySnapshot', {});
+  async authorityRead(
+    requests: Parameters<ClientInstance['authorityRead']>[0],
+  ): Promise<import('../driver').DriverAuthorityReadResult> {
+    const value = await this.#shim.call('authorityRead', {
+      requests: JSON.parse(JSON.stringify(requests)),
+    });
     return JSON.parse(JSON.stringify(value));
   }
   async beginSecurityPreflight(): Promise<void> {
@@ -2219,6 +2224,13 @@ export const rustClientDriver: ClientDriver = {
       clientId: options.clientId,
       ...(options.authorityReads !== undefined
         ? { authorityReads: JSON.parse(JSON.stringify(options.authorityReads)) }
+        : {}),
+      ...(options.authorityColumns !== undefined
+        ? {
+            authorityColumns: JSON.parse(
+              JSON.stringify(options.authorityColumns),
+            ),
+          }
         : {}),
       ...(options.securityPreflight !== undefined
         ? { securityPreflight: options.securityPreflight }

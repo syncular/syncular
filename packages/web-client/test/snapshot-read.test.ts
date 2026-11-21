@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { SyncClient } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { unitId, type UnitScopes } from '@syncular/core';
+import { saveUnit, type UnitRecord } from '../src/state';
+import { windowBaseKey } from '../src/window';
 import { CLIENT_SCHEMA, taskValues } from './helpers';
 
 function makeLocalClient(): { db: BunClientDatabase; client: SyncClient } {
@@ -301,6 +304,72 @@ describe('§7.5 snapshot read surface', () => {
     }
     const legacy = client.commitDelivery('c');
     expect(legacy.status).toBe('known');
+    db.close();
+  });
+
+  test('coverage classifies each table entry by the subset rule over persisted units', async () => {
+    const { db, client } = makeLocalClient();
+    await client.start();
+    const unit = (scopes: UnitScopes, extra: Partial<UnitRecord> = {}) =>
+      saveUnit(db, {
+        id: unitId(scopes),
+        scopes,
+        explicit: true,
+        status: 'active',
+        cursor: 3,
+        seeded: [],
+        echo: [],
+        ...extra,
+      });
+    const base = { variable: 'projectId', fixedScopes: { org_id: 'o1' } };
+    const baseKey = windowBaseKey(base);
+    const coverage = (units: string[]) =>
+      client.snapshotRead({
+        statements: [],
+        coverage: [
+          { table: 'docs', base, units },
+          // A repeated entry reports each ref once.
+          { table: 'docs', base, units },
+        ],
+      }).coverage;
+    // An explicit unit outside any window, with fewer variables, proves it.
+    unit({ projectId: 'p1' });
+    expect(coverage(['p1'])).toEqual({
+      complete: true,
+      pending: [],
+      missing: [],
+      revoked: [],
+    });
+    expect(coverage(['p2'])).toEqual({
+      complete: false,
+      pending: [],
+      missing: [{ baseKey, unit: 'p2' }],
+      revoked: [],
+    });
+    // An echo restricting `org_id` leaves the entry pending.
+    unit(
+      { projectId: 'p2' },
+      {
+        echo: [{ table: 'docs', status: 'active', scopes: { org_id: ['o2'] } }],
+      },
+    );
+    expect(coverage(['p2']).pending).toEqual([{ baseKey, unit: 'p2' }]);
+    unit({ projectId: 'p2' }, { status: 'revoked' });
+    expect(coverage(['p2'])).toMatchObject({
+      pending: [{ baseKey, unit: 'p2' }],
+      revoked: [{ baseKey, unit: 'p2' }],
+    });
+    // A unit fixing another org value is no candidate.
+    unit({ org_id: 'o2' });
+    expect(coverage(['p3']).missing).toEqual([{ baseKey, unit: 'p3' }]);
+    unit({ org_id: 'o1' });
+    expect(coverage(['p3']).complete).toBe(true);
+    expect(() =>
+      client.snapshotRead({
+        statements: [],
+        coverage: [{ table: 'nope', base, units: ['p1'] }],
+      }),
+    ).toThrow(expect.objectContaining({ code: 'sync.unknown_table' }));
     db.close();
   });
 });

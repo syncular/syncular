@@ -988,7 +988,7 @@ if (!available) {
           (
             await client.snapshotRead({
               statements: [],
-              coverage: [{ base, units: ['one'] }],
+              coverage: [{ table: 'todos', base, units: ['one'] }],
             })
           ).coverage.complete,
         ).toBe(false);
@@ -997,7 +997,7 @@ if (!available) {
           (
             await client.snapshotRead({
               statements: [],
-              coverage: [{ base, units: ['one'] }],
+              coverage: [{ table: 'todos', base, units: ['one'] }],
             })
           ).coverage.complete,
         ).toBe(true);
@@ -1042,7 +1042,7 @@ if (!available) {
           (
             await client.snapshotRead({
               statements: [],
-              coverage: [{ base, units: ['one'] }],
+              coverage: [{ table: 'todos', base, units: ['one'] }],
             })
           ).coverage.complete,
         ).toBe(false);
@@ -1674,7 +1674,7 @@ if (!available) {
 }
 
 test.skipIf(!available)(
-  'real native authority snapshot keeps preflight and transport closed, rejects forged parameters, and discards a close-racing reply',
+  'real native authority read keeps preflight and transport closed, rejects forged parameters, and discards a close-racing reply',
   async () => {
     const harness = nativeTauri();
     try {
@@ -1685,29 +1685,42 @@ test.skipIf(!available)(
         transportGate: 'closed',
         authorityReads: defineAuthorityReads([
           {
-            table: 'todos',
-            columns: ['id', 'list_id', 'title'],
-            scopes: { list_id: ['l1'] },
+            name: 'listTitles',
+            sql: 'SELECT id, title, _sync_version AS v FROM todos WHERE list_id = ? ORDER BY id',
+            bind: ['listId'],
+            params: [{ name: 'listId', type: 'string', nullable: false }],
+            coverage: [
+              { table: 'todos', variable: 'list_id', units: ['listId'] },
+            ],
+            reads: { todos: ['_sync_version', 'id', 'list_id', 'title'] },
+            resultColumns: [
+              { name: 'id', type: 'string', nullable: false },
+              { name: 'title', type: 'string', nullable: false },
+              { name: 'v', type: 'integer', nullable: false },
+            ],
           },
         ]),
       });
       await harness.exec(
-        `INSERT INTO _syncular_base_todos VALUES('one','l1','accepted',7); INSERT INTO todos VALUES('one','l1','unaccepted',7); INSERT INTO _syncular_units(id,scopes,explicit,cursor,echo) VALUES('s','{"list_id":"l1"}',1,NULL,'[{"table":"todos","status":"active","scopes":{"list_id":["l1"]}}]');`,
+        `INSERT INTO todos VALUES('one','l1','accepted',7); INSERT INTO _syncular_units(id,scopes,explicit,cursor,echo) VALUES('s','{"list_id":"l1"}',1,NULL,'[{"table":"todos","status":"active","scopes":{"list_id":["l1"]}}]');`,
       );
       const before = await client.localRevision();
-      const snapshot = await client.authoritySnapshot();
-      expect(snapshot).toMatchObject({
+      const requests = [{ query: 'listTitles', params: { listId: 'l1' } }];
+      expect(await client.authorityRead(requests)).toEqual({
         revision: before,
-        complete: true,
-        tables: [
+        results: [
           {
-            rows: [
+            query: 'listTitles',
+            rows: [{ id: 'one', title: 'accepted', v: 7 }],
+            coverage: [
               {
-                values: { id: 'one', list_id: 'l1', title: 'accepted' },
-                version: 7,
-                hasLocalIntent: false,
+                table: 'todos',
+                base: { variable: 'list_id' },
+                unit: 'l1',
+                state: 'complete',
               },
             ],
+            complete: true,
           },
         ],
       });
@@ -1716,23 +1729,24 @@ test.skipIf(!available)(
         code: 'client.security_preflight_required',
       });
       for (const params of [
+        {},
         { sql: 'SELECT title FROM todos' },
-        { table: '_syncular_meta' },
-        { columns: ['*'] },
-        { authorityReads: [] },
+        { requests, authorityReads: [] },
+        { requests: 'listTitles' },
+        { requests: [{ query: 'listTitles' }] },
       ]) {
         const reply = await harness.api.invoke<{ error: { code: string } }>(
           'plugin:syncular|syncular_command',
-          { command: { method: 'authoritySnapshot', params } },
+          { command: { method: 'authorityRead', params } },
         );
         expect(reply.error.code).toBe('client.authority_read_forbidden');
       }
       expect(await client.localRevision()).toBe(before);
-      const read = client.authoritySnapshot();
+      const read = client.authorityRead(requests);
       const closing = client.close();
       await expect(read).rejects.toMatchObject({ code: 'client.closed' });
       await closing;
-      await expect(client.authoritySnapshot()).rejects.toMatchObject({
+      await expect(client.authorityRead(requests)).rejects.toMatchObject({
         code: 'client.closed',
       });
     } finally {

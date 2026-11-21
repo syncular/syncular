@@ -1,0 +1,10 @@
+sync query taskRevisions(projectId, orgId, revisionProjectId)
+  by t.project_id, r.project_id {
+  select t.id as task_id, r.id as revision_id
+  from tasks as t
+  join doc_revisions as r on r.doc_id = t.id
+  where t.project_id = :projectId
+    and r.org_id = :orgId
+    and r.project_id = :revisionProjectId
+  order by t.id, r.id;
+}

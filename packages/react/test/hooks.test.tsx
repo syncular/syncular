@@ -122,7 +122,7 @@ describe('useRawSql', () => {
       ({ claimCoverage }: { claimCoverage: boolean }) =>
         useRawSql('SELECT * FROM tasks', [], {
           tables: ['tasks'],
-          coverage: [{ base, units: ['p1'] }],
+          coverage: [{ table: 'tasks', base, units: ['p1'] }],
           claimCoverage,
         }),
       { wrapper: wrapper(client), initialProps: { claimCoverage: false } },
@@ -167,7 +167,7 @@ describe('useRawSql', () => {
       () =>
         useRawSql('SELECT * FROM tasks', [], {
           tables: ['tasks'],
-          coverage: [{ base, units: ['p1'] }],
+          coverage: [{ table: 'tasks', base, units: ['p1'] }],
         }),
       { wrapper: wrapper(client) },
     );
@@ -196,7 +196,7 @@ describe('useRawSql', () => {
           renders += 1;
           return useRawSql('SELECT * FROM tasks', [], {
             tables: ['tasks'],
-            coverage: [{ base, units }],
+            coverage: [{ table: 'tasks', base, units }],
             publishFirstAnswer,
           });
         },
@@ -224,7 +224,7 @@ describe('useRawSql', () => {
       () =>
         useRawSql('SELECT * FROM tasks', [], {
           tables: ['tasks'],
-          coverage: [{ base, units: ['p1'] }],
+          coverage: [{ table: 'tasks', base, units: ['p1'] }],
         }),
       { wrapper: wrapper(client) },
     );
@@ -855,7 +855,7 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
       useRawSql('SELECT * FROM tasks WHERE project_id = ?', ['r3'], {
         id: 'test/release-tasks',
         dependencies: [{ table: 'tasks', scopeKeys: ['project:r3'] }],
-        coverage: [{ base, units: ['r3'] }],
+        coverage: [{ table: 'tasks', base, units: ['r3'] }],
       });
       return null;
     }
@@ -905,7 +905,7 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
       useRawSql('SELECT * FROM tasks WHERE project_id = ?', ['p1'], {
         id: 'test/project-tasks',
         dependencies: [{ table: 'tasks', scopeKeys: ['project:p1'] }],
-        coverage: [{ base, units: ['p1'] }],
+        coverage: [{ table: 'tasks', base, units: ['p1'] }],
       });
       return null;
     }

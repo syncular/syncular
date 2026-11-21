@@ -8,12 +8,12 @@ import type { IrColumnType } from './ir';
 import { buildRustNamingMap, rustPascalCase, rustSnakeCase } from './naming';
 import {
   type AnalyzedQuery,
+  authorityDeclaration,
   type QueryColumn,
   type QueryParam,
   type QuerySyqlPlanBind,
   type QuerySyqlPublicInput,
   syqlInput,
-  windowBases,
 } from './query';
 
 const RUST_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -527,7 +527,7 @@ function emitDependencies(query: AnalyzedQuery): string[] {
 }
 
 function emitCoverage(query: AnalyzedQuery): string[] {
-  const coverage = windowBases(query.reactive.coverage);
+  const coverage = query.reactive.coverage;
   const lines = [
     `    pub fn coverage(${coverage.length > 0 ? 'params' : '_params'}: &Params) -> Vec<WindowCoverage> {`,
     '        vec![',
@@ -535,7 +535,7 @@ function emitCoverage(query: AnalyzedQuery): string[] {
   for (const entry of coverage) {
     const fixed = entry.fixedScopes.map(
       (scope) =>
-        `(${quote(scope.variable)}.to_owned(), ${reactiveParam(query, scope.param)})`,
+        `(${quote(scope.variable)}.to_owned(), ${reactiveParam(query, scope.params[0] as string)})`,
     );
     const units = entry.units
       .map((param) => reactiveParam(query, param))
@@ -543,6 +543,7 @@ function emitCoverage(query: AnalyzedQuery): string[] {
     const fixedLine = `                    fixed_scopes: UnitScopes::from([${fixed.join(', ')}]),`;
     lines.push(
       '            WindowCoverage {',
+      `                table: ${quote(entry.table)}.to_owned(),`,
       '                base: WindowBase {',
       `                    variable: ${quote(entry.variable)}.to_owned(),`,
       ...(fixed.length === 0
@@ -974,7 +975,17 @@ export function emitQueriesRustModule(
       `// irHash: ${hash}`,
     ].join('\n'),
     emitSupport(clientCrate),
-    ...queries.map((query) => emitQuery(query, hash)),
+    ...queries.map((query) => {
+      if (query.syql?.authority === undefined) return emitQuery(query, hash);
+      // The contract JSON of an authority query, parsed by the Rust core.
+      const json = JSON.stringify(authorityDeclaration(query));
+      let hashes = '#';
+      while (json.includes(`"${hashes}`)) hashes += '#';
+      return [
+        `/// The \`${query.name}\` authority query declaration (SYQL §13.3).`,
+        `pub const ${field(query.name).toUpperCase()}_AUTHORITY: &str = r${hashes}"${json}"${hashes};`,
+      ].join('\n');
+    }),
   ];
   return `${parts.join('\n\n')}\n`;
 }

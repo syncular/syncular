@@ -87,7 +87,7 @@ export interface TauriSyncClientConfig extends NativeCreateConfig {
    */
   readonly database?: string;
   readonly retainFailedCommits?: boolean;
-  /** Fixed plain authority reads permitted before security activation. */
+  /** Declared authority queries permitted before security activation. */
   readonly authorityReads?: AuthorityReadPolicy;
   /** SPEC §8.8 transport gate at create; default `open`. */
   readonly transportGate?: TransportGate;

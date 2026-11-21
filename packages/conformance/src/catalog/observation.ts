@@ -1127,7 +1127,7 @@ export const observationScenarios: readonly Scenario[] = [
       const pending = await observation.querySnapshot(
         'SELECT id FROM tasks WHERE project_id = ?',
         ['empty'],
-        [{ base: BASE, units: ['empty'] }],
+        [{ table: 'tasks', base: BASE, units: ['empty'] }],
       );
       check(!pending.coverage.complete, 'pre-bootstrap emptiness is pending');
       checkEqual(pending.rows, [], 'pending unit honestly has zero local rows');
@@ -1145,9 +1145,61 @@ export const observationScenarios: readonly Scenario[] = [
       const ready = await observation.querySnapshot(
         'SELECT id FROM tasks WHERE project_id = ?',
         ['empty'],
-        [{ base: BASE, units: ['empty'] }],
+        [{ table: 'tasks', base: BASE, units: ['empty'] }],
       );
       check(ready.coverage.complete, 'zero-row bootstrap becomes complete');
+      checkEqual(ready.rows, [], 'complete empty remains zero rows');
+    },
+  },
+  {
+    // §4.8/§7.5: a unit registered outside a view's window can prove its
+    // entry; its zero-row completion is a window-domain change only.
+    name: 'observation/coverage-completed-by-another-unit',
+    specRefs: ['§4.8', '§7.5'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { projectId: ['px'], org_id: ['o1'] },
+      });
+      const observation = requireObservation(handle.api);
+      const view = [
+        {
+          table: 'docs',
+          base: { variable: 'projectId', fixedScopes: { org_id: 'o1' } },
+          units: ['px'],
+        },
+      ];
+      const read = () =>
+        observation.querySnapshot(
+          'SELECT id FROM docs WHERE project_id = ? AND org_id = ?',
+          ['px', 'o1'],
+          view,
+        );
+      await handle.api.subscribe({ projectId: 'px' });
+      await observation.drainChangeBatches();
+      check(
+        !(await read()).coverage.complete,
+        'the registered subset unit is pending',
+      );
+      await syncIdle(handle);
+      const completion = await observation.drainChangeBatches();
+      check(
+        completion.some((batch) =>
+          batch.windows.some(
+            (window) =>
+              window.baseKey === 'projectId\u0000{}' &&
+              window.units.includes('px'),
+          ),
+        ),
+        'the completion names the unit under its derived base',
+      );
+      check(
+        completion.every((batch) => batch.tables.length === 0),
+        'a zero-row completion changes no table',
+      );
+      const ready = await read();
+      check(ready.coverage.complete, 'the other unit completes the entry');
       checkEqual(ready.rows, [], 'complete empty remains zero rows');
     },
   },
@@ -1174,7 +1226,7 @@ export const observationScenarios: readonly Scenario[] = [
         'SELECT a.id AS task_id, b.id AS peer_id FROM tasks AS a ' +
         'JOIN tasks AS b ON b.priority = a.priority AND b.id <> a.id ' +
         'WHERE a.project_id = ?1 AND b.project_id = ?1 ORDER BY a.id, b.id';
-      const coverage = [{ base: BASE, units: ['p1'] }];
+      const coverage = [{ table: 'tasks', base: BASE, units: ['p1'] }];
 
       await handle.api.setWindow?.(BASE, ['p1']);
       const pending = await observation.querySnapshot(sql, ['p1'], coverage);

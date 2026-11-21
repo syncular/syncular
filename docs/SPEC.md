@@ -2994,7 +2994,9 @@ protocol object.
 **The window registry.** The client persists which units are registered per
 window base. The registry is authoritative for two things: (i) which units
 the window contributes to the registration list (so a shrink unregisters,
-§4.1), and (ii) whether a local query is **answerable in full**.
+§4.1), and (ii) the window state `windowState(base)` reports. Query coverage
+classifies each table's entry by the subset rule of §7.5 over the persisted
+units, so a unit registered outside the window can prove it.
 Registration alone is not completeness: a registered unit is **pending**
 from `setWindow` until its bootstrap completes for every covered table,
 that is, while it is bootstrapping (§4.1; a §4.6 reset re-enters this
@@ -3014,7 +3016,16 @@ client that exposes the local-observation seam (§7.5) MUST emit a
 **window-domain** change for the base and unit when the unit's bootstrap
 completes. It MUST NOT invent a row/table change for that transition.
 Coverage-aware views re-read; unrelated table-only views do not, and no
-oracle is polled.
+oracle is polled. Because a unit registered outside a view's window can prove
+that view's coverage (§7.5), every unit transition (registration, bootstrap
+completion, reset, revocation, failure, echo change, removal) emits a
+window-domain change for that unit, windowed or not: one per window value
+that references the unit, or, for a unit no window references, one for the
+base derived from its scope map (the variable first in code-point order is
+the base variable, the others its fixed scopes) and that variable's value. A
+view re-reads on a window change when the changed unit's scope variables are
+a subset of one of its coverage entries' variables and its values equal the
+entry's, the predicate of the §7.5 subset rule.
 
 **Server view.** A widened unit is catching up, so the server registers no
 realtime delivery for it until it joins (§8.1). A shrunk unit leaves the
@@ -4695,7 +4706,7 @@ close/shut down the client, set the transport gate (§8.8), or call
 `disconnectRealtime`. Entering preflight closes the socket, so that call only
 confirms it is closed; it succeeds, as it does on a client that is closed or
 not yet created. It MAY read the
-creation-time authority policy through `authoritySnapshot()` as defined below.
+creation-time authority policy through `authorityRead(requests)` as defined below.
 No other application-data operation is permitted.
 
 **Purge erasure.** After `purgeLocalData` applies its plan, and again on a
@@ -4714,54 +4725,88 @@ code, message and retryability, a conflict's `table`, `rowId` and
 `serverVersion`, with an empty `serverRow` and no `conflictColumns`. It
 loses the `operations` collection, every nested `operation` and rejection
 `details`.
-**Preflight authority snapshot.** `defineAuthorityReads(declarations)` creates
-an immutable opt-in policy for `authorityReads` at client creation. The
+**Preflight authority queries.** `defineAuthorityReads(queries)` creates an
+immutable opt-in policy for `authorityReads` at client creation. Each entry is
+a generated authority query declaration (SYQL.md §13.3): `name`, the
+positional `sql`, `params` (`name`, scalar `type`, `nullable`), `coverage`
+(one `{ table, variable, units, fixedScopes? }` entry per read table, whose
+`units` and fixed scope values name parameters), the read set `reads`
+(`{ table: [columns] }`) and `resultColumns`. A declaration holds data only,
+so it crosses `postMessage` and the native command boundary unchanged. The
 TypeScript factory lives at `@syncular/client/authority`. Ordinary client and
 worker graphs MUST exclude the authority reader implementation. Workers that
 accept declarations MUST inject `createAuthorityReads: defineAuthorityReads`
 into `startSyncWorker`; declarations without that factory MUST fail with
 `client.authority_read_forbidden` before opening storage. No authority module
 is dynamically loaded. The Tauri authority bridge is explicitly constructed
-with `createTauriAuthoritySyncClient` from `@syncular/tauri/authority`. Each
-`{ table, columns, scopes }` declaration names one schema table, its primary
-key and explicitly approved plain columns, and nonempty concrete scope values.
-Scope columns MUST appear in `columns`. Encrypted, bytes, blob and CRDT columns,
-internal names, duplicate tables/columns, unknown identifiers and wildcard
-selectors MUST fail with `client.authority_read_forbidden`. Applications MUST
-approve only authority columns, excluding clinical data and credentials.
-Tauri additionally requires a Rust-host `SyncularConfig.authority_columns`
-ceiling. The native create boundary MUST reject any declaration exceeding that
-ceiling, independently of the webview. Scope selection is static per client;
-a new read MUST NOT redefine or extend the creation policy.
+with `createTauriAuthoritySyncClient` from `@syncular/tauri/authority`.
 
-`authoritySnapshot()` accepts zero arguments. Native/worker command parameters,
-including SQL, columns, tables and replacement declarations, MUST fail with
-`client.authority_read_forbidden`. An exposed authority reader without a
-declared policy MUST return the same code. Ordinary Tauri bridges do not
-expose the authority method. The read returns every matching accepted base row,
-its server row version, `hasLocalIntent`, scoped `localIntentRowIds`, the local
-revision, and the persisted unit scope maps, echoes, cursor state, status and
-completeness from one SQLite snapshot. Pending, failed and protected ACK intent
-MUST NOT replace accepted base values. Local-only creations have no base row.
-The read MUST NOT disclose intended values, bootstrap
-tokens, keys or internal credentials. Missing/corrupt revision or rollback
-base evidence MUST fail explicitly.
+At creation the client checks every declaration and fails with
+`client.authority_read_forbidden`, with the details `{ query, reason }` and,
+where one applies, `table` and `column`, when a name repeats, when the read
+set names an unknown table or column, an internal name, or a column that is
+encrypted or of type `bytes`, `blob_ref` or `crdt` (`reason: "column"`), when
+a parameter is not a plain scalar (`reason: "param"`), or when the declaration
+is otherwise malformed (`reason: "shape"`). Applications MUST declare only
+authority columns, excluding clinical data and credentials. Tauri
+additionally requires a Rust-host `SyncularConfig.authority_columns` ceiling,
+and the native host does not trust the webview's read set: at `create` it
+prepares each authored statement on its own connection under a SQLite
+authorizer and refuses the declaration with `reason: "ceiling"` when any read
+names a table or column outside the ceiling, or when the statement performs
+any action other than `SELECT`, a read, or a deterministic core function. The
+declared set is fixed at creation; a read MUST NOT redefine or extend it.
 
-Each table reports `coverage: complete | pending | missing`. Complete coverage
-requires the union of active units that finished their bootstrap (live or
-post-bootstrap, §4.1) to cover every requested scope tuple with persisted
-echoes. A registration, a partial bootstrap or a restricted effective scope
-cannot prove completeness. Completed empty coverage returns an empty row set with
-`complete`; an absent authority row still requires application rejection when
-the authority chain expects that row. The application validates actor, device,
-signed lease, trusted time, and independently accepted authority pins; the SDK
-MUST NOT infer application authorization from completeness or intent.
+`authorityRead(requests)` runs one or more declared queries in one SQLite read
+transaction. Each request is `{ query, params }`. The result is
+`{ revision, results }`, where `revision` is the `localRevision` of that
+transaction and each result is `{ query, rows, coverage, complete }`. A host
+that needs several authority facts reads them in one call and MUST NOT compose
+them from separate reads. A request naming an undeclared query fails with
+`client.authority_query_unknown` and the details `{ query }`. A missing, extra
+or mistyped parameter fails with `sync.invalid_request` and the details
+`{ query, param }`. A native or worker call with any parameter other than
+`requests` fails with `client.authority_read_forbidden`, and so does an
+exposed authority reader without a declared policy. Ordinary Tauri bridges do
+not expose the method.
+
+**The accepted base.** An authority query reads each table's accepted base:
+for every row, the last state the server accepted, without optimistic intent.
+A row with a retained or acknowledged entry (§7.2) takes the base and version
+of its earliest entry; otherwise a row with pending outbox intent takes the
+before-image of the earliest pending operation on it; every other row takes
+its visible row. A base with version `-1` or without values is a local
+creation or a pending delete of a row the server never held, and is absent.
+The client presents the base to the authored SQL by shadowing each read table
+that holds intent or retained entries with a common table expression of the
+same name, which selects the table's rows without intent from `main."<table>"`
+and the base of every row with intent from the stored base JSON; booleans read
+as `0` and `1`. A table without intent or retained entries is read directly.
+Both cores build the same SQL text. The expression selects only the read-set
+columns of its table, its primary key and `_sync_version`. Missing or corrupt
+revision or base evidence MUST fail with `sync.local_corrupt`.
+
+**Coverage.** For each request the client evaluates every coverage entry of
+the declaration with the request's parameters and classifies each unit in the
+read transaction by the subset rule of §7.5: `complete`, `pending` (an active
+unit that has not finished its bootstrap or whose echo restricts the entry),
+`missing` (no such unit) or `revoked` (the unit is `revoked` or `failed`).
+`coverage` lists every entry with its table, unit and state, and `complete`
+is true only when every entry is `complete`. Rows are returned in every case
+and are never evidence while `complete` is false; incomplete coverage is a
+result field and has no error code. A complete negative is `complete: true`
+with rows that say no qualifying record exists. The application validates
+actor, device, signed lease, trusted time, and independently accepted
+authority pins; the SDK MUST NOT infer application authorization from
+completeness.
 
 The read MUST NOT write, register a unit, install keys, open transport,
-or change lifecycle. Native reads run on the serialized owner and MUST observe
-lock, purge, replacement and shutdown ordering. A closed native command returns
-`client.closed`; a bridge MUST discard a reply racing its local close. Ordinary
-query and write gates remain engaged during preflight.
+or change lifecycle. It runs in preflight and while active, and
+`client.security_preflight_required` never applies to it. Native reads run on
+the serialized owner and MUST observe lock, purge, replacement and shutdown
+ordering. A closed native command returns `client.closed`; a bridge MUST
+discard a reply racing its local close. Ordinary query and write gates remain
+engaged during preflight.
 
 The host replaces the keyring and releases the gate only through
 `activateSecurity({ encryption? })`; while active, `addEncryptionKeys` (above)
@@ -7567,9 +7612,16 @@ an unsafe JSON number.
 
 **Atomic query snapshot.** A reactive local read returns its SQL rows, required
 window coverage, and `localRevision` from one SQLite read transaction. Coverage
-names each required window base/unit and classifies it complete, pending, or
-missing by the §4.8 registry and unit state, and lists the pending units whose
-unit is `revoked` as revoked too. A client MUST NOT compose
+names each required entry `{ table, base, units }` and classifies each unit
+value of it. A coverage entry `{ variable, fixedScopes }` for a table and a
+value is complete when an active, bootstrapped unit for the table exists
+whose scope variables are a subset of `{ variable, ...fixedScopes }`, whose
+values equal the entry's values on those variables, and whose persisted echo
+restricts none of the entry's other variables. It is pending when such a
+unit exists but none of them is complete, and missing when none exists. A
+pending value whose unit is `revoked` is listed as revoked too.
+A window claim still registers exactly the units of its base (§4.8); the
+subset rule only decides which registered units prove an entry. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
 `r` cannot be published as current after a matching change at revision `> r`,
 except an answer that deferred batches overtook during an import (§7.8);

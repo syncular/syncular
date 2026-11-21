@@ -1491,7 +1491,14 @@ fn a_version_3_replica_keeps_outbox_and_rows_drops_its_subscriptions_and_registe
             vec![("project_id".to_owned(), vec!["p9".to_owned()])]
         )]
     );
-    assert!(h.client.load_window_registry().unwrap().is_empty());
+    assert_eq!(
+        h.client
+            .conn
+            .query_row("SELECT count(*) FROM _syncular_windows", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     h.client.subscribe(p1()).unwrap();
     let pages = vec![
         h.rows("notes", &[]),
@@ -2252,6 +2259,7 @@ fn the_same_window_rearms_a_revoked_value_once_until_the_server_accepts_it() {
             "SELECT 1",
             &[],
             &[WindowCoverage {
+                table: "tasks".to_owned(),
                 base: base.clone(),
                 units: p1_value.clone(),
             }],
@@ -2350,4 +2358,401 @@ fn after_a_scopes_event_the_same_window_rearms_its_revoked_values() {
     assert_eq!(h.unit(&p2()).status, UnitStatus::Active);
     // An explicit unit outside every window waits for its own subscribe.
     assert_eq!(h.unit(&p3).status, UnitStatus::Revoked);
+}
+
+// -- §5.11 authority queries over the accepted base ------------------------------
+
+/// The task titles of a project, read from the accepted base.
+fn titles_query() -> Value {
+    json!({
+        "name": "titles",
+        "sql": "SELECT id, title, _sync_version AS version FROM tasks WHERE project_id = ? ORDER BY id",
+        "bind": ["projectId"],
+        "params": [{"name": "projectId", "type": "string", "nullable": false}],
+        "coverage": [{"table": "tasks", "variable": "project_id", "units": ["projectId"]}],
+        "reads": {"tasks": ["_sync_version", "id", "project_id", "title"]},
+        "resultColumns": []
+    })
+}
+
+/// A join with aggregates; the notes entry also fixes the org scope.
+fn notes_query() -> Value {
+    json!({
+        "name": "notes",
+        "sql": "SELECT count(n.id) AS notes, max(n.body) AS top FROM tasks t JOIN notes n ON n.project_id = t.project_id WHERE t.project_id = ? AND n.org_id = ?",
+        "bind": ["projectId", "orgId"],
+        "params": [
+            {"name": "projectId", "type": "string", "nullable": false},
+            {"name": "orgId", "type": "string", "nullable": true}
+        ],
+        "coverage": [
+            {"table": "tasks", "variable": "project_id", "units": ["projectId"]},
+            {"table": "notes", "variable": "project_id", "units": ["projectId"], "fixedScopes": {"org_id": "orgId"}}
+        ],
+        "reads": {"notes": ["body", "id", "org_id", "project_id"], "tasks": ["project_id"]},
+        "resultColumns": []
+    })
+}
+
+fn authority_harness() -> Harness {
+    let limits = ClientLimits {
+        authority_reads: [titles_query(), notes_query()]
+            .into_iter()
+            .map(|query| serde_json::from_value(query).unwrap())
+            .collect(),
+        ..Default::default()
+    };
+    Harness::over(SyncClient::new("units-client".into(), &schema(), limits).unwrap())
+}
+
+fn authority(h: &Harness, query: &str, params: Value) -> AuthorityReadResult {
+    h.client
+        .authority_read(&[(query.to_owned(), params.as_object().unwrap().clone())])
+        .unwrap()
+}
+
+fn titles(h: &Harness, project: &str) -> Value {
+    serde_json::to_value(&authority(h, "titles", json!({"projectId": project})).results[0].rows)
+        .unwrap()
+}
+
+#[test]
+fn an_authority_read_returns_the_accepted_base_through_settlement_and_rollback() {
+    let mut h = authority_harness();
+    h.client.subscribe(p1()).unwrap();
+    let pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t1", "p1", "base"], &["t3", "p1", "base3"]]),
+    ];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    let accepted = json!([
+        {"id": "t1", "title": "base", "version": 1},
+        {"id": "t3", "title": "base3", "version": 1}
+    ]);
+    // Without intent the authored statement runs unchanged.
+    let query: AuthorityQuery = serde_json::from_value(titles_query()).unwrap();
+    assert_eq!(
+        h.client.authority_statement(&query).unwrap(),
+        (query.sql.clone(), Vec::new())
+    );
+    assert_eq!(titles(&h, "p1"), accepted);
+
+    let edit = h
+        .client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "t1"), ("project_id", "p1"), ("title", "mine")],
+        )])
+        .unwrap();
+    let created = h
+        .client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "t2"), ("project_id", "p1"), ("title", "fresh")],
+        )])
+        .unwrap();
+    let refused = h
+        .client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "t3"), ("project_id", "p1"), ("title", "edit3")],
+        )])
+        .unwrap();
+    assert_eq!(h.ids("tasks"), vec!["t1", "t2", "t3"]);
+    // The shadow text both cores build, with its two bound values first.
+    assert_eq!(
+        h.client.authority_statement(&query).unwrap(),
+        (
+            "WITH \"tasks\" AS (SELECT \"id\",\"project_id\",\"title\",\"_sync_version\" FROM main.\"tasks\" WHERE CAST(\"id\" AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]') FROM json_each(?)) SELECT id, title, _sync_version AS version FROM tasks WHERE project_id = ? ORDER BY id".to_owned(),
+            vec![
+                json!(r#"["t1","t2","t3"]"#),
+                json!(r#"[["t1","p1","base",1],["t3","p1","base3",1]]"#),
+            ]
+        )
+    );
+    // A pending edit reads its accepted base; a pending creation is absent.
+    assert_eq!(titles(&h, "p1"), accepted);
+
+    // Acknowledged, the edit keeps its base until the server row arrives;
+    // the rejected commits roll back to the base.
+    h.round(concat(vec![
+        vec![
+            applied(&edit, 4),
+            rejected(&created, "app.refused"),
+            rejected(&refused, "app.refused"),
+        ],
+        live(3, vec![]),
+    ]));
+    assert_eq!(h.ids("tasks"), vec!["t1", "t3"]);
+    assert_eq!(titles(&h, "p1"), accepted);
+
+    let echo = h.commit(4, &[("tasks", Op::Upsert, &["t1", "p1", "mine"], 2)]);
+    h.round(live(4, vec![echo]));
+    assert_eq!(
+        titles(&h, "p1"),
+        json!([
+            {"id": "t1", "title": "mine", "version": 2},
+            {"id": "t3", "title": "base3", "version": 1}
+        ])
+    );
+    let read = authority(&h, "titles", json!({"projectId": "p1"}));
+    assert_eq!(
+        read.revision,
+        h.client.local_revision().unwrap().to_string()
+    );
+    assert!(read.results[0].complete);
+}
+
+#[test]
+fn an_authority_join_aggregates_the_base_and_reports_subset_coverage() {
+    let mut h = authority_harness();
+    h.client.subscribe(p1()).unwrap();
+    let pages = vec![
+        h.rows(
+            "notes",
+            &[&["n1", "p1", "o1", "alpha"], &["n2", "p1", "o1", "beta"]],
+        ),
+        h.rows("tasks", &[&["t1", "p1", "a"]]),
+    ];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    for (id, body) in [("n2", "zeta"), ("n3", "omega")] {
+        h.client
+            .mutate(vec![upsert(
+                "notes",
+                &[
+                    ("id", id),
+                    ("project_id", "p1"),
+                    ("org_id", "o1"),
+                    ("body", body),
+                ],
+            )])
+            .unwrap();
+    }
+    let read = authority(&h, "notes", json!({"projectId": "p1", "orgId": "o1"}));
+    let result = serde_json::to_value(&read.results[0]).unwrap();
+    // The project unit proves the notes entry `{ project_id, org_id }`: its
+    // variables are a subset and its echo restricts no org.
+    assert_eq!(
+        result,
+        json!({
+            "query": "notes",
+            "rows": [{"notes": 2, "top": "beta"}],
+            "coverage": [
+                {"table": "tasks", "base": {"variable": "project_id"}, "unit": "p1", "state": "complete"},
+                {"table": "notes", "base": {"variable": "project_id", "fixedScopes": {"org_id": "o1"}}, "unit": "p1", "state": "complete"}
+            ],
+            "complete": true
+        })
+    );
+    // The same entry through the §7.5 snapshot coverage.
+    let coverage = |h: &mut Harness, project: &str| {
+        h.client
+            .query_snapshot(
+                "SELECT 1",
+                &[],
+                &[WindowCoverage {
+                    table: "notes".to_owned(),
+                    base: WindowBase {
+                        variable: "project_id".to_owned(),
+                        fixed_scopes: scopes(&[("org_id", "o1")]),
+                    },
+                    units: vec![project.to_owned()],
+                }],
+                None,
+            )
+            .unwrap()
+            .coverage
+    };
+    assert!(coverage(&mut h, "p1").complete);
+    let missing = coverage(&mut h, "p9");
+    assert_eq!(missing.missing.len(), 1);
+    assert_eq!(missing.missing[0].unit, "p9");
+
+    let unknown = h.client.query_snapshot(
+        "SELECT 1",
+        &[],
+        &[WindowCoverage {
+            table: "missing".to_owned(),
+            base: project_window(),
+            units: vec!["p1".to_owned()],
+        }],
+        None,
+    );
+    assert!(unknown.unwrap_err().starts_with("sync.invalid_request:"));
+}
+
+#[test]
+fn authority_coverage_reads_missing_revoked_and_pending_units() {
+    let mut h = authority_harness();
+    h.client.subscribe(p1()).unwrap();
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    let states = |h: &Harness, project: &str| {
+        authority(h, "notes", json!({"projectId": project, "orgId": "o1"})).results[0]
+            .coverage
+            .iter()
+            .map(|entry| entry.state)
+            .collect::<Vec<_>>()
+    };
+    let snapshot = |h: &mut Harness, project: &str| {
+        h.client
+            .query_snapshot(
+                "SELECT 1",
+                &[],
+                &[WindowCoverage {
+                    table: "tasks".to_owned(),
+                    base: project_window(),
+                    units: vec![project.to_owned()],
+                }],
+                None,
+            )
+            .unwrap()
+            .coverage
+    };
+    assert_eq!(states(&h, "p1"), ["complete", "complete"]);
+    assert_eq!(states(&h, "p9"), ["missing", "missing"]);
+    assert_eq!(snapshot(&mut h, "p9").missing.len(), 1);
+
+    // Loss of access marks the unit revoked; rows are never evidence then.
+    h.round(revoke(&p1()));
+    let read = authority(&h, "notes", json!({"projectId": "p1", "orgId": "o1"}));
+    assert!(!read.results[0].complete);
+    assert_eq!(states(&h, "p1"), ["revoked", "revoked"]);
+    let revoked = snapshot(&mut h, "p1");
+    assert_eq!((revoked.pending.len(), revoked.revoked.len()), (1, 1));
+
+    // Registered and not yet bootstrapped.
+    h.client.subscribe(p2()).unwrap();
+    assert_eq!(states(&h, "p2"), ["pending", "pending"]);
+    let pending = snapshot(&mut h, "p2");
+    assert_eq!((pending.pending.len(), pending.revoked.len()), (1, 0));
+}
+#[test]
+fn an_echo_that_restricts_a_fixed_scope_leaves_the_entry_pending() {
+    for (fence, state) in [("o1", "pending"), ("*", "complete")] {
+        let mut h = authority_harness();
+        h.client.subscribe(p1()).unwrap();
+        let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+        h.round(concat(vec![
+            h.bootstrap(
+                &p1(),
+                3,
+                pages,
+                vec![fenced("notes", EchoStatus::Active, &[("org_id", fence)])],
+            ),
+            live(3, vec![]),
+        ]));
+        let read = authority(&h, "notes", json!({"projectId": "p1", "orgId": "o1"}));
+        let entries = &read.results[0].coverage;
+        assert_eq!((entries[0].state, entries[1].state), ("complete", state));
+        assert_eq!(read.results[0].complete, state == "complete");
+    }
+}
+
+#[test]
+fn an_authority_read_refuses_bad_requests_and_rolls_back_a_failed_statement() {
+    let mut h = authority_harness();
+    let fail = |h: &Harness, query: &str, params: Value| {
+        h.client
+            .authority_read(&[(query.to_owned(), params.as_object().unwrap().clone())])
+            .unwrap_err()
+    };
+    let unknown = fail(&h, "other", json!({}));
+    assert_eq!(unknown.code, "client.authority_query_unknown");
+    assert_eq!(unknown.details, Some(json!({"query": "other"})));
+    for (params, param) in [
+        (json!({}), "projectId"),
+        (json!({"projectId": "p1", "extra": 1}), "extra"),
+        (json!({"projectId": 1}), "projectId"),
+        (json!({"projectId": null}), "projectId"),
+    ] {
+        let error = fail(&h, "titles", params);
+        assert_eq!(error.code, "sync.invalid_request");
+        assert_eq!(
+            error.details,
+            Some(json!({"query": "titles", "param": param}))
+        );
+    }
+    // A nullable param binds null but cannot name a unit.
+    let error = fail(&h, "notes", json!({"projectId": "p1", "orgId": null}));
+    assert_eq!(
+        error.details,
+        Some(json!({"query": "notes", "param": "orgId"}))
+    );
+    let none = SyncClient::new("plain".into(), &schema(), ClientLimits::default()).unwrap();
+    let forbidden = none.authority_read(&[]).unwrap_err();
+    assert_eq!(
+        (forbidden.code.as_str(), forbidden.details),
+        ("client.authority_read_forbidden", None)
+    );
+
+    // A statement that reads past its declared columns fails once a shadow
+    // stands in for the table, and the read transaction is released.
+    let limits = ClientLimits {
+        authority_reads: vec![serde_json::from_value({
+            let mut query = titles_query();
+            query["reads"] = json!({"tasks": ["id", "project_id"]});
+            query
+        })
+        .unwrap()],
+        ..Default::default()
+    };
+    h = Harness::over(SyncClient::new("units-client".into(), &schema(), limits).unwrap());
+    assert_eq!(titles(&h, "p1"), json!([]));
+    h.client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "t1"), ("project_id", "p1"), ("title", "mine")],
+        )])
+        .unwrap();
+    assert_eq!(
+        fail(&h, "titles", json!({"projectId": "p1"})).code,
+        "client.failed"
+    );
+    assert_eq!(h.ids("tasks"), vec!["t1"]);
+    let autocommit: bool = h.client.conn.is_autocommit();
+    assert!(autocommit);
+}
+
+#[test]
+fn an_explicit_unit_finishing_a_zero_row_bootstrap_publishes_its_derived_window_only() {
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    let registered = h.client.drain_change_batches();
+    let base_key = window_base_key(&project_window());
+    let windows = |batches: &[ClientChangeBatch]| {
+        batches
+            .iter()
+            .flat_map(|batch| batch.windows.iter())
+            .map(|window| (window.base_key.clone(), window.units.clone()))
+            .collect::<Vec<_>>()
+    };
+    // No window references the unit: its base derives from its scope map.
+    assert_eq!(
+        windows(&registered),
+        [(base_key.clone(), vec!["p1".to_owned()])]
+    );
+    let pages = vec![h.rows("notes", &[]), h.rows("tasks", &[])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, pages, vec![]),
+        live(3, vec![]),
+    ]));
+    let completed = h.client.drain_change_batches();
+    // SUB_END and the join to live each name the unit's derived base.
+    let names = windows(&completed);
+    assert!(!names.is_empty());
+    assert!(names
+        .iter()
+        .all(|name| name == &(base_key.clone(), vec!["p1".to_owned()])));
+    assert!(completed.iter().all(|batch| batch.tables.is_empty()));
+    assert!(h.unit(&p1()).cursor.is_none());
 }

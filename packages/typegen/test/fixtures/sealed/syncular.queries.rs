@@ -317,6 +317,7 @@ pub mod clinic_patients {
     pub fn coverage(params: &Params) -> Vec<WindowCoverage> {
         vec![
             WindowCoverage {
+                table: "patients".to_owned(),
                 base: WindowBase {
                     variable: "clinic_id".to_owned(),
                     fixed_scopes: UnitScopes::new(),

@@ -185,6 +185,12 @@ pub struct CreateEffects {
     /// This in-memory flag covers the same-handle case where no file persists
     /// the marker.
     pub security_preflight_pending: bool,
+    /// §5.11: the native host's authority ceiling, table to permitted
+    /// columns. The host sets it from its own configuration, never from the
+    /// command. While it is set, `create` refuses a declared authority query
+    /// whose authored statement reads outside it
+    /// (`SyncClient::check_authority_ceiling`).
+    pub authority_ceiling: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 /// §7.5: a read failure keeps its structured code, static message, SQLite
@@ -559,7 +565,7 @@ fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> 
     })
 }
 
-/// §7.5: parse a `coverage` array of `{base, units}` entries. Absent or null is
+/// §7.5: parse a `coverage` array of `{table, base, units}` entries. Absent or null is
 /// empty; a non-array, a malformed base, or non-string units are rejected
 /// explicitly instead of silently defaulting. Shared with the Tauri plugin's
 /// read sidecar.
@@ -587,6 +593,11 @@ pub fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage
             }
         };
         coverage.push(WindowCoverage {
+            table: entry
+                .get("table")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "sync.invalid_request: coverage table must be a string".to_owned())?
+                .to_owned(),
             base: window_base_from_params(entry.get("base"))?,
             units,
         });
@@ -771,7 +782,7 @@ pub fn dispatch<T: Transport>(
     } else {
         let allowed_during_preflight = matches!(
             method,
-            "authoritySnapshot"
+            "authorityRead"
                 | "securityLifecycle"
                 | "beginSecurityPreflight"
                 | "activateSecurity"
@@ -815,11 +826,45 @@ pub fn dispatch<T: Transport>(
             let mut limits = limits;
             limits.previous_version_context = previous_version_context;
             if let Some(reads) = params.get("authorityReads") {
-                limits.authority_reads = serde_json::from_value(reads.clone()).map_err(|_| {
-                    client_err(
-                        "client.authority_read_forbidden: invalid authority declaration".into(),
-                    )
-                })?;
+                // §5.11: a malformed declaration is a `shape` refusal; the
+                // core check runs here as well so its details reach the host.
+                let shape = |query: Option<&Value>| {
+                    let mut details = json!({ "reason": "shape" });
+                    if let Some(query) = query {
+                        details["query"] = query.clone();
+                    }
+                    CommandError {
+                        details: Some(details),
+                        ..CommandError::new(
+                            "client.authority_read_forbidden",
+                            "authority read denied",
+                        )
+                    }
+                };
+                limits.authority_reads = reads
+                    .as_array()
+                    .ok_or_else(|| shape(None))?
+                    .iter()
+                    .map(|entry| {
+                        serde_json::from_value(entry.clone()).map_err(|_| shape(entry.get("name")))
+                    })
+                    .collect::<Result<Vec<_>, CommandError>>()?;
+                syncular_client::validate_authority_reads(
+                    &syncular_client::parse_schema_json(schema).map_err(client_err)?,
+                    &limits.authority_reads,
+                )
+                .map_err(CommandError::from_client)?;
+            }
+            // §5.11: the native ceiling prepares each authored statement on an
+            // in-memory replica of the schema, so a refused declaration never
+            // opens the host's database.
+            if let Some(ceiling) = &effects.authority_ceiling {
+                if !limits.authority_reads.is_empty() {
+                    SyncClient::new_with_identity(None, schema, limits.clone())
+                        .map_err(client_err)?
+                        .check_authority_ceiling(ceiling)
+                        .map_err(CommandError::from_client)?;
+                }
             }
             // §12: a host-configured local authority opens with the client's
             // schema before the client, as the browser worker opens it.
@@ -918,18 +963,32 @@ pub fn dispatch<T: Transport>(
             effects.security_preflight_pending = true;
             Ok(json!({}))
         }
-        "authoritySnapshot" => {
-            if !params.as_object().is_some_and(|p| p.is_empty()) {
-                return Err(client_err(
-                    "client.authority_read_forbidden: authoritySnapshot accepts no arguments"
-                        .into(),
-                ));
-            }
-            client
+        "authorityRead" => {
+            // §5.11: `requests` is the only param, a list of `{ query, params }`.
+            let forbidden =
+                || CommandError::new("client.authority_read_forbidden", "authority read denied");
+            let requests = params
+                .as_object()
+                .filter(|object| object.len() == 1)
+                .and_then(|object| object.get("requests"))
+                .and_then(Value::as_array)
+                .ok_or_else(forbidden)?
+                .iter()
+                .map(|request| {
+                    let request = request.as_object().filter(|object| object.len() == 2)?;
+                    Some((
+                        request.get("query")?.as_str()?.to_owned(),
+                        request.get("params")?.as_object()?.clone(),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(forbidden)?;
+            let read = client
                 .as_ref()
-                .ok_or_else(|| client_err("client.closed: no authority client is open".into()))?
-                .authority_snapshot()
-                .map_err(client_err)
+                .ok_or_else(|| CommandError::new("client.closed", "no authority client is open"))?
+                .authority_read(&requests)
+                .map_err(CommandError::from_client)?;
+            Ok(serde_json::to_value(read).expect("authority read serializes"))
         }
         "activateSecurity" => {
             let encryption = match params.get("encryption") {
@@ -1767,7 +1826,7 @@ pub fn dispatch<T: Transport>(
 mod tests {
     use serde_json::{json, Value};
     use syncular_client::{
-        Mutation, SegmentRequest, SyncClient, Transport, TransportError,
+        Mutation, SegmentRequest, SyncClient, Transport, TransportError, TransportGate,
         SECURITY_PREFLIGHT_REQUIRED_CODE,
     };
 
@@ -2250,8 +2309,102 @@ mod tests {
     }
 
     #[test]
+    fn authority_reads_parse_at_create_and_run_through_authority_read() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let query = json!({
+            "name": "listOf",
+            "sql": "SELECT id FROM todos WHERE list_id = ?",
+            "bind": ["listId"],
+            "params": [{"name": "listId", "type": "string", "nullable": false}],
+            "coverage": [{"table": "todos", "variable": "list_id", "units": ["listId"]}],
+            "reads": {"todos": ["id", "list_id"]},
+            "resultColumns": [{"name": "id", "type": "string", "nullable": false}]
+        });
+        let mut create = |client: &mut Option<SyncClient>,
+                          effects: &mut CreateEffects,
+                          reads: Value| {
+            dispatch(
+                &mut transport,
+                client,
+                effects,
+                "create",
+                &json!({ "schema": schema(), "securityPreflight": true, "authorityReads": reads }),
+            )
+        };
+        for (reads, details) in [
+            (json!({}), json!({"reason": "shape"})),
+            (
+                json!([{"name": "x"}]),
+                json!({"query": "x", "reason": "shape"}),
+            ),
+            (json!([{ "sql": "SELECT 1" }]), json!({"reason": "shape"})),
+        ] {
+            let error = create(&mut client, &mut effects, reads).unwrap_err();
+            assert_eq!(error.code, "client.authority_read_forbidden");
+            assert_eq!(error.details, Some(details));
+        }
+        // A host ceiling refuses the column the statement reads past it.
+        effects.authority_ceiling = Some([("todos".to_owned(), vec!["id".to_owned()])].into());
+        let refused = create(&mut client, &mut effects, json!([query])).unwrap_err();
+        assert_eq!(
+            refused.details,
+            Some(
+                json!({"query": "listOf", "reason": "ceiling", "table": "todos", "column": "list_id"})
+            )
+        );
+        assert!(client.is_none());
+        effects.authority_ceiling = Some(
+            [(
+                "todos".to_owned(),
+                vec!["id".to_owned(), "list_id".to_owned()],
+            )]
+            .into(),
+        );
+        create(&mut client, &mut effects, json!([query])).expect("create within the ceiling");
+        let read = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "authorityRead",
+            &json!({ "requests": [{ "query": "listOf", "params": { "listId": "l1" } }] }),
+        )
+        .expect("authority read in preflight");
+        assert!(read["revision"].is_string());
+        assert_eq!(
+            read["results"],
+            json!([{
+                "query": "listOf",
+                "rows": [],
+                "coverage": [{"table": "todos", "base": {"variable": "list_id"}, "unit": "l1", "state": "missing"}],
+                "complete": false
+            }])
+        );
+        for params in [
+            json!({}),
+            json!({ "requests": [], "extra": true }),
+            json!({ "requests": [{ "query": "listOf" }] }),
+        ] {
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "authorityRead",
+                &params,
+            )
+            .unwrap_err();
+            assert_eq!(
+                (error.code.as_str(), error.details),
+                ("client.authority_read_forbidden", None)
+            );
+        }
+    }
+
+    #[test]
     fn window_coverage_parser_reads_the_generated_descriptor_and_rejects_malformed_units() {
         let parsed = parse_window_coverage(Some(&json!([{
+            "table": "tasks",
             "base": { "variable": "project_id", "fixedScopes": { "tenant_id": "one" } },
             "units": ["a", "b"]
         }])))
@@ -2261,11 +2414,14 @@ mod tests {
             parsed[0].base.fixed_scopes,
             UnitScopes::from([("tenant_id".to_owned(), "one".to_owned())])
         );
+        assert_eq!(parsed[0].table, "tasks");
         assert_eq!(parsed[0].units, ["a", "b"]);
         for coverage in [
             json!({}),
-            json!([{ "base": { "variable": "project_id" }, "units": ["a", 1] }]),
-            json!([{ "base": { "fixedScopes": {} }, "units": [] }]),
+            json!([{ "table": "tasks", "base": { "variable": "project_id" }, "units": ["a", 1] }]),
+            json!([{ "table": "tasks", "base": { "fixedScopes": {} }, "units": [] }]),
+            json!([{ "base": { "variable": "project_id" }, "units": ["a"] }]),
+            json!([{ "table": 1, "base": { "variable": "project_id" }, "units": ["a"] }]),
         ] {
             let error = parse_window_coverage(Some(&coverage)).expect_err("malformed coverage");
             assert!(error.starts_with("sync.invalid_request: "), "{error}");

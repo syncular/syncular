@@ -161,7 +161,7 @@ unit registration, sync, realtime, presence, blob, and automatic retry work fail
 with `client.security_preflight_required`. Status, local revision, lifecycle,
 and `purgeLocalData` remain available. A creation-time `defineAuthorityReads`
 policy on `createTauriAuthoritySyncClient` enables the read-only
-`authoritySnapshot()` described below.
+`authorityRead(requests)` described below.
 
 ```ts
 const client = await createTauriSyncClient({
@@ -186,12 +186,12 @@ registration and local progress reads throw that code. `close()` is idempotent.
 
 ## Authority evidence before activation
 
-Declare authority reads at client creation with `defineAuthorityReads` from
-`@syncular/client/authority`. Each table declares plain columns, including
-its primary key and scope columns, and concrete scope selectors. These selectors remain
-fixed for that client. A declaration cannot include encrypted, bytes, blob,
-CRDT or internal columns. Choose only authority fields; clinical fields and
-credentials do not belong in this policy.
+Declare authority queries at client creation with `defineAuthorityReads` from
+`@syncular/client/authority`. Each entry is a generated `authority query`
+declaration (SYQL.md §13.3). The declared set stays fixed for that client. A
+read set cannot include encrypted, bytes, blob, CRDT or internal columns.
+Choose only authority fields; clinical fields and credentials do not belong in
+these queries.
 
 ```ts
 import { defineAuthorityReads } from '@syncular/client/authority';
@@ -201,19 +201,16 @@ const client = await createTauriAuthoritySyncClient({
   schema,
   securityPreflight: true,
   transportGate: 'closed',
-  authorityReads: defineAuthorityReads([{
-    table: 'memberships',
-    columns: ['id', 'user_id', 'facility_id', 'status', 'version'],
-    scopes: { membership_id: acceptedMembershipIds },
-  }]),
+  authorityReads: defineAuthorityReads([activeMembershipAuthority]),
 });
-const evidence = await client.authoritySnapshot();
+const { revision, results } = await client.authorityRead([
+  { query: 'activeMembership', params: { userId, facilityId } },
+]);
 ```
 
 Use `createTauriAuthoritySyncClient` for the bridge that exposes
-`authoritySnapshot()`. The ordinary `createTauriSyncClient` class does not
-contain that method or its reply decoder. Upgrade 0.30.15 callers to these
-explicit subpaths; the snapshot and native security checks keep their semantics.
+`authorityRead(requests)`. The ordinary `createTauriSyncClient` class does not
+contain that method or its reply decoder.
 
 The native application must also set an independent ceiling at plugin creation:
 
@@ -227,37 +224,36 @@ let config = SyncularConfig {
 };
 ```
 
-Rust rejects any webview declaration outside that ceiling. It also validates
-columns against the schema. `authoritySnapshot()` accepts zero arguments;
-forged IPC carrying SQL, replacement tables or columns fails with
-`client.authority_read_forbidden`. Ordinary `query`, `querySnapshot` and writes
-still fail with `client.security_preflight_required`.
+At `create` Rust prepares each declared statement under a SQLite authorizer
+and refuses a declaration that reads outside that ceiling, or performs any
+action other than a read or a deterministic core function, with
+`client.authority_read_forbidden` and `reason: "ceiling"`. The native
+`authorityRead` command takes `{ requests }` and nothing else; forged IPC
+carrying SQL or replacement declarations fails with
+`client.authority_read_forbidden`. Ordinary `query`, `querySnapshot` and
+writes still fail with `client.security_preflight_required`.
 
-The result contains `revision: bigint`, `complete`, and `tables`. Every table
-contains accepted `rows` (`values`, server `version`, `hasLocalIntent`), scoped
-`localIntentRowIds`, the declared `scopes`, `coverage`, and sanitized
-`persisted` unit evidence (`requestedScopes`, `effectiveScopes`, `cursor`,
-`status`, `complete`). It exposes no intended values, bootstrap tokens or
-keys. Both cores read rows, revision and
-coverage in one SQLite snapshot. The native authority read runs on the mutable
-owner; it does not use the ordinary query sidecar or its latency contract.
+The result contains `revision: bigint` and one result per request with the
+query's raw SQL `rows`, its `coverage` entries (`table`, `base`, `unit`,
+`state`) and `complete`. Both cores read rows, revision and coverage in one
+SQLite read transaction. The native authority read runs on the mutable owner;
+it does not use the ordinary query sidecar or its latency contract.
 
-`coverage` is `complete`, `pending` or `missing`. Complete coverage requires
-a completed unit for every requested scope tuple. Several units can cover the
-selection together. Scope loss and an unfinished
-bootstrap invalidate completeness. Completed empty coverage has an empty row
-set. The application must reject admission when an expected authority row is
-absent, even when the set is complete.
+A coverage entry is `complete`, `pending` (the unit is still bootstrapping or
+its echo restricts the entry), `missing` (no unit) or `revoked` (the unit is
+revoked or failed). A complete negative is `complete: true` with rows that
+say no qualifying record exists. Rows are never evidence while `complete` is
+false.
 
-Accepted bases remain separate from pending, failed and protected ACK intent.
-A local-only creation appears only in `localIntentRowIds`. The application
-validates the complete chain against independently accepted authority evidence,
-actor/device identity, signed lease and trusted time before installing keys.
-The SDK does not authorize the application. The read changes no lifecycle,
-transport, keyring, units or rows.
+The queries read accepted bases: pending, failed and protected ACK intent
+never replace an accepted value, and a local-only creation is absent. The
+application validates the complete chain against independently accepted
+authority evidence, actor/device identity, signed lease and trusted time
+before installing keys. The SDK does not authorize the application. The read
+changes no lifecycle, transport, keyring, units or rows.
 
 The direct Bun/SQLite client and worker handle expose the same policy and
-snapshot shape. Importing the policy is opt-in; ordinary clients do not ship
+result shape. Importing the policy is opt-in; ordinary clients do not ship
 its reader. Update npm packages and native crates together and rebuild the app.
 
 ## Privacy-safe diagnostics

@@ -1,6 +1,10 @@
 import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { BLOB_COMMIT_REFS } from './blob';
-import type { AuthorityReadPolicy, AuthoritySnapshot } from './authority';
+import type {
+  AuthorityReadPolicy,
+  AuthorityReadRequest,
+  AuthorityReadResult,
+} from './authority';
 import { hasUniqueIndex, pkSqlValue } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
@@ -265,6 +269,7 @@ import {
   bootstrapping,
   bumpLocalRevision,
   covers,
+  coverageCandidates,
   deleteUnit,
   ECHO_DIGEST_KEY,
   getLocalRevision,
@@ -628,8 +633,9 @@ export interface WindowState {
   readonly revoked: readonly string[];
 }
 
-/** One generated/raw query's required window units (SPEC §7.5). */
+/** One generated/raw query's required window units for a table (SPEC §7.5). */
 export interface WindowCoverage {
+  readonly table: string;
   readonly base: WindowBase;
   readonly units: readonly string[];
 }
@@ -1453,6 +1459,8 @@ export class SyncClient {
     let changed: string[] = [];
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
+        // §4.8: the reset is a transition of every persisted unit.
+        for (const unit of loadUnits(this.#db)) this.#unitWindow(unit);
         if (this.#previousVersion !== undefined) {
           writePreviousVersionAudit(
             this.#db,
@@ -1847,15 +1855,17 @@ export class SyncClient {
     return getLocalRevision(this.#db);
   }
 
-  /** Read the creation-time plain authority policy, including preflight. */
-  authoritySnapshot(): AuthoritySnapshot {
+  /** §5.11: run declared authority queries, including preflight. */
+  authorityRead(
+    requests: readonly AuthorityReadRequest[],
+  ): AuthorityReadResult {
     this.#requireStarted();
-    if (!this.#authorityReads || arguments.length)
+    if (!this.#authorityReads || arguments.length !== 1)
       throw new ClientSyncError(
         'client.authority_read_forbidden',
         'authority read denied',
       );
-    return this.#authorityReads.snapshot(this.#db, this.#schema);
+    return this.#authorityReads.read(this.#db, this.#schema, requests);
   }
 
   /**
@@ -1953,14 +1963,21 @@ export class SyncClient {
         const pending: WindowUnitRef[] = [];
         const missing: WindowUnitRef[] = [];
         const revoked: WindowUnitRef[] = [];
-        for (const requested of request.coverage ?? []) {
-          const baseKey = windowBaseKey(requested.base);
-          const state = this.windowState(requested.base);
-          for (const unit of new Set(requested.units)) {
-            const ref = { baseKey, unit };
-            if (!state.units.includes(unit)) missing.push(ref);
-            else if (state.pending.includes(unit)) pending.push(ref);
-            if (state.revoked.includes(unit)) revoked.push(ref);
+        const add = (list: WindowUnitRef[], ref: WindowUnitRef) =>
+          list.some(
+            (held) => held.baseKey === ref.baseKey && held.unit === ref.unit,
+          ) || list.push(ref);
+        for (const { table, base, units: values } of request.coverage ?? []) {
+          const scoped = this.#table(table);
+          // Read per entry: a request without coverage reads no units.
+          const units = loadUnits(this.#db);
+          for (const unit of values) {
+            const found = coverageCandidates(units, scoped, base, unit);
+            if (found === true) continue;
+            const ref = { baseKey: windowBaseKey(base), unit };
+            add(found.length ? pending : missing, ref);
+            if (found.some((held) => held.status === 'revoked'))
+              add(revoked, ref);
           }
         }
         return {
@@ -3346,7 +3363,7 @@ export class SyncClient {
   subscribeMany(units: readonly UnitScopes[]): string[] {
     this.#requireActive();
     let registered = false;
-    const ids = this.#db.transaction(() =>
+    const ids = this.#applyBatch(() =>
       units.map((scopes) => {
         const { id, changed } = this.#holdUnit(scopes, true);
         registered ||= changed;
@@ -3372,7 +3389,10 @@ export class SyncClient {
       saveUnit(this.#db, { ...unit, explicit: false });
       return;
     }
-    deleteUnit(this.#db, id);
+    this.#applyBatch(() => {
+      deleteUnit(this.#db, id);
+      this.#unitWindow(unit);
+    });
     this.#registrationEpoch += 1;
     if (unit.status === 'active') this.#registrationChanged();
   }
@@ -3411,15 +3431,37 @@ export class SyncClient {
       return { id, changed: false };
     }
     deletePendingEviction(this.#db, id);
-    saveUnit(this.#db, {
+    const unit: UnitRecord = {
       id,
       scopes: Object.fromEntries(entries),
       explicit: explicit || existing?.explicit === true,
       status: 'active',
       cursor: -1,
       seeded: [],
-    });
+    };
+    saveUnit(this.#db, unit);
+    // A window registration emits once its window row exists (setWindow).
+    if (explicit) this.#unitWindow(unit);
     return { id, changed: true };
+  }
+
+  /**
+   * §4.8: a unit transition is a window change of every window value that
+   * references the unit, or else of the base its scope map derives (the
+   * first variable in code-point order, the others fixed).
+   */
+  #unitWindow(unit: Pick<UnitRecord, 'id' | 'scopes'>): void {
+    this.#applyBatch((batch) => {
+      const refs = windowRefs(this.#db, unit.id);
+      const [variable] = Object.keys(unit.scopes).sort();
+      const { [variable!]: value, ...fixedScopes } = unit.scopes;
+      if (!refs.length)
+        refs.push({
+          baseKey: windowBaseKey({ variable: variable!, fixedScopes }),
+          value: value!,
+        });
+      for (const ref of refs) batch.window(ref.baseKey, ref.value);
+    });
   }
 
   // -- windows (§4.8) ---------------------------------------------------------
@@ -3460,17 +3502,15 @@ export class SyncClient {
     if (added.length > 0) {
       this.#applyBatch((batch) => {
         for (const value of added) {
-          const { id, changed: registered } = this.#holdUnit(
-            windowUnitScopes(base, value),
-            false,
-          );
+          const scopes = windowUnitScopes(base, value);
+          const { id, changed: registered } = this.#holdUnit(scopes, false);
           this.#db.exec(
             `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
             [baseKey, value, id],
           );
           this.#needsPull ||= registered;
           if (registered) this.#windowArmed.add(id);
-          batch.window(baseKey, value);
+          this.#unitWindow({ id, scopes });
         }
         batch.status();
       });
@@ -6127,8 +6167,7 @@ export class SyncClient {
                     seeded: [],
                   });
                   summary.resets.push(unit.id);
-                  for (const ref of windowRefs(this.#db, unit.id))
-                    batch.window(ref.baseKey, ref.value);
+                  this.#unitWindow(unit);
                 } else if (status === 'active') {
                   // §4.5 join rule J.
                   const next = Math.max(
@@ -6136,11 +6175,13 @@ export class SyncClient {
                     frame.throughSeq,
                   );
                   if (next >= joined) cursor = joined;
-                  if (unit.cursor !== undefined)
+                  if (unit.cursor !== undefined) {
                     saveUnit(this.#db, {
                       ...unit,
                       cursor: next >= joined ? undefined : next,
                     });
+                    this.#unitWindow(unit);
+                  }
                 }
               }
               setMeta(this.#db, REPLICA_CURSOR_KEY, String(cursor));
@@ -6645,8 +6686,7 @@ export class SyncClient {
           reasonCode: 'sync.scope_revoked',
           restrict: undefined,
         });
-        for (const ref of windowRefs(this.#db, unit.id))
-          batch.window(ref.baseKey, ref.value);
+        this.#unitWindow(unit);
       });
       summary.failed.push(unit.id);
     }
@@ -6744,9 +6784,8 @@ export class SyncClient {
     // unsubscribe during this round's awaits removed it.
     const unit = getUnit(this.#db, start.id);
     if (unit?.status !== 'active') return;
-    const refs = windowRefs(this.#db, unit.id);
     this.#applyBatch((batch) => {
-      for (const ref of refs) batch.window(ref.baseKey, ref.value);
+      this.#unitWindow(unit);
       if (start.status === 'reset') {
         // §4.6: discard cursor and resume token; the rows stay until the
         // bootstrap replaces them. Staleness, not a purge.

@@ -761,6 +761,7 @@ describe('createTauriSyncClient', () => {
       params: ['a'],
       coverage: [
         {
+          table: 'tasks',
           base: { variable: 'list_id' },
           units: ['a'],
         },
@@ -778,6 +779,7 @@ describe('createTauriSyncClient', () => {
       params: ['a'],
       coverage: [
         {
+          table: 'tasks',
           base: { variable: 'list_id' },
           units: ['a'],
         },

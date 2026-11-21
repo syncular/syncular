@@ -71,11 +71,12 @@ pub(crate) fn wall_clock_ms() -> i64 {
 }
 
 pub use api::{
-    creation_time_bucket, last, AppliedServerCommit, AppliedServerCommitSource,
-    AuthorityReadDeclaration, ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease,
-    ClientDiagnosticsReplica, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
-    ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitDelivery,
-    CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
+    creation_time_bucket, last, AppliedServerCommit, AppliedServerCommitSource, AuthorityCoverage,
+    AuthorityCoverageState, AuthorityParam, AuthorityQuery, AuthorityQueryResult,
+    AuthorityReadResult, AuthorityResultColumn, ClientChangeBatch, ClientDiagnosticsHost,
+    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsSchema,
+    ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects,
+    CommitDelivery, CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
     CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
     CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
     DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticUnits, EchoRecord, FetchedBlob,
@@ -91,8 +92,8 @@ pub use api::{
 };
 pub use client::ProjectionInput;
 pub use client::{
-    CurrentBasePreparation, FileQuerySnapshotReader, SnapshotReadRequest, SnapshotStatement,
-    SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE,
+    authority_read_set, validate_authority_reads, CurrentBasePreparation, FileQuerySnapshotReader,
+    SnapshotReadRequest, SnapshotStatement, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE,
 };
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{

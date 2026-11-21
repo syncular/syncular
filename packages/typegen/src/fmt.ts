@@ -286,11 +286,15 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
         lower === 'predicate' ||
         lower === 'query' ||
         lower === 'sync' ||
+        (lower === 'authority' && tokens[index + 1]?.text === 'query') ||
         (lower === 'allow' &&
           (previous === undefined ||
             previous.kind === 'string' ||
             previous.text === '}'))) &&
-      !(lower === 'query' && previous?.text === 'sync');
+      !(
+        lower === 'query' &&
+        (previous?.text === 'sync' || previous?.text === 'authority')
+      );
     if (topLevelDeclaration) {
       // Acknowledgements sit on their own lines directly above their query.
       if (acknowledging) writer.newline();
@@ -302,7 +306,7 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
     } else if (
       braceDepth === 0 &&
       lower === 'query' &&
-      previous?.text === 'sync'
+      (previous?.text === 'sync' || previous?.text === 'authority')
     ) {
       awaitsDeclarationParameters = true;
     } else if (

@@ -1,0 +1,15 @@
+authority query taskOriginal(projectId, taskId) {
+  select t.id, t.title, t.done, t._sync_version as server_version
+  from tasks as t
+  where t.project_id = :projectId
+    and t.id = :taskId;
+}
+
+authority query projectRevisionCover(projectId, orgId) by t.project_id {
+  select count(r.id) as revision_count,
+    cast(max(t.priority) as integer) as top_priority
+  from tasks as t
+  join doc_revisions as r on r.doc_id = t.id
+  where t.project_id = :projectId
+    and r.org_id = :orgId;
+}

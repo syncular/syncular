@@ -585,6 +585,9 @@ impl CommandEffects {
 
 #[derive(Debug, Clone)]
 pub struct WindowCoverage {
+    /// The table the entry proves (§7.5): a unit proves it only when the
+    /// table declares every variable of the unit.
+    pub table: String,
     pub base: WindowBase,
     pub units: Vec<String>,
 }
@@ -1503,15 +1506,81 @@ pub struct ClientLimits {
     /// `enabled: false` runs the feature off (default); the descriptor write
     /// and the container orphan sweep still happen.
     pub previous_version_context: Option<PreviousVersionContextConfig>,
-    /// Immutable, explicit preflight authority read policy.
-    pub authority_reads: Vec<AuthorityReadDeclaration>,
+    /// §5.11: the authority queries `authority_read` runs, fixed at creation.
+    pub authority_reads: Vec<AuthorityQuery>,
 }
 
-/// Static read policy; never accepted as snapshot parameters.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+/// §5.11 one generated authority query declaration (SYQL.md §13.3). It holds
+/// data only and (de)serializes as the declaration JSON every host passes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AuthorityReadDeclaration {
+pub struct AuthorityQuery {
+    pub name: String,
+    /// Positional SQL with `?` placeholders, as authored.
+    pub sql: String,
+    /// The parameter name of each `?`, in order.
+    pub bind: Vec<String>,
+    pub params: Vec<AuthorityParam>,
+    pub coverage: Vec<AuthorityCoverage>,
+    /// Table to sorted, deduplicated columns the statement reads.
+    pub reads: BTreeMap<String, Vec<String>>,
+    pub result_columns: Vec<AuthorityResultColumn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityParam {
+    pub name: String,
+    /// `string`, `integer`, `float`, `boolean` or `json`.
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub nullable: bool,
+}
+
+/// One table's coverage: `units` and the `fixed_scopes` values name params.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorityCoverage {
     pub table: String,
-    pub columns: Vec<String>,
-    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
+    pub variable: String,
+    pub units: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fixed_scopes: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityResultColumn {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub nullable: bool,
+}
+
+/// §5.11 the result of one `authority_read`: every request's result from one
+/// SQLite read transaction at `revision` (a decimal `localRevision`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AuthorityReadResult {
+    pub revision: String,
+    pub results: Vec<AuthorityQueryResult>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AuthorityQueryResult {
+    pub query: String,
+    pub rows: Vec<QueryRow>,
+    pub coverage: Vec<AuthorityCoverageState>,
+    /// True when every coverage entry is `complete`.
+    pub complete: bool,
+}
+
+/// One coverage unit of a request: `base` is `{ variable, fixedScopes? }`
+/// with the request's values, `state` is `complete`, `pending`, `missing` or
+/// `revoked`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AuthorityCoverageState {
+    pub table: String,
+    pub base: Value,
+    pub unit: String,
+    pub state: &'static str,
 }

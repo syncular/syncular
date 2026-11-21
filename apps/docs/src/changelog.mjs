@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-21',
+    title: 'Authority queries over the accepted base',
+    body: "Declare preflight evidence as `authority query` in SYQL and read it with `authorityRead`: joins and aggregates over the last state the server accepted, in one read transaction, with per-table coverage that tells a complete negative from missing data. A native host authorizes each declared statement against its column ceiling. Coverage now proves an entry from any unit whose scopes are a subset of it.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/#authority-evidence-before-activation',
+        label: 'Authority evidence before activation',
+      },
+    ],
+  },
+  {
+    date: '2026-11-21',
     title: 'A transport gate that pulls without pushing',
     body: "The transport gate has three states: `closed`, `pull` and `open`. In `pull`, rounds pull and realtime works, and no round sends a commit, so an app can hold pending commits it may still replace. `transportGate` and `setTransportGate` replace `transportEnabled`, `setTransportEnabled` and the worker's `setOffline`.",
     links: [

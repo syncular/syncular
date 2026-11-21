@@ -261,7 +261,67 @@ values. An exact-ID historical reader can select the ID scope as its own unit.
 Scoped remote queries still require every declared table scope; see
 [Remote operations](/guide-remote-operations/).
 
+A joined table uses the one scope dimension the query proves for it as its
+unit. A joined table that proves several takes the dimension whose parameters
+match the anchor's unit. When none or several match, name the dimension with
+a later `by` entry, after the anchor:
+
+```syql
+sync query wrapsForCentre(workspaceId, centreId, sealerId)
+  by s.workspace_id, w.recipient_facility_id {
+  select w.id from surgeries as s
+  join record_key_wraps as w on w.sealer_facility_id = s.practice_facility_id
+  where s.workspace_id = :workspaceId
+    and s.practice_facility_id = :sealerId
+    and w.recipient_facility_id = :centreId;
+}
+```
+
+The wrap table proves its recipient and, through the join, its sealer.
+Neither carries `:workspaceId`, so the second `by` entry selects the
+recipient, and the sealer becomes a fixed scope. A `by` entry for a table that
+is not ambiguous, or for a column the query does not prove, fails with
+`SYQL6005_INVALID_SYNC_QUERY`.
+
+The generated `coverage(params)` returns one entry per read table,
+`{ table, base, units }`. A unit proves an entry when its scope variables are
+a subset of the entry's and its echo restricts none of the others, so a unit
+registered on the wrap's recipient alone proves the query above.
+
 There are no `@scope` or `@cover` directives.
+
+## `authority query`
+
+`authority query` declares evidence a client reads during security preflight
+over the accepted base of its replica: the last state the server accepted,
+without local intent. It follows every `sync query` coverage rule and reads
+only `string`, `integer`, `float`, `boolean` and `json` columns without
+encryption, plus `_sync_version`. It has one statement, no dynamic sort, limit
+or conditional predicate, no FTS, and scalar parameters only. A violation fails
+with `SYQL6009_INVALID_AUTHORITY_QUERY`. A query that needs `EXISTS` across
+scoped tables writes it as a top-level join with an aggregate:
+
+```syql
+authority query centreRecordWrapCover(centreFacilityId, workspaceId, epochId,
+  trustedNowMs: integer) by s.workspace_id {
+  select count(w.id) > 0 as qualifying,
+    max(w.expires_at_ms) as latest_expires_at_ms
+  from surgeries as s
+  join surgery_sealed_identities as i on i.id = s.sealed_identity_id
+    and i.workspace_id = s.workspace_id
+  join record_key_wraps as w on w.record_key_id = i.record_key_id
+  where s.workspace_id = :workspaceId
+    and w.recipient_facility_id = :centreFacilityId
+    and w.epoch_id = :epochId
+    and (w.expires_at_ms is null or w.expires_at_ms > :trustedNowMs);
+}
+```
+
+`typegen` emits `centreRecordWrapCoverAuthority`, a data-only declaration
+with the positional SQL, the parameters, one coverage entry per table and the
+read set: every column the statement reads, in any clause. An authority query
+is never an ordinary reactive query. The client runs it with
+`authorityRead` ([Tauri specifics](/platform-tauri-specifics/#authority-evidence-before-activation)).
 
 ## Reading the server version
 

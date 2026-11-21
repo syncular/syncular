@@ -118,7 +118,7 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       const bytes = new Uint8Array(await result.outputs[0]!.arrayBuffer());
       expect(bytes.length).toBeLessThanOrEqual(ceiling);
       if (lane === 'authority-tauri') {
-        // The native bridge decodes the Rust snapshot; it does not bundle the TS reader.
+        // The native bridge decodes the Rust read; it does not bundle the TS reader.
         expect(authorityModules).toEqual([
           join(root, 'packages/tauri/src/authority.ts'),
         ]);
@@ -145,7 +145,7 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         lane === 'authority-worker',
       );
       if (lane.includes('tauri'))
-        expect(code.includes('authoritySnapshot accepts no arguments')).toBe(
+        expect(code.includes('authorityRead takes one requests list')).toBe(
           optIn,
         );
     }

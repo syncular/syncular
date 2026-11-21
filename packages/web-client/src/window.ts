@@ -98,6 +98,16 @@ export function windowBaseKey(base: WindowBase): string {
   return `${base.variable}\0${canonicalUnitJson(base.fixedScopes ?? {})}`;
 }
 
+/** The unit of a window change: the inverse of {@link windowBaseKey} plus
+ * {@link windowUnitScopes}. */
+export function windowKeyScopes(baseKey: string, value: string): UnitScopes {
+  const at = baseKey.indexOf('\0');
+  return {
+    ...JSON.parse(baseKey.slice(at + 1)),
+    [baseKey.slice(0, at)]: value,
+  };
+}
+
 /** The unit of one window value: the fixed scopes plus the value. */
 export function windowUnitScopes(base: WindowBase, value: string): UnitScopes {
   return { ...base.fixedScopes, [base.variable]: value };

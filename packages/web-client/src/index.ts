@@ -9,9 +9,10 @@
  * import no SQLite.
  */
 export type {
+  AuthorityQuery,
   AuthorityReadPolicy,
-  AuthorityReadDeclaration,
-  AuthoritySnapshot,
+  AuthorityReadRequest,
+  AuthorityReadResult,
 } from './authority';
 export * from './apply';
 export * from './availability';

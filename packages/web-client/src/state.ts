@@ -17,6 +17,7 @@ import {
 } from '@syncular/core';
 import { localStateCorrupt } from './errors';
 import type { CompiledClientSchema, CompiledClientTable } from './schema';
+import type { WindowBase } from './window';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
 
@@ -103,6 +104,44 @@ export function pairScopes(
   for (const [variable, value] of Object.entries(scopes))
     effective[variable] = [value];
   return effective;
+}
+
+/** §7.5 subset predicate: every unit variable is an entry variable, equal on it. */
+export function subsetScopes(unit: UnitScopes, entry: UnitScopes): boolean {
+  return Object.entries(unit).every(([k, v]) => entry[k] === v);
+}
+
+/**
+ * §7.5 subset rule: the persisted units whose variables are a subset of the
+ * entry's and whose values match it on them, or true when one of them is
+ * complete for `table` and its echo restricts none of the entry's other
+ * variables.
+ */
+export function coverageCandidates(
+  units: readonly UnitRecord[],
+  table: CompiledClientTable,
+  base: WindowBase,
+  value: string,
+): UnitRecord[] | true {
+  const entry: UnitScopes = { ...base.fixedScopes, [base.variable]: value };
+  const found = units.filter(
+    (unit) => covers(table, unit.scopes) && subsetScopes(unit.scopes, entry),
+  );
+  return (
+    found.some((unit) => {
+      const effective = owning(unit)
+        ? pairScopes(unit.scopes, table.name, unit.echo)
+        : undefined;
+      return (
+        effective !== undefined &&
+        Object.keys(entry).every(
+          (k) =>
+            unit.scopes[k] !== undefined ||
+            (effective[k]?.includes('*') ?? true),
+        )
+      );
+    }) || found
+  );
 }
 
 /** §3.3 row ownership: the pair scopes of every owner of `table` but one.

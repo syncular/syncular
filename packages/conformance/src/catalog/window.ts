@@ -144,7 +144,7 @@ export const windowScenarios: readonly Scenario[] = [
       const snapshot = await a.api.querySnapshot?.(
         "SELECT _syncular_source_id AS id FROM tasks_fts WHERE tasks_fts MATCH 'retainedneedle'",
         [],
-        [{ base: BASE, units: ['p1'] }],
+        [{ table: 'tasks', base: BASE, units: ['p1'] }],
       );
       checkEqual(
         snapshot?.rows,
@@ -668,7 +668,7 @@ export const windowScenarios: readonly Scenario[] = [
       const coverage = (
         await a.api.snapshotRead({
           statements: [],
-          coverage: [{ base: BASE, units: ['p1'] }],
+          coverage: [{ table: 'tasks', base: BASE, units: ['p1'] }],
         })
       ).coverage;
       checkEqual(

@@ -836,6 +836,7 @@ test('the default worker serves a queued snapshot between committed image chunks
         sql: 'SELECT count(*) AS n FROM catalogue',
         coverage: [
           {
+            table: 'catalogue',
             base: { variable: 'project_id' },
             units: ['p1'],
           },
@@ -1659,7 +1660,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
       return (
         await client.snapshotRead({
           statements: [],
-          coverage: [{ base, units: ['p1'] }],
+          coverage: [{ table: 'catalogue', base, units: ['p1'] }],
         })
       ).coverage.complete;
     });
@@ -1672,7 +1673,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
         !(
           await client.snapshotRead({
             statements: [],
-            coverage: [{ base, units: ['p1'] }],
+            coverage: [{ table: 'catalogue', base, units: ['p1'] }],
           })
         ).coverage.complete
       )
@@ -1728,7 +1729,7 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
         return (
           await client.snapshotRead({
             statements: [],
-            coverage: [{ base, units: ['p1'] }],
+            coverage: [{ table: 'catalogue', base, units: ['p1'] }],
           })
         ).coverage.complete;
       }),
