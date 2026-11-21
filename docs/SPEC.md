@@ -1351,6 +1351,116 @@ condition fails): the guard would remove the entry of a row that stays. Every
 open compares each projection's mapping row count with its visible table's row
 count and rebuilds a projection whose counts differ.
 
+**Client-local projections.** The schema IR MAY attach an app-filled
+`localProjections` array to a synced source table. Each projection has a name,
+a generation, declared columns, optional FTS5 configuration, and optional
+dependencies. Its columns name no source column. The client rejects a
+declaration that supplies a source column with `client.schema_invalid`.
+
+A projection is a client-only table keyed by the source primary key in its
+`_syncular_source_id` column, expressed as text. It MUST NOT create a server
+table, wire table, scope, codec column, unit coverage or mutation target.
+Pushes, COMMIT frames, segments, images and server exports carry source
+data only. The source's table generation (§7.4.3) excludes these projections.
+Each projection has its own generation. An FTS5 declaration takes
+`fts: { tokenize, columns }`. The nonempty `columns` list names distinct
+declared string columns. The client refuses a missing, empty or invalid list
+with `client.schema_invalid`. All projection columns are nullable.
+
+App-filled FTS5 uses external content. The public FTS5 relation has the
+projection name. The mapping table is `_syncular_fts_<name>` and the content
+table is `_syncular_projection_<name>`. Non-search columns are `UNINDEXED`.
+A scoped clear issues the FTS5 `delete` command with old content before it
+deletes the content and mapping. The source and dependency triggers clear all
+three in the invalidating statement. Open compares the mapping and index
+counts with the content count and rebuilds from the content on a mismatch.
+Query lowering uses the same source-ID mapping as built-in FTS5.
+
+Every write of a visible source row clears its projection row and FTS
+entries and records a fresh change token in the projection's pending set.
+This happens in the same transaction as the source write, including remote
+apply, optimistic edits and overlay rebuild, settlement, rollback, eviction,
+revocation, purge, rebootstrap and schema reset. A source deletion removes
+its projection row, FTS entries and pending or withheld entry.
+
+A projection allocates change tokens from a durable increasing integer
+counter. Every invalidating write allocates a fresh token, including
+optimistic writes that leave `_sync_version` unchanged. Each projection also
+holds a durable integer epoch. The first creation in a database draws the
+epoch uniformly from the integers in [0, 2^52) using the host CSPRNG. The
+client preserves both counters across restart and advances the epoch when it clears the projection
+for a generation change. A generation change clears all derived
+rows, FTS entries and withheld entries and records every existing source row
+as pending with a fresh token, in one transaction.
+
+The open comparison adds each existing source row with no projection,
+pending entry or withheld entry to the pending set. Existing tokens survive
+restart and leader handover. Writes during overlay recovery follow the same
+invalidation rules as other overlay writes.
+
+The TypeScript client requires the projection implementation at construction
+when the schema declares a projection. It refuses a missing implementation
+with `client.schema_invalid` and `{ reason: "projections_unavailable" }`.
+
+The client exposes three operations. They execute on the replica owner and
+serialize with apply and the security barrier. A worker follower forwards
+them to the leader. Security preflight refuses all three with
+`client.security_preflight_required`. An unknown projection name fails with
+`client.projection_unknown` and the `name` detail.
+
+- `projectionPending(name, limit)` returns `{ epoch, entries }`. It returns
+  up to `limit` pending entries `{ sourceId, token }` in source-ID order.
+- `writeProjection(name, epoch, rows)` accepts rows
+  `{ sourceId, token, values }` and returns `{ written, stale }` with
+  source IDs in input order. The client writes a row only if its token
+  equals the pending token and its epoch equals the current epoch. The
+  transaction removes the accepted pending entries and updates the
+  projection rows and FTS entries together. An unknown column or wrong
+  value type fails the entire call with `client.projection_invalid` and the
+  `name` and `column` details. Omitted and null columns store SQL NULL. JSON
+  columns take a JSON document string. The token, epoch and limit are safe
+  integers in the JavaScript API.
+- `invalidateProjection(name, sourceIds?)` advances the epoch, deletes the
+  selected derived rows and FTS entries, and records each selected existing
+  source row as pending with a fresh token in one transaction. Omitting
+  `sourceIds` selects every source row. The client issues FTS5 `delete-all`
+  before clearing all content and mapping rows. Whole invalidation removes
+  the projection plaintext while keeping the source replica and outbox.
+  Free-page residue follows the at-rest rules in §5.11. For preflight erasure,
+  use a projection target in `purgeLocalData` (§7.3.4).
+
+An accepted `writeProjection` row with `values: null` moves the pending
+entry to withheld and stores no projection row. Pending reads and the open
+comparison exclude withheld entries. A source write, dependency write or
+explicit invalidation returns the entry to pending with a fresh token.
+
+A projection may declare `dependencies: [{ table, column, sourceColumn }]`.
+Every visible write of `table` invalidates every source row whose
+`sourceColumn` equals the old or new value of `column`. It clears those
+projection rows and FTS entries and records fresh pending tokens in the
+same transaction. Dependencies are conservative and one hop. Typegen and
+both client schema loaders reject dependencies with unknown columns, tables
+outside the synced schema, encrypted columns on either side, or a source
+column without an index that begins with that column. A source primary key
+satisfies the index rule. Declared references (§6.11) enforce server
+integrity. Projection dependencies govern local invalidation.
+
+After a transaction commits, the client emits
+`{ type: "projectionPending", name }` once per projection for which it added
+pending work. A transaction that adds no pending entry emits no event.
+The event includes entries added by apply, optimistic edits, rollback,
+dependency invalidation, explicit invalidation, a generation change and the
+open comparison. It can reach worker followers and native event subscribers.
+After security activation, the app reads `projectionPending` once and follows
+later events to resume work.
+
+Projection changes participate in ordinary query invalidation (§7.5).
+The source's units provide coverage. A projection has no units of its own.
+A projection stores application plaintext at rest under the same security
+rules as decrypted encrypted columns (§5.11). Purge, revocation and
+protected database deletion remove projection rows, FTS entries and pending
+or withheld entries together with their source rows.
+
 **App-facing row versions.** Every client query surface MUST expose the
 protocol-owned per-row version through the public pseudo-column
 `_sync_version`. Implementations MAY use a different private physical column
@@ -6719,6 +6829,19 @@ resolver is reachable again, a normal authorized round re-issues a fresh
 lease and the client resumes — its local data was never touched. If the
 live resolver has *also* narrowed the actor's scopes, the ordinary §3.3
 purge runs on that recovered round, as always.
+
+**Local purge targets.** The host's `purgeLocalData({ purgeId, targets })`
+accepts table targets `{ table, selectors }` and whole-projection targets
+`{ projection }` in the same plan. A projection target has no selectors.
+An unknown name fails with `client.projection_unknown` and its `name` detail.
+Projection targets are permitted during security preflight. The client
+clears the index with FTS5 `delete-all`, clears content and mapping, gives
+every existing source row a fresh pending token, and advances the epoch in
+the same transaction. Withheld entries become pending. Projection targets
+contribute their deleted content rows to `purgedRows` and preserve source
+rows and outbox commits. The purge receipt and the plan commit together.
+The client runs purge erasure (§5.11) after the transaction and on a retry
+that finds its plan already applied.
 
 #### 7.3.5 Client `leaseState`
 

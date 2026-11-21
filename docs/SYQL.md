@@ -826,6 +826,12 @@ reject a relation whose identity it cannot resolve. Server registration
 requires this metadata and never infers partition isolation from a deduplicated
 table-name list.
 
+An ordinary query can read an app-filled projection by its schema name.
+Projection rows identify their source through `_syncular_source_id`.
+Queries that read them invalidate when the projection changes. A projection
+contributes no coverage. A synced source table in the query can prove
+coverage through its declared scopes.
+
 **FTS source ids.** Reading an FTS projection's `_syncular_source_id` makes
 FTS5 fetch the content row of every hit. The client keeps a mapping table for
 each projection whose `id` equals the projection rowid (SPEC client-local FTS5
