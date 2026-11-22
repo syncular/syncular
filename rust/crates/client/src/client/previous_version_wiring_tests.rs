@@ -352,20 +352,18 @@ fn temp_replica(label: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn file_identity_constructor_requires_the_returned_wal_mode() {
+fn file_identity_constructor_requires_wal_and_opens_memory_paths_in_memory() {
+    // A path that names no file opens an in-memory replica, which has no WAL;
+    // a Tauri host idles on `db_path: ":memory:"` before an actor signs in.
     for path in [":memory:", ""] {
-        let error = SyncClient::open_path_with_identity(
+        let client = SyncClient::open_path_with_identity(
             None,
             &previous_version_schema(1),
             ClientLimits::default(),
             path,
         )
-        .err()
-        .expect("temporary SQLite databases cannot enter WAL mode");
-        assert_eq!(
-            error,
-            "sync.invalid_request: file-backed client requires WAL journal mode"
-        );
+        .expect("a memory path opens without WAL");
+        assert_ne!(journal_mode(&client.conn), "wal");
     }
     let path = temp_replica("confirmed-wal");
     let client = SyncClient::open_path_with_identity(
@@ -378,6 +376,25 @@ fn file_identity_constructor_requires_the_returned_wal_mode() {
     assert_eq!(journal_mode(&client.conn), "wal");
     drop(client);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn file_identity_constructor_refuses_a_file_that_cannot_enter_wal() {
+    // rusqlite's default open flags accept URI filenames, and SQLite's memdb
+    // VFS has no WAL: this path names a file whose journal cannot become WAL.
+    let path = format!("file:/walrefused-{}?vfs=memdb", uuid::Uuid::new_v4());
+    let error = SyncClient::open_path_with_identity(
+        None,
+        &previous_version_schema(1),
+        ClientLimits::default(),
+        &path,
+    )
+    .err()
+    .expect("a memdb file cannot enter WAL mode");
+    assert_eq!(
+        error,
+        "sync.invalid_request: file-backed client requires WAL journal mode"
+    );
 }
 
 #[test]

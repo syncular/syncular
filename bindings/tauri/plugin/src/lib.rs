@@ -1324,7 +1324,8 @@ impl SyncularState {
             }
         }
         if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
-            let next = match database.filter(|path| path.as_str() != ":memory:") {
+            let next = match database.filter(|path| !path.is_empty() && path.as_str() != ":memory:")
+            {
                 Some(path) => Some(spawn_reader(
                     path,
                     self.sender
@@ -2331,6 +2332,89 @@ mod tests {
             "sync.invalid_request"
         );
         command(json!({ "method": "shutdown" }));
+        std::fs::remove_dir_all(dir).expect("remove temp directory");
+    }
+
+    /// A host that idles on `db_path: ":memory:"` before sign-in and opens a
+    /// named actor database after it: the idle create opens in memory under
+    /// security preflight, the actor database runs on WAL, and the idle client
+    /// never sees the actor's rows.
+    #[test]
+    fn signed_out_memory_slot_and_named_actor_databases_stay_isolated() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let dir = std::env::temp_dir().join(format!("syncular-tauri-idle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                db_path: Some(":memory:".to_owned()),
+                database_dir: Some(dir.to_string_lossy().into_owned()),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let command = |method: &str, params: Value| {
+            run_command(app.handle(), json!({ "method": method, "params": params }))
+                .expect("command reply")
+        };
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todo", "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": []
+            }]
+        });
+        let open = |database: Option<&str>| {
+            let mut params = json!({ "schema": schema, "securityPreflight": true });
+            if let Some(database) = database {
+                params["database"] = json!(database);
+            }
+            let created = command("create", params);
+            assert_eq!(created["result"], json!({}), "{database:?}: {created}");
+            assert_eq!(command("activateSecurity", json!({}))["result"], json!({}));
+        };
+        let titles = || {
+            command("query", json!({ "sql": "SELECT title FROM todo" }))["result"]["rows"].clone()
+        };
+
+        open(None);
+        assert_eq!(titles(), json!([]));
+        command("shutdown", json!({}));
+
+        open(Some("actor-a"));
+        command(
+            "mutate",
+            json!({ "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "t1", "title": "a" }
+        }] }),
+        );
+        assert_eq!(titles(), json!([{ "title": "a" }]));
+        assert!(
+            dir.join("actor-a.db-wal").is_file(),
+            "the actor database runs on WAL"
+        );
+        command("shutdown", json!({}));
+
+        open(None);
+        assert_eq!(
+            titles(),
+            json!([]),
+            "the idle client holds none of the actor's rows"
+        );
+        command("shutdown", json!({}));
+
+        open(Some("actor-a"));
+        assert_eq!(
+            titles(),
+            json!([{ "title": "a" }]),
+            "the reopened actor keeps its rows"
+        );
+        command("shutdown", json!({}));
         std::fs::remove_dir_all(dir).expect("remove temp directory");
     }
 

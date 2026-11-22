@@ -2317,7 +2317,9 @@ impl SyncClient {
 
     /// Open a file replica and resolve its client id. Native targets require
     /// WAL for the independent snapshot reader; `wasm32-unknown-unknown`
-    /// accepts the sqlite-wasm worker journal instead.
+    /// accepts the sqlite-wasm worker journal instead. `":memory:"` and `""`
+    /// name no file: they open an in-memory replica, which has no WAL and no
+    /// snapshot reader.
     pub fn open_path_with_identity(
         client_id: Option<String>,
         schema_json: &Value,
@@ -2329,7 +2331,9 @@ impl SyncClient {
             schema_json,
             limits,
             path,
-            !cfg!(all(target_arch = "wasm32", target_os = "unknown")),
+            !cfg!(all(target_arch = "wasm32", target_os = "unknown"))
+                && !path.is_empty()
+                && path != ":memory:",
         )
     }
 

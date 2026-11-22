@@ -1,5 +1,20 @@
 # Syncular release notes
 
+## 0.103.1 release notes
+
+### A memory path opens an in-memory Rust client
+
+`SyncClient::open_path_with_identity` with the path `:memory:` or an empty path
+now opens an in-memory replica without WAL. Before 0.103.1 it refused both
+paths with `sync.invalid_request: file-backed client requires WAL journal
+mode`, so a Tauri host configured with `database_dir` for named actor databases
+and `db_path: Some(":memory:")` for the signed-out slot could not create its
+client before sign-in. The signed-out client holds none of an actor's rows, and
+a named actor database still opens on WAL. A file replica that cannot enter WAL
+still fails with that error.
+
+[Rust install](https://syncular.dev/platform-rust-install/)
+
 ## 0.103.0 release notes
 
 ### A transport gate that pushes a verified prefix
