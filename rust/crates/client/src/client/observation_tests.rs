@@ -387,9 +387,13 @@ fn the_send_seam_encodes_only_the_commits_the_gate_lets_this_round_push() {
     let keys = |names: &[&str]| {
         let mut config = crate::values::EncryptionConfig::default();
         for name in names {
-            config.keys.insert((*name).to_owned(), vec![name.as_bytes()[0]; 32]);
+            config
+                .keys
+                .insert((*name).to_owned(), vec![name.as_bytes()[0]; 32]);
         }
-        config.key_id_columns.insert("notes".to_owned(), "key_id".to_owned());
+        config
+            .key_id_columns
+            .insert("notes".to_owned(), "key_id".to_owned());
         config
     };
     client.set_encryption(keys(&["A", "B"]));
