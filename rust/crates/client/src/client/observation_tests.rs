@@ -878,6 +878,69 @@ fn blob_staging_failures_preserve_durable_state_and_allow_retry() {
 }
 
 #[test]
+fn a_refused_body_drops_only_the_commits_the_gate_lets_this_round_push() {
+    let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+        {"name":"id","type":"string","nullable":false},
+        {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+    let mut client = SyncClient::new("blob-gate".into(), &schema, Default::default()).unwrap();
+    client.set_meta(LOG_EPOCH_KEY, "epoch").unwrap();
+    let body = client.upload_blob(b"shared body", None, None).unwrap();
+    let attach = |client: &mut SyncClient, id: &str| {
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "attachments".into(),
+                values: Map::from_iter([
+                    ("id".into(), Value::from(id)),
+                    ("file".into(), Value::from(body.to_string())),
+                ]),
+                base_version: None,
+            }])
+            .unwrap()
+    };
+    // Two commits name one content address: a due photo and a held copy.
+    let due = attach(&mut client, "photo");
+    let held = attach(&mut client, "photo-copy");
+    let queued = |client: &SyncClient| {
+        client
+            .conn
+            .query_row("SELECT count(*) FROM _syncular_blob_uploads", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let mut transport = CountingRealtimeTransport {
+        refuse_blob_uploads: true,
+        ..Default::default()
+    };
+    // §8.8: `pull` uploads nothing.
+    client.transport_gate = crate::TransportGate::Pull;
+    flush_blob_uploads(&mut client, &mut transport).unwrap();
+    assert!(transport.blob_uploads.is_empty());
+    // `through` uploads the prefix's body; its refusal drops the due commit
+    // only, and the body stays queued for the held one.
+    client.transport_gate = crate::TransportGate::Through(due.clone());
+    flush_blob_uploads(&mut client, &mut transport).unwrap();
+    assert_eq!(transport.blob_uploads.len(), 1);
+    assert_eq!(client.pending_commit_ids(), vec![held.clone()]);
+    let rejections = client.rejections();
+    assert_eq!(rejections.len(), 1);
+    assert_eq!(rejections[0].client_commit_id, due);
+    assert_eq!(rejections[0].code, "blob.too_large");
+    assert!(matches!(
+        client.commit_delivery(&held).unwrap(),
+        crate::CommitDelivery::Pending { .. }
+    ));
+    assert_eq!(queued(&client), 1);
+    // Once due and accepted, the body uploads again and leaves the queue.
+    transport.refuse_blob_uploads = false;
+    client.transport_gate = crate::TransportGate::Open;
+    flush_blob_uploads(&mut client, &mut transport).unwrap();
+    assert_eq!(transport.blob_uploads.len(), 2);
+    assert_eq!(queued(&client), 0);
+    assert_eq!(client.pending_commit_ids(), vec![held]);
+}
+
+#[test]
 fn blob_upload_failures_preserve_pins_and_original_commits_after_file_reopen() {
     let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
         {"name":"id","type":"string","nullable":false},
@@ -3381,6 +3444,8 @@ struct CountingRealtimeTransport {
     sync_calls: usize,
     realtime_sync_calls: usize,
     refuse_connect: bool,
+    /// Refuse every blob upload with a non-retryable `blob.too_large`.
+    refuse_blob_uploads: bool,
 }
 
 impl Transport for CountingRealtimeTransport {
@@ -3391,6 +3456,13 @@ impl Transport for CountingRealtimeTransport {
         _media_type: Option<&str>,
     ) -> Result<(), TransportError> {
         self.blob_uploads.push((blob_id.to_owned(), bytes.to_vec()));
+        if self.refuse_blob_uploads {
+            return Err(TransportError {
+                code: "blob.too_large".to_owned(),
+                message: "blob exceeds the byte cap".to_owned(),
+                details: Some(json!({ "retryable": false })),
+            });
+        }
         Ok(())
     }
 

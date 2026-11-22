@@ -2693,12 +2693,20 @@ export class SyncClient {
   /**
    * Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. It
    * runs on the round's operation chain because a refused upload drops
-   * outbox commits a round may have captured.
+   * outbox commits a round may have captured. The transport gate bounds it
+   * as it bounds a round (§8.8).
    */
   flushBlobUploads(): Promise<void> {
     this.#requireTransport();
     return this.#runProtectedAsync(async () => {
-      await this.#serialize(() => this.#flushBlobUploads(undefined));
+      await this.#serialize(
+        async () =>
+          this.#gate > 1 &&
+          this.#flushBlobUploads(
+            undefined,
+            this.#gate > 2 ? this.#through : undefined,
+          ),
+      );
     });
   }
 
@@ -2750,7 +2758,6 @@ export class SyncClient {
           error.retryable !== false
         )
           throw error;
-        clearPendingUpload(this.#db, pending.blobId);
         const referencing = new Set(
           this.#db
             .query(
@@ -2759,11 +2766,19 @@ export class SyncClient {
             )
             .map((row) => row.commit_id),
         );
+        // §8.8: only a commit the gate lets this round push takes the
+        // refusal. A held commit keeps the body queued and meets the
+        // refusal when a round pushes it.
+        let held = false;
         for (const commit of listOutbox(this.#db)) {
           if (!referencing.has(commit.clientCommitId)) continue;
-          this.#dropIncompatibleCommit(commit, error.message, error.code);
-          refused.add(commit.clientCommitId);
+          if (prefix !== undefined && commit.seq > prefix) held = true;
+          else {
+            this.#dropIncompatibleCommit(commit, error.message, error.code);
+            refused.add(commit.clientCommitId);
+          }
         }
+        if (!held) clearPendingUpload(this.#db, pending.blobId);
         continue;
       }
       clearPendingUpload(this.#db, pending.blobId);

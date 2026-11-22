@@ -9365,6 +9365,13 @@ gate.
 
 In every state, authorized local reads, keys, units, mutations and staged blob
 uploads stay available, and commits remain durable and ordered.
+A blob flush the host requests outside a round uploads what a round in the
+current state would upload: nothing under `closed` or `pull`, the staged blobs
+of the prefix under `through`, every staged blob under `open`. A
+non-retryable refusal of a staged blob (§5.9.7) rejects only the commits the
+state lets a round push; a held commit that references the same blob stays
+pending with no outcome, and the blob stays staged until a round pushes that
+commit.
 
 A round whose network exchange already started MAY finish its captured request,
 segment downloads and atomic response application after the gate changes. Its

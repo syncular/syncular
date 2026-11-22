@@ -9907,9 +9907,14 @@ impl SyncClient {
                             })
                             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
                             .and_then(|refused| {
+                                // §8.8: only a commit the gate lets this round
+                                // push takes the refusal. A held commit keeps
+                                // the body queued and meets the refusal when a
+                                // round pushes it.
                                 let commits = self
                                     .outbox
                                     .iter()
+                                    .take(self.pushable_commits())
                                     .filter(|commit| refused.contains(&commit.client_commit_id))
                                     .cloned()
                                     .collect::<Vec<_>>();
@@ -9922,16 +9927,23 @@ impl SyncClient {
                                 });
                                 prepared.meta.pushed_ids.retain(|id| !refused.contains(id));
                                 prepared.continuation = Some(crate::round::RoundPhase::UploadGrant);
-                                Ok(())
+                                Ok(true)
                             })
                             .map_err(|message| TransportError::new("client.failed", message))
                     }
-                    result => result,
+                    result => result.map(|()| false),
                 };
-                let result = result.and_then(|()| {
+                // A refused body stays queued while a held commit names it.
+                let result = result.and_then(|refused| {
                     self.conn
                         .execute(
-                            "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
+                            if refused {
+                                "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?1
+                                   AND NOT EXISTS (SELECT 1 FROM _syncular_blob_commit_refs
+                                                    WHERE blob_id = ?1)"
+                            } else {
+                                "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?1"
+                            },
                             rusqlite::params![id],
                         )
                         .map(|_| ())

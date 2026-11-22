@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.105.2 release notes
+
+### Blob uploads follow the transport gate
+
+The TypeScript `flushBlobUploads()` uploaded every staged blob whatever the
+transport gate. A non-retryable refusal of a body, such as `blob.too_large`,
+rejected every pending commit that referenced it, so a commit held behind
+`pull` or after a `through` boundary got a terminal outcome before any round
+sent it. The same fan-out reached a held commit in an ordinary round in both
+clients when it shared a content address with a commit the round pushed.
+`flushBlobUploads()` now uploads what a round in the current state would:
+nothing under `closed` or `pull`, the prefix's bodies under `through`, every
+staged body under `open` (SPEC §8.8). A refusal rejects only the commits the
+gate lets the round push. A held commit that references the same body stays
+pending with no outcome and an unchanged attempt marker, and the body stays
+staged until a round pushes that commit; it is then uploaded again and the
+commit settles once. A due commit whose body is refused is rejected with the
+server's code, as before.
+
+[Blobs](https://syncular.dev/concepts-blobs/)
+
 ## 0.105.1 release notes
 
 ### A held commit without its key waits until it is due

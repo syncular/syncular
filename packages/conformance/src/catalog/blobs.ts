@@ -14,7 +14,7 @@
  * owning row (§5.9.5). Both pairings run these (the Rust core bridges the
  * blob transport through the shim).
  */
-import { unitId } from '@syncular/core';
+import { decodeMessage, unitId } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverRow, DriverSchema } from '../driver';
 import {
@@ -132,6 +132,102 @@ export const blobScenarios: readonly Scenario[] = [
       await owner.api.setTransportGate('open');
       await syncIdle(owner);
       checkEqual(owner.blobUploads.length, 2, 'open uploads the tail blob');
+    },
+  },
+  {
+    // §8.8/§5.9.7: a refused upload drops only the commits the gate lets the
+    // round push. A held commit that names the same body, or another body,
+    // stays pending with no outcome; once due and accepted it lands once.
+    name: 'blobs/a-refused-body-leaves-held-commits-pending',
+    requires: ['blobs'],
+    specRefs: ['§8.8', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'blob-held',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      await requireBlobs(owner);
+      await owner.api.subscribe(U1);
+      await syncIdle(owner);
+      const attach = (id: string, ref: string) =>
+        owner.api.mutate([
+          {
+            op: 'upsert',
+            table: 'attachments',
+            values: attachmentRow(id, 'p1', ref),
+          },
+        ]);
+      const shared = await owner.api.uploadBlob!(bytesOf('shared photo'));
+      const other = await owner.api.uploadBlob!(bytesOf('other photo'));
+      const due = await attach('photo', shared);
+      const sameBody = await attach('photo-copy', shared);
+      const otherBody = await attach('thumbnail', other);
+      const outcomes = async () =>
+        Object.fromEntries(
+          (await owner.api.commitOutcomes()).map((outcome) => [
+            outcome.clientCommitId,
+            outcome.status,
+          ]),
+        );
+      const pushed = () =>
+        owner.sentRequests.flatMap((bytes) =>
+          decodeMessage(bytes).frames.flatMap((frame) =>
+            frame.type === 'PUSH_COMMIT' ? [frame.clientCommitId] : [],
+          ),
+        );
+      owner.faults.refuseBlobUploads = true;
+      await syncIdle(owner);
+      checkEqual(owner.blobUploads, [], 'a pull round uploads nothing');
+      checkEqual(await outcomes(), {}, 'a pull round settles nothing');
+      await owner.api.setTransportGate({ through: due });
+      await syncIdle(owner);
+      checkEqual(
+        owner.blobUploads.length,
+        1,
+        'a through round uploads only the prefix body',
+      );
+      checkEqual(
+        (await owner.api.rejections()).map((rejection) => [
+          rejection.clientCommitId,
+          rejection.code,
+        ]),
+        [[due, 'blob.too_large']],
+        'the due commit takes the refusal',
+      );
+      checkEqual(
+        await owner.api.pendingCommitIds(),
+        [sameBody, otherBody],
+        'the held commits stay pending',
+      );
+      checkEqual(
+        await outcomes(),
+        { [due]: 'rejected' },
+        'the held commits have no outcome',
+      );
+      owner.faults.refuseBlobUploads = false;
+      await owner.api.setTransportGate('open');
+      await syncIdle(owner);
+      checkEqual(
+        await outcomes(),
+        { [due]: 'rejected', [sameBody]: 'applied', [otherBody]: 'applied' },
+        'once due and accepted, each held commit lands',
+      );
+      checkEqual(
+        pushed(),
+        [sameBody, otherBody],
+        'each held commit is pushed once',
+      );
+      checkEqual(
+        (await ctx.server.readRows('attachments'))
+          .map((row) => row.rowId)
+          .sort(),
+        ['photo-copy', 'thumbnail'],
+        'the server holds the held rows',
+      );
     },
   },
   {

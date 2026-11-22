@@ -465,6 +465,12 @@ export class ScenarioContext {
             mediaType?: string,
           ): Promise<void> => {
             blobUploads.push(blobId);
+            if (faults.refuseBlobUploads)
+              throw new EndpointError({
+                code: 'blob.too_large',
+                message: 'blob exceeds the byte cap',
+                retryable: false,
+              });
             const result = await serverUploadBlob(
               actorId,
               blobId,

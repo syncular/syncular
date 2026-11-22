@@ -15,6 +15,8 @@ export {
 export class TransportFaults extends TestkitTransportFaults {
   /** Return ACKs while withholding pull sections without advancing their cursors. */
   deferNextPulls = 0;
+  /** Refuse every blob upload with a non-retryable `blob.too_large` (§5.9.7). */
+  refuseBlobUploads = false;
   /** Fail the next N signed-URL fetches (the CDN hop, §5.4). */
   dropNextUrlFetches = 0;
   /** Corrupt the next signed-URL fetch's bytes (§5.1 tamper). */
