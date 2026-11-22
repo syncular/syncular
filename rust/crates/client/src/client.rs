@@ -129,6 +129,8 @@ const REPLACEMENT_PENDING: &str =
     "client.replacement_pending: the outcome has a pending replacement";
 /// §7.2.2 client-local code: a pending replacement was not written.
 const REPLACEMENT_REFUSED_CODE: &str = "sync.replacement_refused";
+/// §7.2.1/§7.2.3 client-local journal result of a replaced commit's operations.
+const COMMIT_REPLACED_CODE: &str = "client.commit_replaced";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -205,6 +207,42 @@ mod units_tests;
 
 #[cfg(test)]
 mod replace_outcome_tests;
+
+#[cfg(test)]
+mod pending_replacement_tests;
+
+/// A §6.12 fence round that [`SyncClient::prepare_pending_commit_replacement`]
+/// prepared on the owner. Send [`PreparedFenceRound::request_bytes`] as a sync
+/// request (over the realtime socket when [`PreparedFenceRound::realtime`] is
+/// set) and hand the reply to [`SyncClient::apply_fence_round`]; a host with a
+/// blocking [`Transport`] calls [`PreparedFenceRound::exchange`].
+pub struct PreparedFenceRound {
+    id: uuid::Uuid,
+    client_commit_id: String,
+    replacement_client_commit_id: String,
+    operations: Vec<OutboxOp>,
+    request: Vec<u8>,
+    realtime: bool,
+}
+
+impl PreparedFenceRound {
+    pub fn request_bytes(&self) -> &[u8] {
+        &self.request
+    }
+
+    pub fn realtime(&self) -> bool {
+        self.realtime
+    }
+
+    /// Send the request without accessing client state.
+    pub fn exchange(&self, transport: &mut dyn Transport) -> Result<Vec<u8>, TransportError> {
+        if self.realtime {
+            transport.realtime_sync(&self.request)
+        } else {
+            transport.sync(&self.request)
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct OutboxOp {
@@ -638,6 +676,8 @@ pub struct SyncClient {
     round_failure: Option<String>,
     /// The in-flight round: its id, `started_at_ms` and progress attempt.
     active_round: Option<(uuid::Uuid, i64, u64)>,
+    /// The in-flight §6.12 fence round, serialized with sync rounds.
+    fence_round: Option<uuid::Uuid>,
     last_round: Option<DiagnosticLastRound>,
     last_change: Option<DiagnosticLastChange>,
     /// §7.6: latest failed owned snapshot read per owner id, oldest first.
@@ -1702,6 +1742,7 @@ fn snapshot_read_connection(
                 Some(row) => CommitDelivery::Known {
                     client_commit_id: id.clone(),
                     outcome: SyncClient::outcome_from_row(row)
+                        .map(SyncClient::reported_outcome)
                         .map_err(|_| corrupt("persisted commit outcome is invalid"))?,
                 },
                 None => CommitDelivery::Unknown {
@@ -2494,6 +2535,7 @@ impl SyncClient {
             image_chunk_rows: HashMap::new(),
             round_failure: None,
             active_round: None,
+            fence_round: None,
             last_round: None,
             last_change: None,
             query_failures: Vec::new(),
@@ -2841,13 +2883,15 @@ impl SyncClient {
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
         };
         let outbox_existed = exists("_syncular_outbox")?;
-        // Durable client bookkeeping (outbox + units + meta).
+        // Durable client bookkeeping (outbox + units + meta). §7.1: a commit
+        // queued before the send-attempt marker existed counts as attempted.
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS _syncular_outbox (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
                    commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL,
-                   created_at_ms INTEGER NOT NULL DEFAULT 0);
+                   created_at_ms INTEGER NOT NULL DEFAULT 0,
+                   attempted INTEGER NOT NULL DEFAULT 1);
                  CREATE TABLE IF NOT EXISTS _syncular_row_deliveries (
                    tbl TEXT NOT NULL, id TEXT NOT NULL, commit_seq INTEGER NOT NULL, PRIMARY KEY(tbl,id));
                  CREATE TABLE IF NOT EXISTS _syncular_acked_rows (
@@ -2919,6 +2963,20 @@ impl SyncClient {
         let _ = self
             .conn
             .execute_batch("ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations_json TEXT");
+        // §7.1: an outbox created before the send-attempt marker; every commit
+        // it holds counts as attempted.
+        if !self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('_syncular_outbox') WHERE name = 'attempted'")
+            .and_then(|mut stmt| stmt.exists([]))
+            .map_err(|e| e.to_string())?
+        {
+            self.conn
+                .execute_batch(
+                    "ALTER TABLE _syncular_outbox ADD COLUMN attempted INTEGER NOT NULL DEFAULT 1",
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        }
         if self.get_meta(LOCAL_REVISION_KEY)?.is_none() {
             self.set_meta(LOCAL_REVISION_KEY, "0")?;
         }
@@ -5219,7 +5277,7 @@ impl SyncClient {
             .collect();
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json, created_at_ms) VALUES (?1, ?2, ?3)",
+                "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json, created_at_ms, attempted) VALUES (?1, ?2, ?3, 0)",
                 rusqlite::params![
                     commit.client_commit_id,
                     Value::Array(ops).to_string(),
@@ -5283,7 +5341,8 @@ impl SyncClient {
             CommitOutcomeStatus::Applied => "applied",
             CommitOutcomeStatus::Cached => "cached",
             CommitOutcomeStatus::Conflict => "conflict",
-            CommitOutcomeStatus::Rejected => "rejected",
+            // §7.2.1: a replaced commit is stored as a decided rejection.
+            CommitOutcomeStatus::Rejected | CommitOutcomeStatus::Replaced => "rejected",
         }
     }
 
@@ -5395,6 +5454,27 @@ impl SyncClient {
             .is_ok_and(|value| Self::stored_operation_is_representable(&value))
     }
 
+    /// §7.2.1: the one predicate for a replaced commit: a rejection whose
+    /// every result is `client.commit_replaced` and that names its replacement.
+    fn is_replaced(outcome: &CommitOutcome) -> bool {
+        outcome.status == CommitOutcomeStatus::Rejected
+            && outcome.replacement_client_commit_id.is_some()
+            && !outcome.results.is_empty()
+            && outcome.results.iter().all(|result| {
+                matches!(result, CommitOperationOutcome::Error { rejection }
+                    if rejection.code == COMMIT_REPLACED_CODE)
+            })
+    }
+
+    /// §7.2.1: `commitOutcomes` and `commitDelivery` report a replaced
+    /// commit as `replaced`; every other journal surface reads the rejection.
+    fn reported_outcome(mut outcome: CommitOutcome) -> CommitOutcome {
+        if Self::is_replaced(&outcome) {
+            outcome.status = CommitOutcomeStatus::Replaced;
+        }
+        outcome
+    }
+
     fn outcome_from_row(row: StoredCommitOutcomeRow) -> Result<CommitOutcome, String> {
         let StoredCommitOutcomeRow {
             sequence,
@@ -5444,6 +5524,7 @@ impl SyncClient {
         let redacted = results.is_empty() && operations_json.is_none();
         if match status {
             CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => has_conflict || has_error,
+            CommitOutcomeStatus::Replaced => true,
             CommitOutcomeStatus::Conflict => !(has_conflict || redacted),
             CommitOutcomeStatus::Rejected => has_conflict || !(has_error || redacted),
         } {
@@ -5920,9 +6001,10 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut outcomes = Vec::new();
         for row in rows {
-            outcomes.push(self.attach_retained_rows(Self::outcome_from_row(
-                row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
-            )?)?);
+            let row = row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            outcomes.push(Self::reported_outcome(
+                self.attach_retained_rows(Self::outcome_from_row(row)?)?,
+            ));
         }
         Ok(outcomes)
     }
@@ -6809,11 +6891,11 @@ impl SyncClient {
     /// call's own classified failure with its details. A fresh classified
     /// failure replaces the retained diagnostic; otherwise the earlier one is
     /// kept for the next sync.
-    fn finish_authoring(
+    fn finish_authoring<T>(
         &self,
         prior: Option<QueryReadFailure>,
-        outcome: Result<String, ClientError>,
-    ) -> Result<String, ClientError> {
+        outcome: Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
         let fresh = self.storage_failure.borrow_mut().take();
         *self.storage_failure.borrow_mut() = fresh.clone().or(prior);
         outcome.map_err(|error| fresh.map(ClientError::from).unwrap_or(error))
@@ -7457,6 +7539,7 @@ impl SyncClient {
             CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => {
                 input.resolution == CommitOutcomeResolution::Dismissed
             }
+            CommitOutcomeStatus::Replaced => false,
         };
         if !allowed {
             return Err(format!(
@@ -7568,6 +7651,439 @@ impl SyncClient {
             Ok(self.record_outbox_commit(ops, Some(client_commit_id))?)
         })();
         self.finish_authoring(prior, outcome)
+    }
+
+    /// §7.2.3: replace the operations of the pending commit `client_commit_id`
+    /// and return `replacement_client_commit_id`. An attempted commit is fenced
+    /// first (§6.12) over `transport`; a never-attempted one needs none.
+    pub fn replace_pending_commit(
+        &mut self,
+        transport: &mut dyn Transport,
+        client_commit_id: &str,
+        mutations: Vec<Mutation>,
+        replacement_client_commit_id: &str,
+    ) -> Result<String, ClientError> {
+        match self.prepare_pending_commit_replacement(
+            client_commit_id,
+            mutations,
+            replacement_client_commit_id,
+        )? {
+            None => Ok(replacement_client_commit_id.to_owned()),
+            Some(prepared) => {
+                let reply = prepared.exchange(transport);
+                self.apply_fence_round(prepared, reply)
+            }
+        }
+    }
+
+    /// The owner half of [`SyncClient::replace_pending_commit`]. `None` means
+    /// the replacement is complete (or an earlier call with the same
+    /// replacement id completed it); otherwise send the fence round and apply
+    /// its reply with [`SyncClient::apply_fence_round`].
+    pub fn prepare_pending_commit_replacement(
+        &mut self,
+        client_commit_id: &str,
+        mutations: Vec<Mutation>,
+        replacement_client_commit_id: &str,
+    ) -> Result<Option<PreparedFenceRound>, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<Option<PreparedFenceRound>, ClientError> {
+            let Some(original) = self
+                .outbox
+                .iter()
+                .find(|commit| commit.client_commit_id == client_commit_id)
+                .cloned()
+            else {
+                return match self.commit_outcome(client_commit_id)? {
+                    Some(outcome)
+                        if Self::is_replaced(&outcome)
+                            && outcome.replacement_client_commit_id.as_deref()
+                                == Some(replacement_client_commit_id) =>
+                    {
+                        Ok(None)
+                    }
+                    _ => Err(ClientError {
+                        code: "sync.outcome_not_found".to_owned(),
+                        message: "no pending commit exists for the id".to_owned(),
+                        details: Some(json!({ "clientCommitId": client_commit_id })),
+                        retryable: false,
+                    }),
+                };
+            };
+            if replacement_client_commit_id.is_empty()
+                || self
+                    .outbox
+                    .iter()
+                    .any(|commit| commit.client_commit_id == replacement_client_commit_id)
+                || self.commit_outcome(replacement_client_commit_id)?.is_some()
+            {
+                return Err(invalid_authoring(
+                    "the replacement client commit id must be unused",
+                    json!({ "replacementClientCommitId": replacement_client_commit_id }),
+                ));
+            }
+            // §7.2.2: a held replacement waits for its proof under its own id.
+            let held: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM _syncular_commit_outcomes
+                      WHERE resolution = 'active' AND replacement_client_commit_id = ?1)",
+                    [client_commit_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if held {
+                return Err(REPLACEMENT_PENDING.to_owned().into());
+            }
+            let full_rows: Vec<bool> = mutations
+                .iter()
+                .map(|mutation| matches!(mutation, Mutation::Upsert { .. }))
+                .collect();
+            let mut operations = self.prepare_mutations(mutations)?;
+            for (operation, full_row) in operations.iter_mut().zip(full_rows) {
+                let touched: Vec<&OutboxOp> = original
+                    .ops
+                    .iter()
+                    .filter(|op| op.table == operation.table && op.row_id == operation.row_id)
+                    .collect();
+                // §7.1: a full-row upsert of a row the original inserted keeps
+                // the insert intent the original recorded.
+                operation.insert |= full_row && touched.iter().any(|op| op.insert);
+                if let Some(first) = touched.first() {
+                    operation.base_version = first.base_version;
+                }
+            }
+            let attempted: bool = self
+                .conn
+                .query_row(
+                    "SELECT attempted FROM _syncular_outbox WHERE commit_id = ?1",
+                    [client_commit_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if !attempted {
+                self.replace_outbox_commit(
+                    client_commit_id,
+                    operations,
+                    replacement_client_commit_id,
+                )?;
+                return Ok(None);
+            }
+            if self.transport_closed() {
+                return Err(ClientError {
+                    code: "sync.offline".to_owned(),
+                    message: "transport gate is closed".to_owned(),
+                    details: None,
+                    retryable: false,
+                });
+            }
+            if self.active_round.is_some() || self.fence_round.is_some() {
+                return Err(ClientError {
+                    code: "client.round_in_progress".to_owned(),
+                    message: "a sync round is already in flight".to_owned(),
+                    details: None,
+                    retryable: false,
+                });
+            }
+            if self.realtime_policy == RealtimePolicy::Required
+                && self.realtime_state != RealtimeState::Connected
+            {
+                return Err(ClientError {
+                    code: REALTIME_UNAVAILABLE_CODE.to_owned(),
+                    message: "the realtime socket is not connected".to_owned(),
+                    details: None,
+                    retryable: true,
+                });
+            }
+            let header = Frame::ReqHeader {
+                client_id: self.client_id.clone(),
+                schema_version: self.schema.version,
+                log_epoch: self.get_meta(LOG_EPOCH_KEY)?,
+                outbox_id: self.get_meta(OUTBOX_ID_KEY)?,
+            };
+            let id = uuid::Uuid::new_v4();
+            self.fence_round = Some(id);
+            Ok(Some(PreparedFenceRound {
+                id,
+                client_commit_id: client_commit_id.to_owned(),
+                replacement_client_commit_id: replacement_client_commit_id.to_owned(),
+                operations,
+                request: encode_message(&Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Request,
+                    frames: vec![
+                        header,
+                        Frame::FenceCommit {
+                            client_commit_id: client_commit_id.to_owned(),
+                        },
+                    ],
+                }),
+                realtime: self.realtime_state == RealtimeState::Connected,
+            }))
+        })();
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// Apply the reply of a [`PreparedFenceRound`] on the owner (§6.12,
+    /// §7.2.3) and return the replacement's id. No network I/O. A stored
+    /// result settles the original through the push-result path and fails
+    /// with `client.commit_settled`.
+    pub fn apply_fence_round(
+        &mut self,
+        prepared: PreparedFenceRound,
+        reply: Result<Vec<u8>, TransportError>,
+    ) -> Result<String, ClientError> {
+        if self.fence_round != Some(prepared.id) {
+            return Err(ClientError {
+                code: "client.round_cancelled".to_owned(),
+                message: "fence round belongs to a released client context".to_owned(),
+                details: None,
+                retryable: false,
+            });
+        }
+        self.fence_round = None;
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, ClientError> {
+            let id = prepared.client_commit_id.as_str();
+            let invalid = || ClientError {
+                code: "client.invalid_host_response".to_owned(),
+                message: "the fence response does not answer the fenced commit".to_owned(),
+                details: Some(json!({ "clientCommitId": id })),
+                retryable: false,
+            };
+            let bytes = reply.map_err(|error| ClientError {
+                retryable: error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("retryable"))
+                    == Some(&Value::Bool(true)),
+                code: error.code,
+                message: error.message,
+                details: error.details,
+            })?;
+            let response = decode_message(&bytes).map_err(|_| invalid())?;
+            if response.msg_kind != MsgKind::Response {
+                return Err(invalid());
+            }
+            let mut frames = response
+                .frames
+                .into_iter()
+                .filter(|frame| !matches!(frame, Frame::Keepalive));
+            match frames.next() {
+                // §1.6: a schema-floor response; the client stops syncing as
+                // a sync round's floor stops it.
+                Some(Frame::RespHeader {
+                    required_schema_version: Some(required),
+                    latest_schema_version,
+                    ..
+                }) => {
+                    self.set_schema_floor(Some(SchemaFloor {
+                        required_schema_version: Some(required),
+                        latest_schema_version,
+                    }))?;
+                    return Err(ClientError {
+                        code: "sync.schema_mismatch".to_owned(),
+                        message: "the server requires a newer schema version".to_owned(),
+                        details: Some(json!({ "requiredSchemaVersion": required })),
+                        retryable: false,
+                    });
+                }
+                Some(Frame::RespHeader {
+                    reset_required: false,
+                    ..
+                }) => {}
+                _ => return Err(invalid()),
+            }
+            let answer = frames.next();
+            let rest: Vec<Frame> = frames.collect();
+            match answer {
+                // A server that predates the frame refuses the request.
+                Some(Frame::Error {
+                    code,
+                    message,
+                    retryable,
+                    details,
+                    ..
+                }) => Err(ClientError {
+                    code,
+                    message,
+                    details: details.and_then(|details| serde_json::from_str(&details.0).ok()),
+                    retryable,
+                }),
+                Some(Frame::CommitFenced { client_commit_id })
+                    if client_commit_id == id && rest.is_empty() =>
+                {
+                    self.replace_outbox_commit(
+                        id,
+                        prepared.operations,
+                        &prepared.replacement_client_commit_id,
+                    )?;
+                    Ok(prepared.replacement_client_commit_id)
+                }
+                Some(Frame::PushResult {
+                    client_commit_id,
+                    status,
+                    commit_seq,
+                    results,
+                }) if client_commit_id == id => {
+                    let mut details = HashMap::new();
+                    match rest.as_slice() {
+                        [] => {}
+                        [Frame::PushResultDetails {
+                            client_commit_id: owner,
+                            entries,
+                        }] if owner == id => {
+                            let parsed = entries
+                                .iter()
+                                .map(|entry| -> Result<_, String> {
+                                    Ok((entry.op_index, RejectionDetails::parse(&entry.details.0)?))
+                                })
+                                .collect::<Result<BTreeMap<i32, RejectionDetails>, String>>()
+                                .map_err(|_| invalid())?;
+                            details.insert(id.to_owned(), parsed);
+                        }
+                        _ => return Err(invalid()),
+                    }
+                    let settled = if status == PushStatus::Rejected {
+                        "rejected"
+                    } else {
+                        "applied"
+                    };
+                    let mut report = SyncReport::default();
+                    self.handle_push_results(
+                        &[Frame::PushResult {
+                            client_commit_id,
+                            status,
+                            commit_seq,
+                            results,
+                        }],
+                        &HashSet::from([id]),
+                        &details,
+                        &mut report,
+                        Some(id),
+                    )
+                    .map_err(|_| ClientError {
+                        code: "client.outcome_persistence_failed".to_owned(),
+                        message: "local commit outcome could not be persisted".to_owned(),
+                        details: None,
+                        retryable: false,
+                    })?;
+                    // §6.3: a serving failure is no outcome; the commit stays.
+                    if !report.retryable.is_empty() {
+                        return Err(ClientError {
+                            code: "sync.idempotency_cache_miss".to_owned(),
+                            message: "the server could not serve the stored result".to_owned(),
+                            details: Some(json!({ "clientCommitId": id })),
+                            retryable: true,
+                        });
+                    }
+                    Err(ClientError {
+                        code: "client.commit_settled".to_owned(),
+                        message: "the commit already has a server outcome".to_owned(),
+                        details: Some(json!({ "clientCommitId": id, "status": settled })),
+                        retryable: false,
+                    })
+                }
+                _ => Err(invalid()),
+            }
+        })();
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// §7.2.3: swap a pending commit's operations and id in place (same
+    /// outbox sequence), re-derive the overlay of its rows and every later
+    /// commit, and journal the original as `replaced`, in one transaction
+    /// with one change batch.
+    fn replace_outbox_commit(
+        &mut self,
+        client_commit_id: &str,
+        ops: Vec<OutboxOp>,
+        replacement: &str,
+    ) -> Result<(), ClientError> {
+        let Some(index) = self
+            .outbox
+            .iter()
+            .position(|commit| commit.client_commit_id == client_commit_id)
+        else {
+            return Err(ClientError {
+                code: "sync.outcome_not_found".to_owned(),
+                message: "no pending commit exists for the id".to_owned(),
+                details: Some(json!({ "clientCommitId": client_commit_id })),
+                retryable: false,
+            });
+        };
+        let original = self.outbox[index].clone();
+        let commit = OutboxCommit {
+            client_commit_id: replacement.to_owned(),
+            ops,
+        };
+        let rollback = self.capture();
+        self.begin_observation("syncular_pending_replacement")?;
+        let mut batch = ChangeAccumulator::default();
+        let replaced = (|| {
+            let (seq, created_at_ms): (i64, i64) = self
+                .conn
+                .query_row(
+                    "SELECT seq, created_at_ms FROM _syncular_outbox WHERE commit_id = ?1",
+                    [client_commit_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.persist_outbox_insert(&commit)?;
+            self.delete_outbox_persisted(client_commit_id)?;
+            // §7.2.1: journaled as a purge journals its drops, decided.
+            let results = (0..original.ops.len())
+                .map(|op_index| CommitOperationOutcome::Error {
+                    rejection: RejectionRecord {
+                        client_commit_id: client_commit_id.to_owned(),
+                        op_index: op_index as i32,
+                        code: COMMIT_REPLACED_CODE.to_owned(),
+                        message: "the commit was replaced before the server applied it".to_owned(),
+                        retryable: false,
+                        details: None,
+                        operation: None,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let results_json =
+                serde_json::to_string(&results).map_err(|error| error.to_string())?;
+            self.conn
+                .execute(
+                    "UPDATE _syncular_outbox SET seq = ?1, created_at_ms = ?2 WHERE commit_id = ?3",
+                    rusqlite::params![seq, created_at_ms, replacement],
+                )
+                .and_then(|_| {
+                    self.conn.execute(
+                        "INSERT INTO _syncular_commit_outcomes (
+                           client_commit_id, status, recorded_at_ms, results_json, resolution,
+                           resolved_at_ms, replacement_client_commit_id
+                         ) VALUES (?1, 'rejected', ?2, ?3, 'superseded', ?2, ?4)",
+                        rusqlite::params![
+                            client_commit_id,
+                            self.clock_now_ms(),
+                            results_json,
+                            replacement
+                        ],
+                    )
+                })
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.prune_commit_outcomes()?;
+            for op in original.ops.iter().chain(&commit.ops) {
+                self.overlay_dirty.table(&op.table);
+                batch.table(&op.table);
+            }
+            self.outbox[index] = Arc::new(commit);
+            batch.status = true;
+            batch.outcomes = true;
+            self.rebuild_overlay_if_dirty()?;
+            self.finish_observation("syncular_pending_replacement", batch)
+        })();
+        if let Err(error) = replaced {
+            self.rollback_observation("syncular_pending_replacement");
+            self.restore(rollback);
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Internal host step at the start of an idle drive (§7.2.2): capture
@@ -9108,7 +9624,7 @@ impl SyncClient {
                 recommended_action: None,
             }));
         }
-        if self.active_round.is_some() {
+        if self.active_round.is_some() || self.fence_round.is_some() {
             return Err(Box::new(SyncOutcome::Failed {
                 error_code: "client.round_in_progress".into(),
                 message: "a sync round is already in flight".into(),
@@ -9214,6 +9730,34 @@ impl SyncClient {
                     meta.applied.insert(unit.id.clone(), applied);
                 }
             }
+            // §7.1: the send-attempt marker of every commit the request
+            // carries commits before the round leaves the owner.
+            let pushed: Vec<String> = message
+                .frames
+                .iter()
+                .filter_map(|frame| match frame {
+                    Frame::PushCommit { client_seq, .. } => Some(client_seq.to_string()),
+                    _ => None,
+                })
+                .collect();
+            if !pushed.is_empty() {
+                self.conn
+                    .execute(
+                        &format!(
+                            "UPDATE _syncular_outbox SET attempted = 1 WHERE seq IN ({})",
+                            pushed.join(",")
+                        ),
+                        [],
+                    )
+                    .map_err(|error| {
+                        Box::new(SyncOutcome::Failed {
+                            error_code: "storage.failed".into(),
+                            message: Self::sqlite_failure(&self.storage_failure, error),
+                            details: None,
+                            recommended_action: None,
+                        })
+                    })?;
+            }
             let id = uuid::Uuid::new_v4();
             self.active_round = Some((id, started_at_ms, attempt));
             let phase = if uploads.is_empty() {
@@ -9263,6 +9807,7 @@ impl SyncClient {
     /// submitted commits stay durable and can be retried with the same ids.
     /// §7.6: an abandoned in-flight round ends its attempt as failed.
     pub fn cancel_sync_round(&mut self) {
+        self.fence_round = None;
         if let Some((_, started_at_ms, attempt)) = self.active_round.take() {
             // A storage failure recorded since the round started is not its cause.
             self.storage_failure.borrow_mut().take();

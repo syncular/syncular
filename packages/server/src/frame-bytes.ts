@@ -9,6 +9,7 @@
  * bytes; the reference codec remains the single source of wire bytes.
  */
 import {
+  encodeFenceResponse,
   encodeResponse,
   PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
@@ -63,6 +64,14 @@ export function responseEnvelopeHeader(wireVersion: number): Uint8Array {
 
 /** The terminating END frame (§1.2 rule 1). */
 export const END_FRAME_BYTES: Uint8Array = probe.slice(probe.length - 5);
+
+/** §6.12: one `COMMIT_FENCED` frame, cut from the reference fence encoding. */
+export function commitFencedFrameBytes(clientCommitId: string): Uint8Array {
+  const encoded = encodeFenceResponse(stubHeader(), [
+    { type: 'COMMIT_FENCED', clientCommitId },
+  ]);
+  return encoded.slice(probe.length - 5, encoded.length - 5);
+}
 
 function wrapperFor(frame: ResponseFrame): {
   frames: ResponseFrame[];

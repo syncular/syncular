@@ -77,6 +77,53 @@ Read the commit by that ID instead of calling `mutate` again. `commitDelivery(id
 
 Kotlin, Swift and Flutter list only the IDs, through `pendingCommitIds()`.
 
+## Replace a pending commit
+
+`replacePendingCommit(clientCommitId, operations)` swaps the operations of a
+commit that is still in the outbox and returns the replacement's commit id. In
+one local transaction the client keeps the commit's outbox position and the
+base version of every row the original touched, reverts the original's local
+effect, applies the replacement, re-derives every later pending commit, and
+journals the original as `replaced` with the new id as
+`replacementClientCommitId`. `commitDelivery(oldId)` then reports that outcome,
+and `commitDelivery(newId)` is `pending` until the replacement settles.
+
+Each outbox commit carries a durable send-attempt marker, set before any byte
+of a request that carries it leaves the device. A commit that was never
+attempted is replaced without a connection. An attempted commit may have
+reached the server, so the client first sends a fence for it: the server either
+records that it will never apply the original, and the client replaces it, or
+answers with the original's stored result. In that case the client processes
+the result as the push reply it lost and the call fails with
+`client.commit_settled` and `{ clientCommitId, status }`. A closed transport
+gate fails an attempted replacement with `sync.offline`. Calling again with the
+same replacement id after a lost reply returns that id.
+
+An app that may still replace sealed commits creates the client with
+`transportGate: 'pull'`: rounds pull and realtime runs, and no round sends a
+commit. Settle the decisions, then call `setTransportGate('open')`.
+
+```ts
+import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement';
+
+const client = new SyncClient({
+  // ...
+  transportGate: 'pull',
+  pendingCommitReplacement: definePendingCommitReplacement(),
+});
+const next = await client.replacePendingCommit(sealedId, operations);
+client.setTransportGate('open');
+```
+
+The TypeScript implementation is opt-in, so ordinary bundles do not ship it. A
+worker needs `startSyncWorker({ createPendingCommitReplacement })`, and a
+client without the entry fails the call with
+`client.pending_commit_replacement_unconfigured`. The Rust core includes it, so
+the Rust command router and the Tauri and React Native bridges need no opt-in.
+A server that predates
+0.102.0 refuses the fence request, and the replacement fails without changing
+the commit.
+
 ## Delivery status
 
 `commitDelivery(id)` reads one commit's delivery status in one local read transaction:

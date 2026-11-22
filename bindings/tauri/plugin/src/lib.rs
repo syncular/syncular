@@ -653,6 +653,9 @@ where
     });
     let mut active: Option<RoundRun> = None;
     let mut queued = std::collections::VecDeque::new();
+    // §7.2.3: a pending-commit replacement fences on the owner, between rounds.
+    let mut replacements: std::collections::VecDeque<(Value, Sender<Value>)> =
+        std::collections::VecDeque::new();
     let mut background_deadline: Option<Instant> = None;
     // §8.4: while the app is in the background the host starts no drive of
     // its own; app drives still run.
@@ -672,6 +675,11 @@ where
         // Consume sync intent only while idle. Mutations arriving mid-round
         // retain their coalesced intent and enter the next captured request.
         if active.is_none() {
+            if let Some((command, reply)) = replacements.pop_front() {
+                let _ = reply.send(core.command(&command));
+                pump_events(&mut core, &*emit);
+                continue;
+            }
             if let Some(index) = queued
                 .iter()
                 .position(|run: &RoundRun| !suspended || run.reply.is_some())
@@ -890,6 +898,10 @@ where
                     }
                     continue;
                 }
+                if method == Some("replacePendingCommit") && active.is_some() {
+                    replacements.push_back((command, reply));
+                    continue;
+                }
                 if matches!(method, Some("sync" | "syncUntilIdle" | "proveCurrentBase"))
                     && !core.transport_closed()
                 {
@@ -1008,10 +1020,15 @@ where
     // Transport shutdown releases a pending socket round. An HTTP request
     // finishes on its own bounded transport timeout, outside the owner.
     let _ = network.join();
-    for run in active.into_iter().chain(queued) {
-        if let Some(reply) = run.reply {
-            let _ = reply.send(json!({ "error": { "code": "client.closed", "message": "client owner has closed" } }));
-        }
+    for reply in active
+        .into_iter()
+        .chain(queued)
+        .filter_map(|run| run.reply)
+        .chain(replacements.into_iter().map(|(_, reply)| reply))
+    {
+        let _ = reply.send(
+            json!({ "error": { "code": "client.closed", "message": "client owner has closed" } }),
+        );
     }
 }
 

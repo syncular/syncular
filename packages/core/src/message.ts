@@ -20,7 +20,11 @@ import {
   writeStringListMap,
   writeStringMap,
 } from './bytes';
-import { isSupportedProtocolWireVersion, SYNC_PACK_MAGIC } from './constants';
+import {
+  isSupportedProtocolWireVersion,
+  PROTOCOL_WIRE_VERSION,
+  SYNC_PACK_MAGIC,
+} from './constants';
 import { DecodeError, invalidInput } from './errors';
 import { parseJsonDocument } from './json-document';
 import {
@@ -1574,4 +1578,186 @@ export function decodeResponse(bytes: Uint8Array): ResponseMessage {
 export function decodeMessage(bytes: Uint8Array): SyncMessage {
   const { r, wireVersion, request } = decodeEnvelope(bytes);
   return request ? requestBody(r, wireVersion) : responseBody(r, wireVersion);
+}
+
+// ---------------------------------------------------------------------------
+// §6.12 fences. A fence request carries no other work frame, so FENCE_COMMIT
+// (0x09) and COMMIT_FENCED (0x31) stay out of the general codec: it carries
+// them as unregistered frames, and an ordinary client skips COMMIT_FENCED as
+// unknown. The server, the pending-commit replacement and the §11 rendering
+// import these.
+// ---------------------------------------------------------------------------
+
+/** §6.12: the answer to one fence, in frame order. */
+export type FenceAnswer =
+  | { type: 'COMMIT_FENCED'; clientCommitId: string }
+  | {
+      type: 'PUSH_RESULT';
+      /** The stored receipt, exactly as a replay returns it. */
+      result: PushResultFrame;
+      details?: PushResultDetailsFrame;
+    };
+
+/** §6.12: a decoded fence request. */
+export interface FenceRequest {
+  wireVersion: number;
+  header: ReqHeaderFrame;
+  clientCommitIds: string[];
+}
+
+/** §6.12: both fence frames carry one non-empty `clientCommitId`. */
+function fenceFrame(frameType: number, clientCommitId: string): UnknownFrame {
+  if (clientCommitId.length === 0) {
+    encodeInvalid('fence clientCommitId must be non-empty');
+  }
+  const w = new ByteWriter();
+  w.str(clientCommitId);
+  return { type: 'UNKNOWN', frameType, payload: w.finish() };
+}
+
+function fenceCommitId(payload: Uint8Array): string {
+  const r = new ByteReader(payload);
+  const clientCommitId = r.str();
+  r.expectFullyConsumed('fence frame payload');
+  if (clientCommitId.length === 0) {
+    invalid('fence clientCommitId must be non-empty');
+  }
+  return clientCommitId;
+}
+
+/** §6.12: `REQ_HEADER`, one `FENCE_COMMIT` per id, `END`. */
+export function encodeFenceRequest(
+  header: ReqHeaderFrame,
+  clientCommitIds: readonly string[],
+): Uint8Array {
+  if (clientCommitIds.length === 0) {
+    encodeInvalid('a fence request carries at least one FENCE_COMMIT');
+  }
+  return encodeEnvelope<RequestFrame>(
+    PROTOCOL_WIRE_VERSION,
+    0x01,
+    [header, ...clientCommitIds.map((id) => fenceFrame(0x09, id))],
+    () => {},
+    encodeRequestFrame,
+  );
+}
+
+/**
+ * §6.12: the fence request in `bytes`, or `undefined` when it carries no
+ * `FENCE_COMMIT`. A request that mixes fences with any other frame fails
+ * with `sync.invalid_request`.
+ */
+export function decodeFenceRequest(
+  bytes: Uint8Array,
+): FenceRequest | undefined {
+  // Most requests carry no fence: walk the frame headers before decoding.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let fenced = false;
+  for (let at = 8; at + 5 <= bytes.length && !fenced;) {
+    fenced = bytes[at] === 0x09;
+    at += 5 + view.getUint32(at + 1, true);
+  }
+  if (!fenced) return undefined;
+  const { r, wireVersion, request } = decodeEnvelope(bytes);
+  if (!request) invalid('expected a request message');
+  const [header, ...fences] = readFrames(r, decodeRequestFrame);
+  if (header?.type !== 'REQ_HEADER') {
+    invalid('request must start with a REQ_HEADER frame');
+  }
+  return {
+    wireVersion,
+    header,
+    clientCommitIds: fences.map((frame) =>
+      frame.type === 'UNKNOWN' && frame.frameType === 0x09
+        ? fenceCommitId(frame.payload)
+        : invalid('a FENCE_COMMIT request carries no other frame (§6.12)'),
+    ),
+  };
+}
+
+/** §6.12: `RESP_HEADER`, one answer per fence in frame order, `END`. */
+export function encodeFenceResponse(
+  header: RespHeaderFrame,
+  answers: readonly FenceAnswer[],
+): Uint8Array {
+  return encodeResponse({
+    wireVersion: PROTOCOL_WIRE_VERSION,
+    msgKind: 'response',
+    frames: [
+      header,
+      ...answers.flatMap((answer): ResponseFrame[] =>
+        answer.type === 'COMMIT_FENCED'
+          ? [fenceFrame(0x31, answer.clientCommitId)]
+          : answer.details === undefined
+            ? [answer.result]
+            : [answer.result, answer.details],
+      ),
+    ],
+  });
+}
+
+/**
+ * §6.12: the answers to a fence request of `clientCommitIds`. A request-level
+ * `ERROR` (§8.7) returns as `error`; a schema floor or a reset header carries
+ * no answer. Any other frame, a missing or reordered answer, or bytes that do
+ * not decode fail with `client.invalid_host_response`.
+ */
+export function decodeFenceResponse(
+  bytes: Uint8Array,
+  clientCommitIds: readonly string[],
+): {
+  header: RespHeaderFrame;
+  answers: readonly FenceAnswer[];
+  error?: ErrorFrame;
+} {
+  try {
+    const { r, wireVersion, request } = decodeEnvelope(bytes);
+    if (request) invalid('expected a response message');
+    const [header, ...frames] = responseBody(r, wireVersion).frames;
+    if (header?.type !== 'RESP_HEADER') invalid('missing RESP_HEADER');
+    const answers: FenceAnswer[] = [];
+    let receipt: Extract<FenceAnswer, { type: 'PUSH_RESULT' }> | undefined;
+    let error: ErrorFrame | undefined;
+    for (const frame of frames) {
+      if (frame.type === 'UNKNOWN' && frame.frameType === 0x31) {
+        answers.push({
+          type: 'COMMIT_FENCED',
+          clientCommitId: fenceCommitId(frame.payload),
+        });
+      } else if (frame.type === 'PUSH_RESULT') {
+        receipt = { type: 'PUSH_RESULT', result: frame };
+        answers.push(receipt);
+      } else if (frame.type === 'PUSH_RESULT_DETAILS' && receipt) {
+        // The sequence rules place it right after its rejected PUSH_RESULT.
+        receipt.details = frame;
+      } else if (frame.type === 'ERROR') {
+        error = frame;
+      } else if (frame.type !== 'KEEPALIVE' && frame.type !== 'UNKNOWN') {
+        invalid('unexpected frame in a fence response');
+      }
+    }
+    const served =
+      error === undefined &&
+      !header.resetRequired &&
+      header.requiredSchemaVersion === undefined;
+    if (
+      (served && answers.length !== clientCommitIds.length) ||
+      answers.some(
+        (answer, index) =>
+          (answer.type === 'COMMIT_FENCED'
+            ? answer.clientCommitId
+            : answer.result.clientCommitId) !== clientCommitIds[index],
+      )
+    ) {
+      invalid('fence answers do not match the request');
+    }
+    return error === undefined
+      ? { header, answers }
+      : { header, answers, error };
+  } catch {
+    throw new DecodeError(
+      'client.invalid_host_response',
+      'the host answered a fence request with an invalid response (§6.12)',
+    );
+  }
 }

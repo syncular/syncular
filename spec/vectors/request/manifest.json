@@ -67,6 +67,12 @@
       "bin": "producer-push.bin",
       "json": "producer-push.json",
       "covers": "A database-less producer push: no outboxId, clientSeq = 0 (§6.10)"
+    },
+    {
+      "name": "fence",
+      "bin": "fence.bin",
+      "json": "fence.json",
+      "covers": "A fence request (§6.12): REQ_HEADER and two FENCE_COMMIT frames, no other frame"
     }
   ],
   "invalid": [
@@ -243,6 +249,24 @@
       "bin": "invalid/client-seq-negative.bin",
       "error": "sync.invalid_request",
       "covers": "PUSH_COMMIT.clientSeq = -1 (§6.1: non-negative)"
+    },
+    {
+      "name": "fence-mixed-push",
+      "bin": "invalid/fence-mixed-push.bin",
+      "error": "sync.invalid_request",
+      "covers": "FENCE_COMMIT with a PUSH_COMMIT in one request (§6.12)"
+    },
+    {
+      "name": "fence-mixed-pull",
+      "bin": "invalid/fence-mixed-pull.bin",
+      "error": "sync.invalid_request",
+      "covers": "FENCE_COMMIT after a PULL_HEADER in one request (§6.12)"
+    },
+    {
+      "name": "fence-commit-id-empty",
+      "bin": "invalid/fence-commit-id-empty.bin",
+      "error": "sync.invalid_request",
+      "covers": "FENCE_COMMIT.clientCommitId empty (§6.12)"
     }
   ]
 }

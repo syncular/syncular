@@ -400,7 +400,7 @@ fn keepalive_placement() {
         expires_at_ms: 1,
     };
     let unknown = Frame::Unknown {
-        frame_type: 0x31,
+        frame_type: 0x7e,
         payload: vec![7],
     };
     let frames = vec![

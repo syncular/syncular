@@ -625,15 +625,19 @@ async function readAdmissionOn(
          RETURNING through_seq),
        b AS (DELETE FROM sync_push_results
               WHERE partition=$1 AND client_id=$3 AND outbox_id IS NULL
+                AND result->>'status' IS DISTINCT FROM 'fenced'
                 AND client_commit_id NOT IN (SELECT id FROM c)
                 AND NOT EXISTS (SELECT 1 FROM sync_push_results
                   WHERE partition=$1 AND client_id=$3 AND client_commit_id=$7
-                    AND outbox_id IS NULL)),
+                    AND outbox_id IS NULL
+                    AND result->>'status' IS DISTINCT FROM 'fenced')),
        a AS (UPDATE sync_push_results r SET outbox_id=$5, client_seq=c.seq FROM c, w
               WHERE r.partition=$1 AND r.client_id=$3 AND r.outbox_id IS NULL
+                AND r.result->>'status' IS DISTINCT FROM 'fenced'
                 AND r.client_commit_id=c.id AND c.seq>=w.through_seq),
        expired AS (DELETE FROM sync_push_results r USING w
               WHERE r.partition=$1 AND r.client_id=$3
+                AND r.result->>'status' IS DISTINCT FROM 'fenced'
                 AND ((r.outbox_id=$5 AND r.client_seq<w.through_seq)
                   OR (r.outbox_id IS NULL AND EXISTS (SELECT 1 FROM c
                         WHERE c.id=r.client_commit_id AND c.seq<w.through_seq)))
@@ -2654,6 +2658,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       await client.query('DELETE FROM sync_clients WHERE partition=$1', [
         partition,
       ]);
+      await client.query(
+        `DELETE FROM sync_push_results WHERE partition=$1 AND result->>'status'='fenced'`,
+        [partition],
+      );
     });
     return {
       partition,

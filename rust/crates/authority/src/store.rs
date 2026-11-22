@@ -737,7 +737,7 @@ pub(crate) fn put_push_result(
 
 /// The §9 settlement and §6.3.2 steps 1 and 2 for a request whose commits
 /// are `commits` (`clientCommitId`, `clientSeq`), in frame order; returns the
-/// watermark `W`.
+/// watermark `W`. No step deletes or sequences a fenced record (§6.12).
 pub(crate) fn settle_outbox(
     conn: &Connection,
     client_id: &str,
@@ -760,12 +760,13 @@ pub(crate) fn settle_outbox(
     // §9 (b), then (a): with no pre-upgrade result on the request's last
     // commit, every remaining one outside the request left the outbox.
     let last_sequenceless = conn
-        .prepare("SELECT 1 FROM sync_push_results WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL")
+        .prepare("SELECT 1 FROM sync_push_results WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.fenced') IS NOT 1")
         .and_then(|mut statement| statement.exists(params![client_id, last]))
         .db()?;
     if !last_sequenceless {
         conn.execute(
             "DELETE FROM sync_push_results WHERE client_id=?1 AND outbox_id IS NULL
+               AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.fenced') IS NOT 1
                AND client_commit_id NOT IN (SELECT value FROM json_each(?2))",
             params![client_id, ids],
         )
@@ -774,7 +775,8 @@ pub(crate) fn settle_outbox(
     for (client_commit_id, client_seq) in commits {
         conn.execute(
             "UPDATE sync_push_results SET outbox_id=?3, client_seq=?4
-              WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL",
+              WHERE client_id=?1 AND client_commit_id=?2 AND outbox_id IS NULL
+                AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.fenced') IS NOT 1",
             params![client_id, client_commit_id, outbox_id, client_seq],
         )
         .db()?;
@@ -786,7 +788,8 @@ pub(crate) fn settle_outbox(
     )
     .db()?;
     conn.execute(
-        "DELETE FROM sync_push_results WHERE client_id=?1 AND outbox_id=?2 AND client_seq<?3",
+        "DELETE FROM sync_push_results WHERE client_id=?1 AND outbox_id=?2 AND client_seq<?3
+           AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.fenced') IS NOT 1",
         params![client_id, outbox_id, watermark],
     )
     .db()?;

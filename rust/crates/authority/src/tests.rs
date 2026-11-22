@@ -8,7 +8,8 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use ssp2::decode::WIRE_VERSION;
 use ssp2::model::{
-    Change, Frame, LiveStatus, Message, MsgKind, Op, OpResult, Operation, PushStatus, SubStatus,
+    Change, Frame, LiveStatus, Message, MsgKind, Op, OpResult, Operation, PushResultDetail,
+    PushStatus, SubStatus,
 };
 use ssp2::primitives::RawJson;
 use ssp2::segment::{decode_rows_segment, encode_sparse_row, ColumnValue, SparseSlot};
@@ -3794,4 +3795,162 @@ fn a_pushed_server_owned_value_is_discarded() {
         stored(&authority, "items", "b"),
         Some((1, vec![text("b"), text("o1"), None]))
     );
+}
+
+/// One §6.12 fence request under `outbox-1`: every frame after the header.
+fn fence(client: &Session, authority: &mut LocalAuthority, ids: &[&str]) -> Vec<Frame> {
+    let mut frames = client.outbox_round(
+        authority,
+        Some("outbox-1"),
+        ids.iter()
+            .map(|id| Frame::FenceCommit {
+                client_commit_id: (*id).to_owned(),
+            })
+            .collect(),
+    );
+    assert!(matches!(frames[0], Frame::RespHeader { .. }));
+    frames.remove(0);
+    frames
+}
+
+fn commit_fenced(id: &str) -> Frame {
+    Frame::CommitFenced {
+        client_commit_id: id.to_owned(),
+    }
+}
+
+#[test]
+fn a_fence_before_the_original_fences_it_and_the_original_applies_nothing() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    assert_eq!(fence(&client, &mut authority, &["a"]), [commit_fenced("a")]);
+    let frames = client.outbox_round(
+        &mut authority,
+        Some("outbox-1"),
+        vec![Frame::PushCommit {
+            client_commit_id: "a".to_owned(),
+            client_seq: 1,
+            operations: vec![task(&s, "t1", None, None)],
+        }],
+    );
+    assert_eq!(
+        frames[1..],
+        [
+            Frame::PushResult {
+                client_commit_id: "a".to_owned(),
+                status: PushStatus::Rejected,
+                commit_seq: None,
+                results: vec![OpResult::Error {
+                    op_index: 0,
+                    code: "sync.commit_fenced".to_owned(),
+                    message: "the commit is fenced and never applies (§6.12)".to_owned(),
+                    retryable: false,
+                }],
+            },
+            Frame::PushResultDetails {
+                client_commit_id: "a".to_owned(),
+                entries: vec![PushResultDetail {
+                    op_index: 0,
+                    details: RawJson(
+                        r#"{"references":{"client_commit_id":"a","client_id":"c1"}}"#.to_owned()
+                    ),
+                }],
+            },
+        ]
+    );
+    assert!(stored(&authority, "tasks", "t1").is_none());
+    assert_eq!(store::log_state(&authority.conn).unwrap().max_seq, 0);
+    // The refusal is unpersisted: the record stays fenced.
+    assert_eq!(fence(&client, &mut authority, &["a"]), [commit_fenced("a")]);
+}
+
+#[test]
+fn a_fence_after_the_original_applied_answers_its_stored_receipt() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    outbox_push(
+        &client,
+        &mut authority,
+        Some("outbox-1"),
+        vec![("a", 1, vec![task(&s, "t1", None, None)])],
+    );
+    assert_eq!(
+        fence(&client, &mut authority, &["a"]),
+        [Frame::PushResult {
+            client_commit_id: "a".to_owned(),
+            status: PushStatus::Cached,
+            commit_seq: Some(1),
+            results: vec![OpResult::Applied { op_index: 0 }],
+        }]
+    );
+}
+
+#[test]
+fn a_repeated_fence_answers_commit_fenced_and_appends_nothing() {
+    let mut authority = memory();
+    let client = Session::new(&mut authority, "c1");
+    assert_eq!(
+        fence(&client, &mut authority, &["a", "b", "a"]),
+        [commit_fenced("a"), commit_fenced("b"), commit_fenced("a")]
+    );
+    assert_eq!(fence(&client, &mut authority, &["b"]), [commit_fenced("b")]);
+    assert_eq!(store::log_state(&authority.conn).unwrap().max_seq, 0);
+    assert_eq!(
+        results(&authority, "c1"),
+        vec![("a".to_owned(), None, None), ("b".to_owned(), None, None)]
+    );
+}
+
+#[test]
+fn a_fenced_record_outlives_the_settlement_and_the_watermark() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let commit = |id: &'static str, seq| (id, seq, vec![task(&s, id, None, None)]);
+    fence(&client, &mut authority, &["a"]);
+    for (id, seq) in [("b", 2), ("c", 3)] {
+        outbox_push(
+            &client,
+            &mut authority,
+            Some("outbox-1"),
+            vec![commit(id, seq)],
+        );
+    }
+    let late = outbox_push(
+        &client,
+        &mut authority,
+        Some("outbox-1"),
+        vec![commit("a", 1)],
+    );
+    assert_eq!(error_code(&late[0].2), (0, "sync.commit_fenced".to_owned()));
+    assert!(stored(&authority, "tasks", "a").is_none());
+    assert!(results(&authority, "c1").contains(&("a".to_owned(), None, None)));
+}
+
+#[test]
+fn a_request_that_mixes_a_fence_with_a_push_fails_as_a_whole() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let request = encode_request(
+        "c1",
+        client.version,
+        Some(client.epoch.clone()),
+        Some("outbox-1"),
+        vec![
+            Frame::FenceCommit {
+                client_commit_id: "a".to_owned(),
+            },
+            Frame::PushCommit {
+                client_commit_id: "b".to_owned(),
+                client_seq: 1,
+                operations: vec![task(&s, "t1", None, None)],
+            },
+        ],
+    );
+    let error = authority.sync(&request).expect_err("a mixed request fails");
+    assert_eq!(error.code, "sync.invalid_request");
+    assert!(results(&authority, "c1").is_empty());
 }

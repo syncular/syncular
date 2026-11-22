@@ -905,7 +905,7 @@ coverage through its declared scopes.
 
 **FTS source ids.** Reading an FTS projection's `_syncular_source_id` makes
 FTS5 fetch the content row of every hit. The client keeps a mapping table for
-each projection whose `id` equals the projection rowid (SPEC client-local FTS5
+each projection whose `id` equals the projection rowid (SPEC built-in FTS5
 projections). The compiler lowers every FTS relation that `FROM` or an inner
 `JOIN` introduces: it adds a join to the mapping table on `rowid` after the
 relation's join constraint, and every reference that binds to that relation

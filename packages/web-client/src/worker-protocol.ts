@@ -235,6 +235,12 @@ export interface WorkerApi extends Omit<
     maxRounds?: number,
   ): Promise<CurrentBaseProof>;
   replaceCommitOutcome(input: ReplaceCommitOutcomeInput): string;
+  /** §7.2.3: the page mints `replacementClientCommitId` before the call. */
+  replacePendingCommit(
+    clientCommitId: string,
+    operations: readonly MutationInput[],
+    replacementClientCommitId: string,
+  ): Promise<string>;
   resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   authorityRead(

@@ -1222,6 +1222,11 @@ pub enum CommitOutcomeStatus {
     Cached,
     Conflict,
     Rejected,
+    /// §7.2.1/§7.2.3: `replacePendingCommit` replaced the pending commit; the
+    /// outcome names the replacement in `replacementClientCommitId`. Reported
+    /// by `commitOutcomes` and `commitDelivery`; stored as a decided `rejected`
+    /// entry whose results are `client.commit_replaced`.
+    Replaced,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

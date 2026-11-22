@@ -60,7 +60,12 @@ export type CommitOutcomeStatus =
   | 'applied'
   | 'cached'
   | 'conflict'
-  | 'rejected';
+  | 'rejected'
+  /**
+   * §7.2.1/§7.2.3: reported by `commitOutcomes` and `commitDelivery` for a
+   * commit `replacePendingCommit` replaced; stored as a decided rejection.
+   */
+  | 'replaced';
 
 export type CommitOutcomeResolution =
   | 'active'
@@ -358,6 +363,27 @@ function parseOutcome(
   };
 }
 
+/**
+ * §7.2.1: a replaced commit is a rejection that links its replacement and
+ * whose results, at least one, are all `client.commit_replaced`.
+ */
+export function isReplacedOutcome(outcome: CommitOutcome): boolean {
+  return (
+    outcome.status === 'rejected' &&
+    outcome.replacementClientCommitId !== undefined &&
+    outcome.results.length > 0 &&
+    outcome.results.every(
+      (result) =>
+        result.status === 'error' &&
+        result.rejection.code === 'client.commit_replaced',
+    )
+  );
+}
+
+/** The read surfaces report a replaced commit with status `replaced`. */
+const reportedOutcome = (outcome: CommitOutcome): CommitOutcome =>
+  isReplacedOutcome(outcome) ? { ...outcome, status: 'replaced' } : outcome;
+
 export function recordCommitOutcome(
   db: ClientDatabase,
   outcome: Omit<CommitOutcome, 'sequence' | 'resolution'>,
@@ -449,7 +475,7 @@ export function persistedCommitOutcome(
         !outcome.operations.every(isStoredOperation))
     )
       corrupt();
-    return outcome;
+    return reportedOutcome(outcome);
   } catch {
     corrupt();
   }
@@ -472,7 +498,7 @@ export function listCommitOutcomes(
     `${SELECT_OUTCOME} ${where} ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
     limit === undefined ? [] : [limit],
   );
-  return rows.map((row) => parseOutcome(db, row));
+  return rows.map((row) => reportedOutcome(parseOutcome(db, row)));
 }
 
 export function persistCommitOutcomeResolution(

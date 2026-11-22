@@ -5,11 +5,14 @@
  */
 import {
   DecodeError,
+  decodeFenceRequest,
   decodeMessage,
   decodeRowsSegment,
+  encodeFenceRequest,
   encodeMessage,
   encodeRowsSegment,
   parseRealtimeServerEvent,
+  renderMessage,
   renderMessageValue,
   renderRowsSegmentValue,
 } from '@syncular/core';
@@ -30,6 +33,15 @@ export const referenceCodecDriver: CodecDriver = {
   name: 'ts-core',
   async messageRoundtrip(bytes: Uint8Array): Promise<CodecRoundtrip> {
     return guard(() => {
+      // §6.12: a server reads a fence request before the general codec.
+      const fence = decodeFenceRequest(bytes);
+      if (fence !== undefined) {
+        return {
+          ok: true,
+          bytes: encodeFenceRequest(fence.header, fence.clientCommitIds),
+          renderedJson: JSON.stringify(renderMessage(bytes)),
+        };
+      }
       const message = decodeMessage(bytes);
       return {
         ok: true,

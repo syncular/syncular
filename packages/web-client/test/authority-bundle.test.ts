@@ -52,6 +52,18 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         Infinity,
       ],
       [
+        'replacement-client',
+        `import { SyncClient } from '${root}/packages/web-client/src/client.ts'; import { definePendingCommitReplacement } from '${root}/packages/web-client/src/pending-commit-replacement.ts'; export const create = config => new SyncClient({ ...config, pendingCommitReplacement: definePendingCommitReplacement() });`,
+        false,
+        Infinity,
+      ],
+      [
+        'replacement-worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { definePendingCommitReplacement } from '${root}/packages/web-client/src/pending-commit-replacement.ts'; startSyncWorker({ createPendingCommitReplacement: definePendingCommitReplacement });`,
+        false,
+        Infinity,
+      ],
+      [
         'authority-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { defineAuthorityReads } from '${root}/packages/web-client/src/authority.ts'; startSyncWorker({ createAuthorityReads: defineAuthorityReads });`,
         true,
@@ -79,6 +91,7 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       const entry = join(directory, `${lane}.ts`);
       writeFileSync(entry, source);
       const authorityModules: string[] = [];
+      const replacementModules: string[] = [];
       const result = await Bun.build({
         entrypoints: [entry],
         target: 'browser',
@@ -109,6 +122,13 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
                 authorityModules.push(args.path);
                 return undefined;
               });
+              build.onLoad(
+                { filter: /\/pending-commit-replacement\.ts$/ },
+                (args) => {
+                  replacementModules.push(args.path);
+                  return undefined;
+                },
+              );
             },
           },
         ],
@@ -125,7 +145,14 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       } else {
         expect(authorityModules.length > 0).toBe(optIn);
       }
+      // §7.2.3: only the opt-in lanes load the replacement entry.
+      expect(replacementModules.length > 0).toBe(
+        lane.startsWith('replacement-'),
+      );
       const code = new TextDecoder().decode(bytes);
+      expect(
+        code.includes('the replacement needs a new client commit id'),
+      ).toBe(lane.startsWith('replacement-'));
       // No production entry imports `@syncular/client/dev`.
       expect(code).not.toContain('client.profiler_in_production');
       expect(code.includes('_syncular_projection_pending')).toBe(

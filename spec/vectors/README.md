@@ -68,7 +68,8 @@ SPEC.md Appendix A. Summary of what it covers:
   multi-commit push with `outboxId` and increasing `clientSeq`, a
   database-less producer push, combined push+pull with one
   post-bootstrap `PROGRESS`, an epoch-bound header, a `ROUND_FAILURE`
-  report (§1.5), two restricted units with `RESTRICT` frames (§4.3)
+  report (§1.5), two restricted units with `RESTRICT` frames (§4.3), a fence
+  request of two `FENCE_COMMIT` frames (§6.12)
 - responses: a quiet live section, a live section of two commits with
   every row-codec column type (null, bytes, non-BMP unicode), a
   catching-up unit's bootstrap section (ref + signed URL + inline across
@@ -77,7 +78,9 @@ SPEC.md Appendix A. Summary of what it covers:
   active and a revoked fenced record, unit and live reset (horizon),
   `unregistered`, a realtime delta spanning three tables, mid-stream
   ERROR frame, unknown-frame skip (forward compat), schema floor, lease,
-  a `COMMIT` upsert carrying a server-merged `crdt` column (§5.10.3)
+  a `COMMIT` upsert carrying a server-merged `crdt` column (§5.10.3),
+  fence answers: `COMMIT_FENCED`, a cached and a rejected receipt with its
+  `PUSH_RESULT_DETAILS` (§6.12)
 - registration: unit ids, registration digests (the §4.1 example, the
   empty list, non-BMP and integer-like keys, an integer-text value, JSON
   escapes, reversed order) and echo digests (§4.4)
@@ -107,7 +110,9 @@ SPEC.md Appendix A. Summary of what it covers:
   `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after
   `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`,
   `clientSeq = -1`, `RESTRICT` grammar and field violations (not after
-  `PROGRESS`, negative cursor, empty or unordered tables)
+  `PROGRESS`, negative cursor, empty or unordered tables), a
+  `FENCE_COMMIT` mixed with a `PUSH_COMMIT` or a `PULL_HEADER`, an empty
+  `FENCE_COMMIT.clientCommitId` (§6.12)
 - invalid responses: bad bool byte, `COMMIT` inside a unit section,
   `SUB_START` after the live section, a second `LIVE_START`, `LIVE_START`
   without `LIVE_END`, fenced records out of table order, a 31-byte

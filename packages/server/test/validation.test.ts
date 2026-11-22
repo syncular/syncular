@@ -251,6 +251,12 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'resetClientId',
     });
+    // §6.12 added the refusal of a fenced commit.
+    expect(ERROR_CATALOG['sync.commit_fenced']).toMatchObject({
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'resetClientId',
+    });
     // §5.10.6 CRDT fields added one internal code.
     expect(ERROR_CATALOG['sync.crdt_merge_failed']).toMatchObject({
       category: 'internal',
@@ -321,7 +327,7 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'fixRequest',
       httpStatus: 413,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(46);
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(47);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {

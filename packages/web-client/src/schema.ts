@@ -714,6 +714,16 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       OUTBOX_TABLE,
       'seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL,operations TEXT NOT NULL',
     );
+    // §7.1 send attempts: a commit queued before the marker counts as
+    // attempted; new commits insert 0.
+    if (
+      !db
+        .query(`PRAGMA table_info(${OUTBOX_TABLE})`)
+        .some((column) => column.name === 'attempted')
+    )
+      db.exec(
+        `ALTER TABLE ${OUTBOX_TABLE} ADD COLUMN attempted INTEGER NOT NULL DEFAULT 1`,
+      );
     // §7.1: `outboxId` names the outbox sequence. A new outbox table starts
     // a new sequence, so it replaces the id in the same transaction.
     db.exec(

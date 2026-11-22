@@ -3,7 +3,14 @@
  * (SPEC.md §6) plus §3.4 write-path authorization — driven through bytes.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow, serializeBlobRef } from '@syncular/core';
+import {
+  ByteWriter,
+  decodeFenceResponse,
+  decodeRow,
+  encodeFenceRequest,
+  encodeMessage,
+  serializeBlobRef,
+} from '@syncular/core';
 import {
   type BlobStore,
   CommitValidationRejection,
@@ -24,6 +31,7 @@ import {
   sync,
   TASK_COLUMNS,
   taskRow,
+  TEST_LOG_EPOCH,
   upsert,
 } from './helpers';
 import { encodeSparseRow } from '@syncular/core';
@@ -1175,5 +1183,161 @@ describe('per-outbox watermark (§6.3.2)', () => {
     expect(
       await t.storage.getPushResult('part-1', 'client-2', 'other'),
     ).toBeDefined();
+  });
+});
+
+describe('fences (§6.12)', () => {
+  const task = (id: string) => [upsert('tasks', id, taskRow(id, 'p1'))];
+  const header = {
+    type: 'REQ_HEADER',
+    clientId: 'client-1',
+    schemaVersion: 1,
+    logEpoch: TEST_LOG_EPOCH,
+    outboxId: 'outbox-1',
+  } as const;
+  const fence = async (t: ReturnType<typeof makeContext>, ids: string[]) =>
+    decodeFenceResponse(
+      await handleSyncRequest(encodeFenceRequest(header, ids), t.ctx),
+      ids,
+    );
+  const fenced = (clientCommitId: string) =>
+    ({ type: 'COMMIT_FENCED', clientCommitId }) as const;
+
+  test('a fence before the original fences it, and the original applies nothing', async () => {
+    const t = makeContext();
+    const answer = await fence(t, ['c1']);
+    expect(answer.header).toMatchObject({ resetRequired: false });
+    expect(answer.answers).toEqual([fenced('c1')]);
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(0);
+    const original = await sync(t, [pushCommit('c1', task('t1'), 1)], {
+      outboxId: 'outbox-1',
+    });
+    expect(pushResults(original)).toEqual([
+      {
+        type: 'PUSH_RESULT',
+        clientCommitId: 'c1',
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'sync.commit_fenced',
+            message: 'the commit is fenced and never applies (§6.12)',
+            retryable: false,
+          },
+        ],
+      },
+    ]);
+    expect(
+      original.frames.find((frame) => frame.type === 'PUSH_RESULT_DETAILS'),
+    ).toEqual({
+      type: 'PUSH_RESULT_DETAILS',
+      clientCommitId: 'c1',
+      entries: [
+        {
+          opIndex: 0,
+          details: {
+            references: { client_commit_id: 'c1', client_id: 'client-1' },
+          },
+        },
+      ],
+    });
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(0);
+    // The refusal is unpersisted: the record stays fenced.
+    expect(
+      (await t.storage.getPushResult('part-1', 'client-1', 'c1'))?.status,
+    ).toBe('fenced');
+    expect((await fence(t, ['c1'])).answers).toEqual([fenced('c1')]);
+  });
+
+  test('a fence after the original applied answers its stored receipt', async () => {
+    const t = makeContext();
+    await sync(t, [pushCommit('c1', task('t1'), 1)], { outboxId: 'outbox-1' });
+    expect((await fence(t, ['c1'])).answers).toEqual([
+      {
+        type: 'PUSH_RESULT',
+        result: {
+          type: 'PUSH_RESULT',
+          clientCommitId: 'c1',
+          status: 'cached',
+          commitSeq: 1,
+          results: [{ opIndex: 0, status: 'applied' }],
+        },
+      },
+    ]);
+    expect(
+      (await t.storage.getPushResult('part-1', 'client-1', 'c1'))?.status,
+    ).toBe('applied');
+  });
+
+  test('a repeated fence answers COMMIT_FENCED and writes nothing else', async () => {
+    const t = makeContext();
+    await sync(t, [pushCommit('c0', task('t0'), 1)], { outboxId: 'outbox-1' });
+    expect((await fence(t, ['c1', 'c2', 'c1'])).answers).toEqual([
+      fenced('c1'),
+      fenced('c2'),
+      fenced('c1'),
+    ]);
+    expect((await fence(t, ['c2'])).answers).toEqual([fenced('c2')]);
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(1);
+    // A fence settles no watermark: c0 still replays.
+    expect(
+      (await t.storage.getPushResult('part-1', 'client-1', 'c0'))?.status,
+    ).toBe('applied');
+  });
+
+  test('a fenced record outlives the watermark that passes it', async () => {
+    const t = makeContext();
+    await fence(t, ['c1']);
+    await sync(t, [pushCommit('c2', task('t2'), 2)], { outboxId: 'outbox-1' });
+    await sync(t, [pushCommit('c3', task('t3'), 3)], { outboxId: 'outbox-1' });
+    const late = await sync(t, [pushCommit('c1', task('t1'), 1)], {
+      outboxId: 'outbox-1',
+    });
+    expect(pushResults(late)[0]?.results[0]).toMatchObject({
+      code: 'sync.commit_fenced',
+    });
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+  });
+
+  test('a fence under a stale log epoch answers the reset header and fences nothing', async () => {
+    const t = makeContext();
+    const stale = await handleSyncRequest(
+      encodeFenceRequest({ ...header, logEpoch: 'other-epoch' }, ['c1']),
+      t.ctx,
+    );
+    expect(decodeFenceResponse(stale, ['c1'])).toEqual({
+      header: expect.objectContaining({ resetRequired: true }),
+      answers: [],
+    });
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c1'),
+    ).toBeUndefined();
+  });
+
+  test('a request that mixes a fence with a push or a pull fails as a whole', async () => {
+    const t = makeContext();
+    const valid = encodeMessage({
+      wireVersion: 4,
+      msgKind: 'request',
+      frames: [header, pushCommit('c2', task('t2'), 1)],
+    });
+    // Insert the FENCE_COMMIT frame between REQ_HEADER and PUSH_COMMIT.
+    const headerEnd = 8 + 5 + new DataView(valid.buffer).getUint32(9, true);
+    const w = new ByteWriter();
+    w.raw(valid.subarray(0, headerEnd));
+    w.u8(0x09);
+    w.u32(6);
+    w.str('c1');
+    w.raw(valid.subarray(headerEnd));
+    await expectSyncError(
+      handleSyncRequest(w.finish(), t.ctx),
+      'sync.invalid_request',
+    );
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(0);
+    expect(
+      await t.storage.getPushResult('part-1', 'client-1', 'c1'),
+    ).toBeUndefined();
   });
 });

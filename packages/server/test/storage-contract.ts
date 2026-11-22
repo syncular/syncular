@@ -1466,7 +1466,11 @@ export function runStorageContract(
       for (const [clientCommitId, clientSeq] of commits) {
         const persisted = prepared.persisted(clientCommitId);
         if (persisted !== undefined) {
-          outcomes.push(`cached:${persisted.commitSeq}`);
+          outcomes.push(
+            persisted.status === 'fenced'
+              ? 'fenced'
+              : `cached:${persisted.commitSeq}`,
+          );
         } else if (clientSeq < watermark) {
           outcomes.push('expired');
         } else {
@@ -1549,6 +1553,48 @@ export function runStorageContract(
       expect((await push(storage, 'o1', [['E', 2]])).outcomes).toEqual([
         'expired',
       ]);
+    });
+
+    test('a fenced record survives the settlement and the watermark until the epoch rotates (§6.12)', async () => {
+      const storage = await make();
+      const fence = await storage.begin(PARTITION);
+      await fence.preparePushApply('c1', [{ clientCommitId: 'F' }], 1);
+      await fence.putPushResult('c1', 'F', {
+        status: 'fenced',
+        recordedAtMs: NOW,
+        results: [],
+      });
+      await fence.commit();
+      // §9 (b): the request's last commit holds no pre-upgrade result, and the
+      // settlement spares the fenced record outside the request.
+      expect(await push(storage, 'o1', [['A', 1]])).toEqual({
+        watermark: 1,
+        outcomes: ['applied:1'],
+      });
+      // (a) gives it no sequence, and the watermark passes it.
+      expect(
+        await push(storage, 'o1', [
+          ['F', 2],
+          ['B', 3],
+        ]),
+      ).toEqual({ watermark: 2, outcomes: ['fenced', 'applied:2'] });
+      expect(await push(storage, 'o1', [['C', 5]])).toEqual({
+        watermark: 5,
+        outcomes: ['applied:3'],
+      });
+      expect(await push(storage, 'o1', [['F', 2]])).toEqual({
+        watermark: 5,
+        outcomes: ['fenced'],
+      });
+      expect((await storage.getPushResult(PARTITION, 'c1', 'F'))?.status).toBe(
+        'fenced',
+      );
+      expect(await storage.getPushResult(PARTITION, 'c1', 'B')).toBeUndefined();
+      await storage.rotatePartitionLogEpoch(PARTITION, 'epoch-b', NOW);
+      expect(await storage.getPushResult(PARTITION, 'c1', 'F')).toBeUndefined();
+      expect(
+        (await storage.getPushResult(PARTITION, 'c1', 'C'))?.commitSeq,
+      ).toBe(3);
     });
 
     test('after N requests one replica holds the last request results and one watermark row', async () => {

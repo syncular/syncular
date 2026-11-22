@@ -495,6 +495,7 @@ Frame type registry (wire version 4):
 | `0x06` | `PROGRESS` | request | 4.3 |
 | `0x07` | `RESTRICT` | request | 4.3 |
 | `0x08` | `ADOPT_EPOCH` | request | 2.1 |
+| `0x09` | `FENCE_COMMIT` | request | 6.12 |
 | `0x10` | `RESP_HEADER` | response | 1.6 |
 | `0x11` | `PUSH_RESULT` | response | 6.3 |
 | `0x12` | `SUB_START` | response | 4.4 |
@@ -513,6 +514,7 @@ Frame type registry (wire version 4):
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
 | `0x30` | `KEEPALIVE` | response | 1.6 |
+| `0x31` | `COMMIT_FENCED` | response | 6.12 |
 
 ### 1.3 Transport compression
 
@@ -1319,43 +1321,40 @@ version 3 (§9's window is `[3]`). Every other surface keeps the full-row
 codec: `COMMIT` change payloads, rows-segment row data, SQLite images, and
 conflict `serverRow`.
 
-**Client-local FTS5 projections.** The schema IR MAY attach an
-`ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
-table, 1–32 local string columns, and an allowlisted built-in tokenizer. An
-encrypted column is eligible only when its `declaredType` is `string`: apply
-decrypts it before the local base-table write, so the projection indexes the
-same plaintext already present in the protected local mirror and never the
-ciphertext envelope. This metadata is client-only: it MUST NOT create a server table,
-wire table, scope, codec column, unit coverage, or mutation target.
-Reference clients materialize the same contentful FTS5 projection over the
-visible table with an internal `_syncular_source_id UNINDEXED` column equal to
-the string form of the application primary key, and a mapping table
-`_syncular_fts_<projection>(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL
-UNIQUE)` with exactly one row per projection row, whose `id` equals the
-projection rowid and whose `source_id` equals its `_syncular_source_id`.
-Generated query SQL reads source ids through the mapping table (SYQL §15). They
-MUST keep both tables transactionally current across insert/update/delete, optimistic overlay
-rebuild, purge, and schema reset. If FTS5 is unavailable, local schema creation
-MUST fail loudly; a client MUST NOT silently omit the projection or replace
-`MATCH` with a `LIKE` scan. Purge, revocation, schema reset, and protected local
-database deletion MUST remove the base plaintext and its FTS copy together.
-Named-query invalidation maps an FTS projection back to its owning synced
-table; the projection never claims independent scope coverage.
-Clean primary-key inserts MUST NOT perform a source-ID scan of the existing FTS
-projection. Replacement-safe cleanup MAY use an indexed source-table existence
-guard before insert; `INSERT OR REPLACE` correctness MUST NOT depend on SQLite
-firing a delete trigger for the displaced row. Such a guard runs before SQLite
-resolves the conflict, so a client MUST NOT offer a row to an insert that keeps
-the held row (`OR IGNORE`, or `ON CONFLICT … DO UPDATE … WHERE` whose
-condition fails): the guard would remove the entry of a row that stays. Every
-open compares each projection's mapping row count with its visible table's row
-count and rebuilds a projection whose counts differ.
+**Built-in FTS5 projections.** A `localProjections` entry (below) is
+built-in when every column names a `source` column of its table, and
+app-filled when none does. Typegen and both client schema loaders refuse a
+declaration that mixes them with `client.schema_invalid`. A built-in
+projection declares `fts`, and each source column has `declaredType`
+`string`. An encrypted source column is eligible: apply decrypts it before
+the local base-table write, so the projection indexes the same plaintext
+already present in the protected local mirror and never the ciphertext
+envelope. A built-in projection uses the external-content storage of
+app-filled FTS5. The source trigger fills its content row from the source row
+in the statement that writes the source row, in every write path, and deletes
+it with the source row; it has no pending set, change tokens or epoch, and
+`projectionPending`, `writeProjection` and `invalidateProjection` refuse it
+with `client.projection_invalid` and the `name` detail. Every open compares
+the mapping, index and content counts with the source table's row count and
+rebuilds the projection from the source rows on a mismatch. If FTS5 is
+unavailable, local schema creation MUST fail loudly; a client MUST NOT
+silently omit the projection or replace `MATCH` with a `LIKE` scan. Purge,
+revocation, schema reset, and protected local database deletion MUST remove
+the base plaintext and its FTS copy together. Clean primary-key inserts MUST
+NOT perform a source-ID scan of the existing projection. Replacement-safe
+cleanup MAY use an indexed source-table existence guard before insert;
+`INSERT OR REPLACE` correctness MUST NOT depend on SQLite firing a delete
+trigger for the displaced row. Such a guard runs before SQLite resolves the
+conflict, so a client MUST NOT offer a row to an insert that keeps the held
+row (`OR IGNORE`, or `ON CONFLICT … DO UPDATE … WHERE` whose condition
+fails): the guard would remove the entry of a row that stays. Generated query
+SQL reads source ids through the mapping table (SYQL §15).
 
 **Client-local projections.** The schema IR MAY attach an app-filled
 `localProjections` array to a synced source table. Each projection has a name,
 a generation, declared columns, optional FTS5 configuration, and optional
-dependencies. Its columns name no source column. The client rejects a
-declaration that supplies a source column with `client.schema_invalid`.
+dependencies. An app-filled projection's columns name no source column; a
+built-in one is described above.
 
 A projection is a client-only table keyed by the source primary key in its
 `_syncular_source_id` column, expressed as text. It MUST NOT create a server
@@ -1376,8 +1375,8 @@ three in the invalidating statement. Open compares the mapping and index
 counts with the content count and rebuilds from the content on a mismatch.
 Query lowering uses the same source-ID mapping as built-in FTS5.
 
-Every write of a visible source row clears its projection row and FTS
-entries and records a fresh change token in the projection's pending set.
+Every write of a visible source row clears its app-filled projection row and
+FTS entries and records a fresh change token in the projection's pending set.
 This happens in the same transaction as the source write, including remote
 apply, optimistic edits and overlay rebuild, settlement, rollback, eviction,
 revocation, purge, rebootstrap and schema reset. A source deletion removes
@@ -6133,6 +6132,49 @@ stays static.
 
 ---
 
+### 6.12 Fencing a commit
+
+**`FENCE_COMMIT`** (request, `0x09`): `clientCommitId: str`, non-empty, the id
+of a commit this client may have pushed. A request that carries
+`FENCE_COMMIT` frames carries no other work frame: after `REQ_HEADER` it holds
+only `FENCE_COMMIT` frames and `END`, with no `PUSH_COMMIT`, `PULL_HEADER`,
+`UNIT`, `PROGRESS` or `RESTRICT`. A request that mixes them fails
+request-level with `sync.invalid_request`. A client never folds a fence into a
+push or pull round. A server that predates the frame skips it as unknown
+(§1.2 rule 2) and refuses the remaining request for lacking `PUSH_COMMIT` and
+`PULL_HEADER`; the client surfaces that refusal and keeps the commit pending.
+
+**Processing.** The server processes the fences in frame order under the
+partition serialization, transaction and idempotency read of a push (§6.4).
+For each fence it reads the idempotency record of (partition, `clientId`,
+`clientCommitId`):
+
+- no record: it writes a **fenced** record and answers
+  `COMMIT_FENCED { clientCommitId }` (response, `0x31`);
+- a fenced record: it answers `COMMIT_FENCED` again;
+- a stored result: it answers with the stored `PUSH_RESULT` exactly as a
+  replay returns it (`cached` for an applied commit, the stored `rejected`
+  result otherwise), followed by its `PUSH_RESULT_DETAILS` when the result has
+  one.
+
+`FENCE_COMMIT` carries no `clientSeq`, so the watermark (§6.3.2) does not
+apply to it: a commit still in the client's outbox is never below its
+watermark (§6.3.2 W1).
+
+A fence writes no commit-log entry, emits no change, notifies no realtime
+peer and does not count against the operation cap. The response holds
+`RESP_HEADER`, one answer per fence in frame order, and `END`.
+
+**`sync.commit_fenced`.** A `PUSH_COMMIT` whose id holds a fenced record is
+refused with a `rejected` `PUSH_RESULT` whose one result is
+`sync.commit_fenced` (not retryable), whose §6.3.1 details carry the
+`references` `client_id` and `client_commit_id`. It applies nothing. The refusal is not
+persisted, so the record stays fenced.
+
+**Permanence.** A fenced record is permanent for the client id. It is exempt
+from every idempotency prune (§6.3.2) and is deleted only when the server
+deletes that client's records.
+
 ## 7. Offline writes and replay
 
 Sync storage MUST provide read-after-write consistency for commit sequences,
@@ -6428,6 +6470,17 @@ raised. An idle drive MUST retry that pull; it cannot report idle while a
 registered unit is catching up. A revoked or failed unit is reported as such
 and is not evidence of an authorized current base.
 
+**Send attempts.** Each outbox commit carries a durable send-attempt marker.
+A client sets it in its own committed local transaction before any byte of a
+request that carries the commit's `PUSH_COMMIT` frame leaves the device, over
+HTTP or the socket. A crash, a lost reply or a failed send after that
+transaction leaves the marker set: the commit counts as attempted whether or
+not the server received it. The marker never clears. A `pull` round, a fence
+round and a round whose encoding failed before the send set no marker. The
+marker is client bookkeeping: it consumes no `localRevision`, emits no change
+batch, and no read surface exposes it. A commit queued by a client version
+that predates the marker counts as attempted.
+
 ### 7.2 Replay and idempotent retry
 
 A client configured with `retainFailedCommits: true` keeps failed local rows
@@ -6628,6 +6681,20 @@ silently delete an active conflict or rejection; active failures may therefore
 temporarily exceed the configured cap. The default cap is 1,000 entries and
 clients expose it as `outcomeRetentionMaxEntries`.
 
+A replaced commit (§7.2.3) is journaled as status `rejected` with resolution
+`superseded`, the replacement's id as `replacementClientCommitId`, and one
+`client.commit_replaced` result per operation index, as a purge journals
+`client.local_data_purged`. `commitOutcomes()` and `commitDelivery(id)` report
+an entry whose results are `client.commit_replaced` and that carries a
+replacement link with status `replaced`, by one predicate in each core, for the
+retention period of any outcome. Every other journal surface treats the entry
+as a decided rejection: the active lists, conflict and rejection queries,
+resolution and replacement calls, and retention pruning. The replacement's own
+delivery is `pending` until it settles. Every client reads and reports a
+`replaced` outcome, with or without the replacement implementation. The
+send-attempt marker is added to an existing outbox by one `ADD COLUMN` with the
+default `1`.
+
 #### 7.2.2 Replacement on a proven base
 
 `replaceCommitOutcome({ clientCommitId, sequence, replacement? })` records a
@@ -6721,6 +6788,57 @@ restart:
 Each transition publishes `outcomesChanged` in the change batch of its
 transaction, and outbox changes publish the outbox status. `proveCurrentBase`
 keeps its contract for callers that need the proof before they write.
+
+#### 7.2.3 Replacing a pending commit
+
+`replacePendingCommit(clientCommitId, operations)` replaces the operations of
+a pending outbox commit and returns the replacement's client commit id. The
+TypeScript implementation is opt-in: creation takes
+`pendingCommitReplacement: definePendingCommitReplacement()` from
+`@syncular/client/pending-commit-replacement`, and a worker takes
+`startSyncWorker({ createPendingCommitReplacement })`. Ordinary client and
+worker graphs MUST exclude it. Without it the call fails with
+`client.pending_commit_replacement_unconfigured`. Native hosts contain it
+unconditionally.
+`operations` is validated as `mutate` validates it. The call applies to a
+commit in the send queue; a retained failed commit uses `replaceCommitOutcome`
+(§7.2.2), and an unknown or acknowledged id fails with
+`sync.outcome_not_found`. The page mints the replacement id before the call,
+as it mints `mutate` ids (§7.1). A repeated call whose original is already
+`replaced` by that same id returns that id, so a retry after a lost reply is
+idempotent.
+
+When the commit's send-attempt marker is not set, the call needs no
+transport. When it is set, the client first fences the commit (§6.12) in a
+fence round, serialized with sync rounds. A `closed` transport gate fails the
+call with `sync.offline` before the fence. The fence's answer decides:
+
+- `COMMIT_FENCED`: the server will never apply the original, and the client
+  replaces it as below.
+- the stored result: the server holds the original's idempotent receipt. The
+  client processes that receipt as the push result it lost (acknowledgement,
+  overlay, journal), and the call fails with `client.commit_settled` and the
+  details `{ clientCommitId, status }`, where `status` is the receipt's
+  `applied` or `rejected`.
+
+In one local transaction the client then:
+
+- swaps the commit's operations and client commit id in place, so the commit
+  keeps its outbox position;
+- keeps the per-row base versions: an operation on a row the original touched
+  takes that row's base version from the original, and an operation on
+  another row takes the base version `mutate` would assign;
+- reverts the original's optimistic overlay, applies the replacement's, and
+  re-derives every later pending commit's overlay, as a rollback re-derives
+  them (§7.2);
+- journals the original as replaced (§7.2.1): status `rejected`, resolution
+  `superseded`, one `client.commit_replaced` result per operation index, and
+  the replacement's id as `replacementClientCommitId`.
+
+The transaction publishes one revision and one change batch. The replacement
+starts with its send-attempt marker cleared. A crash after the fence and
+before this transaction leaves the original pending and attempted; calling
+again fences again, gets `COMMIT_FENCED` again, and replaces.
 
 ### 7.3 Auth leases
 
@@ -7076,13 +7194,25 @@ Everything else is destroyed and rebuilt:
   `leaseState` (§7.3.5 — the grant's validity window is independent of
   the schema, distinct from §3.3 revocation which *does* purge).
 
+**Declared indexes.** At every open and at the end of every reset, the client
+reconciles each table's declared indexes in place. It creates a declared index
+that is missing, drops and recreates one whose columns or uniqueness differ,
+and drops an index it created earlier that the schema no longer declares. It
+records the names it created in the `_syncular_meta` key `localIndexes`, a
+JSON object from table name to index names, and never drops an index it did
+not create: application indexes and internal indexes stay. An index change
+resets no table and no unit. The server schema compiler's index requirements
+(§6.11) are unaffected.
+
 **Table generations.** A generated schema MAY give each table a
 `generation`: an opaque non-empty string. `typegen` derives it as the first
 16 bytes, in lowercase hex, of SHA-256 over the table's serialized
 declaration (columns with name, order, type, nullability, `crdtType`,
 encryption and `declaredType`; the primary key; every scope pattern with
-its variable and column; references; indexes; FTS projections; extensions)
-and the names of every migration with a statement that names the table.
+its variable and column; references; extensions) and the names of every
+migration with a statement that names the table. Declared indexes and local
+projections are not part of it: an index change reconciles in place (below),
+and a projection has its own generation.
 A statement names a table when one of its identifiers or string literals
 equals the table name, compared case-insensitively; the match is lexical,
 so a column that shares a table's name also names that table. Migration
@@ -7104,7 +7234,7 @@ with `sync.local_corrupt` before mutation.
 - **Kept table:** a table of the new schema whose generation is present and
   equal to the generation the replica persisted for that name. Its rows,
   its §4.5 version column, its base mirror where the client keeps one, its
-  indexes, and its row-level bookkeeping (acknowledged rows awaiting their
+  declared indexes (reconciled below), and its row-level bookkeeping (acknowledged rows awaiting their
   commit, delivery records) stay as they are. Its FTS projections hold the
   kept rows after the reset; a client MAY rebuild them from those rows. A table
   without a generation in either schema is never kept, so a hand-written
@@ -9143,7 +9273,8 @@ gate.
   no staged blob, and the round leaves every outbox commit as it was. Automatic
   hosts consume sync intents; a pending outbox raises no push intent while the
   gate is `pull`. An application that holds pending commits it may still
-  replace creates the client in `pull`.
+  replace creates the client in `pull`. A `pull` gate also admits fence
+  rounds (§6.12).
 - `closed`: new sync rounds, realtime connects, presence sends and uncached
   blob downloads fail with client-local `sync.offline` before invoking
   transport, and automatic hosts consume no sync or retry intent. Cached blob
@@ -9435,6 +9566,11 @@ object's single thread orders a registration before or after each relay.
   kind: a server that predates it skips it and answers the restricted unit
   with a whole bootstrap, which the client applies (§5.6). `ADOPT_EPOCH`
   (§2.1) is another: a server that predates it answers epoch acquisition.
+  `FENCE_COMMIT` and `COMMIT_FENCED` (§6.12) are frames of this kind only
+  because a fence request carries no other frame: a server that predates them
+  skips the fence and refuses the request for lacking `PUSH_COMMIT` and
+  `PULL_HEADER`, so it can never answer a fence with a reply the client reads
+  as success.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
@@ -9550,6 +9686,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
+| `sync.commit_fenced` | invalid-request | no | resetClientId | A push of a commit id the client fenced earlier (§6.12): the server will never apply it — *new in 0.102.0*; a push operation-result `error` record with `references` `client_id` and `client_commit_id` in its §6.3.1 details, never persisted |
 | `sync.commit_expired` | invalid-request | no | resetClientId | A commit whose `clientSeq` lies below its outbox's watermark and that has no retained result (§6.3.2): a delayed copy of an abandoned request or a copied replica — *new in wire version 4*; a push operation-result `error` record only, never persisted |
 | `sync.internal_error` | internal | yes | retryLater | An exception outside this catalog (host code, storage, network) ended the request or socket round (HTTP 500 or an in-band `ERROR` before the first response byte). The message never carries the exception text; the host receives the original through its error hook |
 | `sync.storage_stale_read` | internal | no | inspectServer | Storage maximum precedes a push accepted in the same request; disable query caching for sync storage |
@@ -9652,7 +9789,13 @@ written on a proven base; a client-local terminal drop with `details.reason`
 `base_moved`, `schema_floor`, `missing_coverage`, `revoked`, or
 `outcome_unavailable`; non-retryable], `client.replacement_pending`
 [§7.2.2: an outcome with a pending decision accepts no other resolution;
-non-retryable],
+non-retryable], `client.commit_replaced` [§7.2.1/§7.2.3: the journal result
+of each operation of a commit `replacePendingCommit` replaced; non-retryable,
+never on the wire], `client.commit_settled` [§7.2.3: the fence found the
+commit's stored result, so it can no longer be replaced; details
+`{ clientCommitId, status }`; non-retryable],
+`client.pending_commit_replacement_unconfigured` [§7.2.3: the TypeScript
+client was created without `pendingCommitReplacement`; non-retryable],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
@@ -9973,6 +10116,7 @@ byte-identical output):
 | 37 | `request/pull-restrict` | Two restricted units (§4.3 `RESTRICT`, §4.7): a first round with `PROGRESS` cursor `-1` and the kept cursor in `RESTRICT`, and a resumed round at the join cursor with a token over the bootstrap tables |
 | 38 | `request/epoch-adopt` | A fresh replica's first request: no `logEpoch`, `ADOPT_EPOCH`, a pull with one `UNIT` and its `PROGRESS` at cursor `-1` (§2.1) |
 | 39 | `response/keepalive` | `RESP_HEADER`, `LEASE`, two `KEEPALIVE` frames (§1.6) and an empty live section. `response/invalid/keepalive-*` rejects a `KEEPALIVE` after `LIVE_START`, after `SUB_START`, with a one-byte payload, and in a request |
+| 40 | `request/fence` + `response/fence-answers` | A fence request: `REQ_HEADER` and `FENCE_COMMIT` frames only (§6.12); its response answers each fence in order with `COMMIT_FENCED` or the stored `PUSH_RESULT`. `request/invalid/fence-*` rejects a fence mixed with a `PUSH_COMMIT`, a fence mixed with a `PULL_HEADER`, and an empty `clientCommitId` |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, wireVersion 3, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar, `PROGRESS.bootstrapState` holding `1e999` or nested 65 deep, a 31-byte `registrationDigest`, a 16-byte `echoDigest`, `PULL_HEADER.cursor = -2`, an uppercase `PROGRESS.id`, `UNIT` after `PROGRESS`, `UNIT` without `PULL_HEADER`, an empty `outboxId`, `clientSeq = -1`; `RESTRICT` not immediately after `PROGRESS`, `RESTRICT.cursor = -1`, an empty `RESTRICT.tables`, `RESTRICT.tables` out of order; `ADOPT_EPOCH` with a payload byte, twice, or after `PULL_HEADER` or before `ROUND_FAILURE` |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`), `ERROR.details` with a U+0000 key, `SUB_END.bootstrapState` that is an unpaired surrogate escape, `COMMIT` inside a unit section, a `COMMIT` delete change with `rowVersion` 0, `SUB_START` after `LIVE_START`, a second `LIVE_START`, `LIVE_START` without `LIVE_END`, fenced records out of table order, a 31-byte `LIVE_END.echoDigest`, `UNIT_EXTENT` after a non-bootstrap `SUB_START`, after a segment frame, or with `rowsTotal = -1` |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1), and every non-canonical `blob_ref` of the `push/invalid/admission-blob-ref-*` cases on the full-row path (§5.9.1) |

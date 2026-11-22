@@ -1757,6 +1757,14 @@ export interface ProcessedPushCommit {
   readonly frame: PushResultFrame;
   /** True when this request observed an already-recorded idempotency outcome. */
   readonly replayed: boolean;
+  /**
+   * The commit holds a fenced record (§6.12): `frame` is the unpersisted
+   * `sync.commit_fenced` refusal of a push, and a fence answers
+   * `COMMIT_FENCED`.
+   */
+  readonly fenced?: true;
+  /** The table of a stored conflict, which a fence names no operation for. */
+  readonly conflictTable?: string;
   readonly recordedAtMs?: number;
   readonly cacheIdentity?: string;
 }
@@ -1776,6 +1784,13 @@ export interface PushRequestCommit {
   readonly targets?: PushApplyCommit['targets'];
 }
 
+/** §6.12: one `FENCE_COMMIT` of a fence request. */
+export interface FenceRequestCommit {
+  readonly clientCommitId: string;
+  readonly fence: true;
+  readonly targets?: undefined;
+}
+
 function processedPushCommit(
   clientCommitId: string,
   stored: StoredPushResult,
@@ -1789,6 +1804,9 @@ function processedPushCommit(
       : {}),
     ...(stored.cacheIdentity !== undefined
       ? { cacheIdentity: stored.cacheIdentity }
+      : {}),
+    ...(stored.conflictAuthorization !== undefined
+      ? { conflictTable: stored.conflictAuthorization.table }
       : {}),
   };
 }
@@ -1819,6 +1837,30 @@ function idempotencyCacheMissFrame(
         code: 'sync.idempotency_cache_miss',
         message: error.message,
         retryable: true,
+      },
+    ],
+  };
+}
+
+/** §6.12: the unpersisted refusal of a push whose commit is fenced. */
+function commitFencedFrame(
+  clientId: string,
+  clientCommitId: string,
+): PushResultFrame {
+  return {
+    type: 'PUSH_RESULT',
+    clientCommitId,
+    status: 'rejected',
+    results: [
+      {
+        opIndex: 0,
+        status: 'error',
+        code: 'sync.commit_fenced',
+        message: 'the commit is fenced and never applies (§6.12)',
+        retryable: false,
+        details: {
+          references: { client_commit_id: clientCommitId, client_id: clientId },
+        },
       },
     ],
   };
@@ -1877,6 +1919,10 @@ export async function processPushOperationsWithTrace(
  * `outbox` lists every commit of the request in the same order as
  * `commits`; it carries the §6.3.2 sequences and the §9 settlement.
  *
+ * A fence request (§6.12) passes only `FenceRequestCommit`s and no `outbox`:
+ * a fence writes a fenced record where no record exists, or answers the
+ * stored one, and appends no commit.
+ *
  * A storage may write a closed commit with the request's later statements
  * (PostgreSQL). When a relational constraint fails there, no commit can be
  * rejected alone: the request rolls back and runs once more with every
@@ -1887,7 +1933,7 @@ export async function processPushCommitsWithTrace(
   schema: CompiledSchema,
   resolved: ResolvedScopes,
   clientId: string,
-  commits: readonly PushRequestCommit[],
+  commits: readonly (PushRequestCommit | FenceRequestCommit)[],
   wireSchema: CompiledSchema = schema,
   outbox?: OutboxSettlement,
 ): Promise<ProcessedPushCommit[]> {
@@ -1915,7 +1961,7 @@ async function applyPushCommits(
   schema: CompiledSchema,
   resolved: ResolvedScopes,
   clientId: string,
-  commits: readonly PushRequestCommit[],
+  commits: readonly (PushRequestCommit | FenceRequestCommit)[],
   wireSchema: CompiledSchema,
   outbox: OutboxSettlement | undefined,
   closeEagerly: boolean,
@@ -2032,7 +2078,9 @@ async function applyPushCommits(
         persisted =
           recorded.get(clientCommitId) ?? prepared.persisted(clientCommitId);
       } catch (error) {
+        // A fence answers a stored receipt or nothing: its request fails.
         if (
+          !('fence' in commit) &&
           error instanceof SyncError &&
           error.code === 'sync.idempotency_cache_miss'
         ) {
@@ -2045,6 +2093,14 @@ async function applyPushCommits(
           continue;
         }
         throw error;
+      }
+      if (persisted?.status === 'fenced') {
+        processed.push({
+          frame: commitFencedFrame(clientId, clientCommitId),
+          replayed: true,
+          fenced: true,
+        });
+        continue;
       }
       if (persisted !== undefined) {
         const conflict = persisted.results.find(
@@ -2088,6 +2144,21 @@ async function applyPushCommits(
         processed.push({
           frame: commitExpiredFrame(clientCommitId),
           replayed: false,
+        });
+        continue;
+      }
+      if ('fence' in commit) {
+        const fenced: StoredPushResult = {
+          status: 'fenced',
+          recordedAtMs: clockOf(ctx)(),
+          results: [],
+        };
+        await tx.putPushResult(clientId, clientCommitId, fenced);
+        recorded.set(clientCommitId, fenced);
+        processed.push({
+          frame: commitFencedFrame(clientId, clientCommitId),
+          replayed: false,
+          fenced: true,
         });
         continue;
       }

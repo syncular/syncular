@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-22',
+    title: 'Replace a commit before it is pushed',
+    body: "`replacePendingCommit` swaps a pending commit's operations in place and journals the original as `replaced`. A commit that may have reached the server is fenced first, so the server either never applies the original or returns its stored result.",
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#replace-a-pending-commit',
+        label: 'Replace a pending commit',
+      },
+    ],
+  },
+  {
     date: '2026-11-21',
     title: 'Authority queries over the accepted base',
     body: "Declare preflight evidence as `authority query` in SYQL and read it with `authorityRead`: joins and aggregates over the last state the server accepted, in one read transaction, with per-table coverage that tells a complete negative from missing data. A native host authorizes each declared statement against its column ceiling. Coverage now proves an entry from any unit whose scopes are a subset of it.",

@@ -10,17 +10,19 @@ import { join } from 'node:path';
 import {
   canonicalUnitJson,
   DecodeError,
+  decodeFenceRequest,
   decodeMessage,
   decodeRowsSegment,
   decodeSparseRow,
   echoDigest,
+  encodeFenceRequest,
   encodeMessage,
   encodeRowsSegment,
   encodeSparseRow,
   type JsonValue,
   parseRealtimeServerEvent,
   registrationDigest,
-  renderMessageValue,
+  renderMessage,
   renderRowsSegmentValue,
   renderSparseRowValue,
   type ColumnType,
@@ -97,16 +99,28 @@ for (const kind of ['request', 'response'] as const) {
     for (const c of manifest.cases) {
       it(`${c.name}: decode, render, byte-exact re-encode`, () => {
         const bin = loadBin(kind, c.bin ?? `${c.name}.bin`);
+        // §6.12: the server reads a fence request before the general codec.
+        const fence = decodeFenceRequest(bin);
+        expect(renderMessage(bin)).toEqual(loadJson(kind, c.json));
+        if (fence !== undefined) {
+          expect(kind).toBe('request');
+          expect(
+            encodeFenceRequest(fence.header, fence.clientCommitIds),
+          ).toEqual(bin);
+          return;
+        }
         const message = decodeMessage(bin);
         expect(message.msgKind).toBe(kind);
-        expect(renderMessageValue(message)).toEqual(loadJson(kind, c.json));
         expect(encodeMessage(message)).toEqual(bin);
       });
     }
     for (const c of manifest.invalid) {
       it(`invalid/${c.name}: fails with ${c.error}`, () => {
         const bin = loadBin(kind, c.bin ?? `invalid/${c.name}.bin`);
-        expectNamedDecodeError(() => decodeMessage(bin), c.error);
+        expectNamedDecodeError(
+          () => decodeFenceRequest(bin) ?? decodeMessage(bin),
+          c.error,
+        );
       });
     }
   });

@@ -865,7 +865,8 @@ function driverOutcomeFrom(raw: JsonValue): DriverCommitOutcome {
     status !== 'applied' &&
     status !== 'cached' &&
     status !== 'conflict' &&
-    status !== 'rejected'
+    status !== 'rejected' &&
+    status !== 'replaced'
   ) {
     throw new Error('snapshotRead: malformed outcome status');
   }
@@ -877,6 +878,9 @@ function driverOutcomeFrom(raw: JsonValue): DriverCommitOutcome {
     clientCommitId: String(outcome.clientCommitId),
     status,
     resolution: String(outcome.resolution),
+    ...(typeof outcome.replacementClientCommitId === 'string'
+      ? { replacementClientCommitId: outcome.replacementClientCommitId }
+      : {}),
     results: results.map((rawResult) => {
       const result = asObject(rawResult, 'outcome result');
       if (result.status === 'applied')
@@ -1200,6 +1204,29 @@ function detailsOf(value: JsonValue): NonNullable<ClientRejection['details']> {
   };
 }
 
+/** Driver mutations in the command router's JSON form. */
+function mutationWire(mutations: readonly ClientMutation[]) {
+  return mutations.map((mutation) =>
+    mutation.op !== 'delete'
+      ? {
+          op: mutation.op,
+          table: mutation.table,
+          values: mutation.values,
+          ...(mutation.baseVersion !== undefined
+            ? { baseVersion: mutation.baseVersion }
+            : {}),
+        }
+      : {
+          op: 'delete',
+          table: mutation.table,
+          rowId: mutation.rowId,
+          ...(mutation.baseVersion !== undefined
+            ? { baseVersion: mutation.baseVersion }
+            : {}),
+        },
+  );
+}
+
 class RustClientInstance implements ClientInstance {
   readonly #shim: ShimProcess;
   readonly #cleanup: () => void;
@@ -1378,25 +1405,7 @@ class RustClientInstance implements ClientInstance {
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
-    const wire = mutations.map((mutation) =>
-      mutation.op !== 'delete'
-        ? {
-            op: mutation.op,
-            table: mutation.table,
-            values: mutation.values,
-            ...(mutation.baseVersion !== undefined
-              ? { baseVersion: mutation.baseVersion }
-              : {}),
-          }
-        : {
-            op: 'delete',
-            table: mutation.table,
-            rowId: mutation.rowId,
-            ...(mutation.baseVersion !== undefined
-              ? { baseVersion: mutation.baseVersion }
-              : {}),
-          },
-    );
+    const wire = mutationWire(mutations);
     const result = asObject(
       await this.#shim.call('mutate', {
         mutations: wire as JsonValue,
@@ -1410,6 +1419,22 @@ class RustClientInstance implements ClientInstance {
       ?.sync;
     if (intent !== undefined) this.#intents.push(intent);
     return result.clientCommitId;
+  }
+
+  async replacePendingCommit(
+    clientCommitId: string,
+    mutations: readonly ClientMutation[],
+    replacementClientCommitId: string,
+  ): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('replacePendingCommit', {
+        clientCommitId,
+        operations: mutationWire(mutations) as JsonValue,
+        replacementClientCommitId,
+      }),
+      'replacePendingCommit',
+    );
+    return String(result.clientCommitId);
   }
 
   async patch(

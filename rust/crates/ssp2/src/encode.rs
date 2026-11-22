@@ -132,6 +132,18 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             ft::ROUND_FAILURE
         }
         Frame::AdoptEpoch => ft::ADOPT_EPOCH,
+        Frame::FenceCommit { client_commit_id } | Frame::CommitFenced { client_commit_id } => {
+            assert!(
+                !client_commit_id.is_empty(),
+                "fence clientCommitId must be non-empty"
+            );
+            w.str(client_commit_id);
+            if matches!(frame, Frame::FenceCommit { .. }) {
+                ft::FENCE_COMMIT
+            } else {
+                ft::COMMIT_FENCED
+            }
+        }
         Frame::Keepalive => ft::KEEPALIVE,
         Frame::Unit { scopes } => {
             w.str_map(scopes);

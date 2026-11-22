@@ -133,6 +133,17 @@ fn render_frame(frame: &Frame) -> Value {
             entries.push(("code", Value::from(code.clone())));
         }
         Frame::AdoptEpoch => entries.push(("type", Value::from("ADOPT_EPOCH"))),
+        Frame::FenceCommit { client_commit_id } | Frame::CommitFenced { client_commit_id } => {
+            entries.push((
+                "type",
+                Value::from(if matches!(frame, Frame::FenceCommit { .. }) {
+                    "FENCE_COMMIT"
+                } else {
+                    "COMMIT_FENCED"
+                }),
+            ));
+            entries.push(("clientCommitId", Value::from(client_commit_id.clone())));
+        }
         Frame::Keepalive => entries.push(("type", Value::from("KEEPALIVE"))),
         Frame::Unit { scopes } => {
             entries.push(("type", Value::from("UNIT")));

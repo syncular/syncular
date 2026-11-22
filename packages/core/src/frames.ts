@@ -1,4 +1,8 @@
-/** Frame type registry for wire version 4 (SPEC.md §1.2). */
+/**
+ * Frame type registry for wire version 4 (SPEC.md §1.2). §6.12's
+ * `FENCE_COMMIT` (0x09) and `COMMIT_FENCED` (0x31) live in the fence codec of
+ * `message.ts`, outside the general codec.
+ */
 export const FrameType = {
   END: 0x00,
   REQ_HEADER: 0x01,

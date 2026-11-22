@@ -184,6 +184,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'resetClientId',
     httpStatus: 400,
   },
+  // §6.12: a push of a fenced commit. A push operation-result error record
+  // only, never persisted.
+  'sync.commit_fenced': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'resetClientId',
+    httpStatus: 400,
+  },
   // §2.4 on a non-D1 backend: the server refuses while a declared backfill
   // checkpoint is incomplete or the database is newer than the running build.
   // Formerly host-only; promoted to the §10.2 catalogue so an in-flight

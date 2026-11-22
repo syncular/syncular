@@ -98,6 +98,14 @@
         "default": "./dist/projection.js"
       }
     },
+    "./pending-commit-replacement": {
+      "bun": "./src/pending-commit-replacement.ts",
+      "browser": "./dist/pending-commit-replacement.js",
+      "import": {
+        "types": "./dist/pending-commit-replacement.d.ts",
+        "default": "./dist/pending-commit-replacement.js"
+      }
+    },
     "./native-bridge": {
       "bun": "./src/native-bridge.ts",
       "browser": "./dist/native-bridge.js",

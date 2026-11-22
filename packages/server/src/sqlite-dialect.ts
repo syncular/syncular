@@ -583,6 +583,11 @@ export abstract class SqliteFamilyStorage {
         sql: 'DELETE FROM sync_clients WHERE partition=?',
         params: [partition],
       },
+      {
+        sql: `DELETE FROM sync_push_results
+                WHERE partition=? AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.status')='fenced'`,
+        params: [partition],
+      },
     ]);
     return {
       partition,
@@ -1987,13 +1992,16 @@ export abstract class SqliteFamilyTransaction {
       result: string | null;
       outbox_id: string | null;
       client_seq: number | null;
+      status: string | null;
     }>(
       `SELECT (SELECT through_seq FROM sync_push_watermarks
                 WHERE partition=?1 AND client_id=?2 AND outbox_id=?3) AS stored,
               EXISTS (SELECT 1 FROM sync_push_results WHERE partition=?1
-                AND client_id=?2 AND client_commit_id=?5 AND outbox_id IS NULL) AS last_sequenceless,
+                AND client_id=?2 AND client_commit_id=?5 AND outbox_id IS NULL
+                AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.status') IS NOT 'fenced') AS last_sequenceless,
               r.client_commit_id AS client_commit_id, r.result AS result,
-              r.outbox_id AS outbox_id, r.client_seq AS client_seq
+              r.outbox_id AS outbox_id, r.client_seq AS client_seq,
+              json_extract(CASE WHEN json_valid(r.result) THEN r.result END, '$.status') AS status
          FROM (SELECT 1) LEFT JOIN sync_push_results AS r
            ON r.partition=?1 AND r.client_id=?2
           AND r.client_commit_id IN (SELECT value FROM json_each(?4))`,
@@ -2010,6 +2018,7 @@ export abstract class SqliteFamilyTransaction {
       this.run(
         `DELETE FROM sync_push_results
           WHERE partition=? AND client_id=? AND outbox_id IS NULL
+            AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.status') IS NOT 'fenced'
             AND client_commit_id NOT IN (SELECT json_extract(value, '$[0]') FROM json_each(?))`,
         [p, clientId, commits],
       );
@@ -2019,6 +2028,7 @@ export abstract class SqliteFamilyTransaction {
          SELECT json_extract(c.value, '$[1]') FROM json_each(?4) AS c
           WHERE json_extract(c.value, '$[0]')=sync_push_results.client_commit_id)
         WHERE partition=?1 AND client_id=?2 AND outbox_id IS NULL
+          AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.status') IS NOT 'fenced'
           AND client_commit_id IN (SELECT json_extract(value, '$[0]') FROM json_each(?4))`,
       [p, clientId, outbox.outboxId, commits],
     );
@@ -2029,7 +2039,8 @@ export abstract class SqliteFamilyTransaction {
       [p, clientId, outbox.outboxId, watermark],
     );
     this.run(
-      'DELETE FROM sync_push_results WHERE partition=? AND client_id=? AND outbox_id=? AND client_seq<?',
+      `DELETE FROM sync_push_results WHERE partition=? AND client_id=? AND outbox_id=? AND client_seq<?
+         AND json_extract(CASE WHEN json_valid(result) THEN result END, '$.status') IS NOT 'fenced'`,
       [p, clientId, outbox.outboxId, watermark],
     );
     // The sequence step 2 sees: (a) gives a pre-upgrade result its commit's
@@ -2040,11 +2051,13 @@ export abstract class SqliteFamilyTransaction {
     const records = new Map<string, string>();
     for (const row of rows) {
       if (row.client_commit_id === null || row.result === null) continue;
+      // §6.12: no settlement deletes a fenced record.
       const deleted =
-        row.outbox_id === null
+        row.status !== 'fenced' &&
+        (row.outbox_id === null
           ? (sequences.get(row.client_commit_id) ?? 0) < watermark
           : row.outbox_id === outbox.outboxId &&
-            (row.client_seq ?? 0) < watermark;
+            (row.client_seq ?? 0) < watermark);
       if (!deleted) records.set(row.client_commit_id, row.result);
     }
     return { watermark, persisted: persistedOf(records) };

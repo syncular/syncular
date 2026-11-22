@@ -15,7 +15,8 @@ import type {
   ResponseFrame,
   SyncMessage,
 } from './message';
-import { decodeMessage } from './message';
+import { ByteReader } from './bytes';
+import { decodeFenceRequest, decodeMessage } from './message';
 import type { RowColumn, RowValue, SparseRowValue } from './row-codec';
 import type { RowsSegment } from './segment';
 import { decodeRowsSegment, ROWS_SEGMENT_FORMAT_VERSION } from './segment';
@@ -326,6 +327,13 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           : {}),
       };
     case 'UNKNOWN':
+      // §6.12: the general codec carries COMMIT_FENCED as an unregistered frame.
+      if (frame.frameType === 0x31) {
+        return {
+          type: 'COMMIT_FENCED',
+          clientCommitId: new ByteReader(frame.payload).str(),
+        };
+      }
       return {
         type: 'UNKNOWN',
         frameType: frame.frameType,
@@ -345,9 +353,22 @@ export function renderMessageValue(message: SyncMessage): JsonValue {
   };
 }
 
-/** `render(bytes) → json` for SSP2 messages (§11). */
+/** `render(bytes) → json` for SSP2 messages (§11), fence requests (§6.12) included. */
 export function renderMessage(bytes: Uint8Array): JsonValue {
-  return renderMessageValue(decodeMessage(bytes));
+  const fence = decodeFenceRequest(bytes);
+  if (fence === undefined) return renderMessageValue(decodeMessage(bytes));
+  return {
+    magic: 'SSP2',
+    wireVersion: fence.wireVersion,
+    msgKind: 'request',
+    frames: [
+      renderFrame(fence.header),
+      ...fence.clientCommitIds.map((clientCommitId) => ({
+        type: 'FENCE_COMMIT',
+        clientCommitId,
+      })),
+    ],
+  };
 }
 
 function renderRowValue(column: RowColumn, value: RowValue): JsonValue {

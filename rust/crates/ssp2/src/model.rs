@@ -33,6 +33,7 @@ pub mod frame_type {
     pub const PROGRESS: u8 = 0x06;
     pub const RESTRICT: u8 = 0x07;
     pub const ADOPT_EPOCH: u8 = 0x08;
+    pub const FENCE_COMMIT: u8 = 0x09;
     pub const RESP_HEADER: u8 = 0x10;
     pub const PUSH_RESULT: u8 = 0x11;
     pub const SUB_START: u8 = 0x12;
@@ -47,6 +48,7 @@ pub mod frame_type {
     pub const UNIT_EXTENT: u8 = 0x1E;
     pub const ERROR: u8 = 0x1F;
     pub const KEEPALIVE: u8 = 0x30;
+    pub const COMMIT_FENCED: u8 = 0x31;
 
     pub const REQUEST_TYPES: &[u8] = &[
         REQ_HEADER,
@@ -57,6 +59,7 @@ pub mod frame_type {
         PROGRESS,
         RESTRICT,
         ADOPT_EPOCH,
+        FENCE_COMMIT,
     ];
     pub const RESPONSE_TYPES: &[u8] = &[
         RESP_HEADER,
@@ -73,6 +76,7 @@ pub mod frame_type {
         UNIT_EXTENT,
         ERROR,
         KEEPALIVE,
+        COMMIT_FENCED,
     ];
 }
 
@@ -340,6 +344,9 @@ pub enum Frame {
         /// The tables to bootstrap: non-empty, unique, ascending code-unit order.
         tables: Vec<String>,
     },
+    /// §6.12: fence a commit this client may have pushed. A request that
+    /// carries one holds only `REQ_HEADER` and `FENCE_COMMIT` frames.
+    FenceCommit { client_commit_id: String },
     RespHeader {
         required_schema_version: Option<i32>,
         latest_schema_version: Option<i32>,
@@ -365,6 +372,8 @@ pub enum Frame {
         client_commit_id: String,
         entries: Vec<PushResultDetail>,
     },
+    /// §6.12: the server will never apply `client_commit_id`.
+    CommitFenced { client_commit_id: String },
     SubStart {
         id: String,
         status: SubStatus,

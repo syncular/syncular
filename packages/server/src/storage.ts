@@ -411,9 +411,13 @@ export interface PrunedReactionCounts {
   readonly deadLetter: number;
 }
 
-/** Persisted push outcome for idempotent replay (§2.3, §6.3). */
+/**
+ * Persisted push outcome for idempotent replay (§2.3, §6.3). A `fenced`
+ * record (§6.12) carries no `commitSeq` and no results: the server never
+ * applies its commit, and no watermark deletes it.
+ */
 export interface StoredPushResult {
-  readonly status: 'applied' | 'rejected';
+  readonly status: 'applied' | 'rejected' | 'fenced';
   /** Present iff `status` is `applied`. */
   readonly commitSeq?: number;
   /** Host clock when this terminal idempotency outcome was first recorded. */
@@ -591,7 +595,7 @@ export function pushResultToJson(result: StoredPushResult): unknown {
 
 export function pushResultFromJson(value: unknown): StoredPushResult {
   const parsed = value as {
-    status: 'applied' | 'rejected';
+    status: StoredPushResult['status'];
     commitSeq?: number;
     recordedAtMs?: number;
     cacheIdentity?: string;
@@ -1294,7 +1298,7 @@ export interface ServerStorage {
   ): Promise<PartitionTouch>;
   /**
    * Rotate log continuity after restore and delete the partition's client
-   * records. Watermark rows stay (§6.3.2).
+   * records and fenced records (§6.12). Watermark rows stay (§6.3.2).
    */
   rotatePartitionLogEpoch(
     partition: string,

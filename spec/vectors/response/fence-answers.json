@@ -1,0 +1,54 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 4,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
+    },
+    {
+      "type": "COMMIT_FENCED",
+      "clientCommitId": "c-0001"
+    },
+    {
+      "type": "PUSH_RESULT",
+      "clientCommitId": "c-0002",
+      "status": "cached",
+      "commitSeq": 58,
+      "results": [
+        {
+          "opIndex": 0,
+          "status": "applied"
+        }
+      ]
+    },
+    {
+      "type": "PUSH_RESULT",
+      "clientCommitId": "c-0003",
+      "status": "rejected",
+      "results": [
+        {
+          "opIndex": 0,
+          "status": "error",
+          "code": "sync.constraint_violation",
+          "message": "write violates a relational constraint",
+          "retryable": false
+        }
+      ]
+    },
+    {
+      "type": "PUSH_RESULT_DETAILS",
+      "clientCommitId": "c-0003",
+      "entries": [
+        {
+          "opIndex": 0,
+          "details": {
+            "reason": "unique"
+          }
+        }
+      ]
+    }
+  ]
+}

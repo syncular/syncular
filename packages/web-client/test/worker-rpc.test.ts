@@ -1511,6 +1511,41 @@ test('remote worker refuses local authority before opening storage and omits its
   await handle.close();
 });
 
+test('the worker replaces a pending commit under the id the page minted (§7.2.3)', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'pending-replacement',
+    autoSync: false,
+    multiTab: false,
+    transportGate: 'closed',
+  });
+  const id = await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'first') },
+  ]);
+  const replacement = await handle.replacePendingCommit(id, [
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'second') },
+  ]);
+  expect(
+    await handle.replacePendingCommit(
+      id,
+      [
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('t1', 'p1', 'second'),
+        },
+      ],
+      replacement,
+    ),
+  ).toBe(replacement);
+  expect((await handle.pendingCommits()).map((c) => c.clientCommitId)).toEqual([
+    replacement,
+  ]);
+  expect(outcomeOf(await handle.commitDelivery(id))).toMatchObject({
+    status: 'replaced',
+    replacementClientCommitId: replacement,
+  });
+});
+
 test('ordinary worker rejects authority declarations before opening storage', async () => {
   await expectRejectsWithCode(
     createSyncClientHandle({

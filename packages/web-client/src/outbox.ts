@@ -89,6 +89,8 @@ export function appendOutboxCommit(
   operations: readonly OutboxOperation[],
   nowMs: number,
   beforeImages: readonly OutboxBeforeImage[] = [],
+  /** §7.2.3: a replacement takes the outbox position of the commit it replaces. */
+  seq?: number,
 ): void {
   if (operations.length === 0) {
     throw new ClientSyncError(
@@ -97,8 +99,8 @@ export function appendOutboxCommit(
     );
   }
   db.exec(
-    `INSERT INTO ${OUTBOX_TABLE}(client_commit_id,created_at_ms,operations)VALUES(?,?,?)`,
-    [clientCommitId, nowMs, JSON.stringify(operations)],
+    `INSERT INTO ${OUTBOX_TABLE}(seq,client_commit_id,created_at_ms,operations,attempted)VALUES(?,?,?,?,0)`,
+    [seq ?? null, clientCommitId, nowMs, JSON.stringify(operations)],
   );
   replaceOutboxBeforeImages(db, { clientCommitId, operations }, beforeImages);
 }

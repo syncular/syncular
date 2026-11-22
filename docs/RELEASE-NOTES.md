@@ -39,6 +39,23 @@ other parameters now compile and report coverage on that unit.
 
 [Authority evidence before activation](https://syncular.dev/platform-tauri-specifics/#authority-evidence-before-activation)
 
+### Replace a commit before it is pushed
+
+`replacePendingCommit(clientCommitId, operations)` swaps a pending commit's
+operations in place, keeps its outbox position and base versions, re-derives
+later commits, and journals the original as `replaced` with the new id. A
+durable send-attempt marker tells whether the commit may have reached the
+server. An attempted commit is first fenced with the new `FENCE_COMMIT`
+frame: the server either guarantees it never applies the original, or answers
+with the original's stored result, which the client processes and reports as
+`client.commit_settled`. A later push of a fenced id is refused with
+`sync.commit_fenced`. Create the client in `transportGate: 'pull'` while
+decisions are open. The TypeScript implementation is the opt-in entry
+`@syncular/client/pending-commit-replacement`; the Rust core includes it
+(SPEC §6.12, §7.2.3).
+
+[Replace a pending commit](https://syncular.dev/reference-outbox-outcomes/#replace-a-pending-commit)
+
 ### Upgrading
 
 - `transportEnabled: false` becomes `transportGate: 'closed'` on the direct
@@ -60,6 +77,11 @@ other parameters now compile and report coverage on that unit.
   `defineAuthorityReads`, and call `authorityRead` with one request per scope
   value. `snapshot.complete` becomes the conjunction of the results'
   `complete`, and `hasLocalIntent` and `localIntentRowIds` have no replacement.
+- The client adds a send-attempt marker to the outbox and rebuilds the outcome
+  journal once at open, so the journal admits `replaced`. Commits queued before
+  the upgrade count as attempted. Fencing needs a 0.102.0 server: an older
+  server refuses the fence request, and the replacement fails without changing
+  the commit.
 - Coverage entries carry their table: `querySnapshot` and `snapshotRead` take
   `{ table, base, units }`. Regenerate the queries file; hand-written coverage
   adds `table`.

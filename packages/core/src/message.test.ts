@@ -2,15 +2,22 @@ import { describe, expect, it } from 'bun:test';
 import {
   ByteWriter,
   DecodeError,
+  decodeFenceRequest,
+  decodeFenceResponse,
   decodeMessage,
   decodeRequest,
   decodeResponse,
+  encodeFenceRequest,
+  encodeFenceResponse,
   encodeMessage,
+  type FenceAnswer,
   FrameType,
   type PullHeaderFrame,
   type PushResultDetailsFrame,
   type PushResultFrame,
+  type ReqHeaderFrame,
   type RequestMessage,
+  type RespHeaderFrame,
   type ResponseMessage,
   utf8Encode,
 } from './index';
@@ -1209,6 +1216,169 @@ describe('KEEPALIVE (SPEC.md §1.6)', () => {
     };
     expect(() => encodeMessage(late)).toThrow(
       'KEEPALIVE frame after the response body began',
+    );
+  });
+});
+
+describe('fences (SPEC.md §6.12)', () => {
+  const header: ReqHeaderFrame = {
+    type: 'REQ_HEADER',
+    clientId: 'client-a',
+    schemaVersion: 1,
+    logEpoch: 'epoch-test',
+    outboxId: 'outbox-a',
+  };
+  const resp: RespHeaderFrame = {
+    type: 'RESP_HEADER',
+    latestSchemaVersion: 1,
+    logEpoch: 'epoch-test',
+    resetRequired: false,
+  };
+  const rejected: PushResultFrame = {
+    type: 'PUSH_RESULT',
+    clientCommitId: 'c-2',
+    status: 'rejected',
+    results: [
+      {
+        opIndex: 0,
+        status: 'error',
+        code: 'sync.constraint_violation',
+        message: 'write violates a relational constraint',
+        retryable: false,
+      },
+    ],
+  };
+  const answers: FenceAnswer[] = [
+    { type: 'COMMIT_FENCED', clientCommitId: 'c-1' },
+    {
+      type: 'PUSH_RESULT',
+      result: rejected,
+      details: {
+        type: 'PUSH_RESULT_DETAILS',
+        clientCommitId: 'c-2',
+        entries: [{ opIndex: 0, details: { reason: 'unique' } }],
+      },
+    },
+    {
+      type: 'PUSH_RESULT',
+      result: {
+        type: 'PUSH_RESULT',
+        clientCommitId: 'c-3',
+        status: 'cached',
+        commitSeq: 7,
+        results: [{ opIndex: 0, status: 'applied' }],
+      },
+    },
+  ];
+
+  it('round-trips a fence request; other requests decode as no fence', () => {
+    const bytes = encodeFenceRequest(header, ['c-1', 'c-2']);
+    expect(decodeFenceRequest(bytes)).toEqual({
+      wireVersion: 4,
+      header,
+      clientCommitIds: ['c-1', 'c-2'],
+    });
+    expect(
+      decodeFenceRequest(
+        encodeMessage({
+          wireVersion: 4,
+          msgKind: 'request',
+          frames: [header, pull],
+        }),
+      ),
+    ).toBeUndefined();
+    expect(() => encodeFenceRequest(header, [])).toThrow();
+    expect(() => encodeFenceRequest(header, [''])).toThrow();
+  });
+
+  it('the general request decoder refuses a fence-only request', () => {
+    expectDecodeError(() => decodeRequest(encodeFenceRequest(header, ['c-1'])));
+  });
+
+  it('refuses a fence mixed with any other frame', () => {
+    const fence = { type: 0x09, build: (p: ByteWriter) => p.str('c-1') };
+    for (const frames of [
+      [reqHeader, fence, pullHeader],
+      [reqHeader, pullHeader, fence],
+      [
+        reqHeader,
+        { type: 0x05, build: (p: ByteWriter) => p.str('sync.x') },
+        fence,
+      ],
+      [reqHeader, fence, { type: 0x7e, build: () => {} }],
+      [reqHeader, { type: 0x09, build: (p: ByteWriter) => p.str('') }],
+      [fence],
+    ]) {
+      expectDecodeError(() => decodeFenceRequest(envelope(1, frames)));
+    }
+  });
+
+  it('round-trips a fence response and ordinary clients skip COMMIT_FENCED', () => {
+    const bytes = encodeFenceResponse(resp, answers);
+    const decoded = decodeFenceResponse(bytes, ['c-1', 'c-2', 'c-3']);
+    expect(decoded).toEqual({ header: resp, answers });
+    expect(encodeFenceResponse(decoded.header, decoded.answers)).toEqual(bytes);
+    const ordinary = decodeResponse(bytes).frames;
+    expect(ordinary[1]).toMatchObject({ type: 'UNKNOWN', frameType: 0x31 });
+  });
+
+  it('answers a header-only reset, a schema floor and an ERROR', () => {
+    const reset = { ...resp, resetRequired: true };
+    expect(
+      decodeFenceResponse(encodeFenceResponse(reset, []), ['c-1']),
+    ).toEqual({ header: reset, answers: [] });
+    const floor = { ...resp, requiredSchemaVersion: 2 };
+    expect(
+      decodeFenceResponse(encodeFenceResponse(floor, []), ['c-1']).answers,
+    ).toEqual([]);
+    const error = {
+      type: 'ERROR' as const,
+      code: 'sync.invalid_request',
+      message: 'request must contain PUSH_COMMIT or PULL_HEADER frames',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    };
+    expect(
+      decodeFenceResponse(
+        encodeMessage({
+          wireVersion: 4,
+          msgKind: 'response',
+          frames: [resp, error],
+        }),
+        ['c-1'],
+      ),
+    ).toEqual({ header: resp, answers: [], error });
+  });
+
+  it('refuses a missing, extra, reordered or foreign answer', () => {
+    const bytes = encodeFenceResponse(resp, answers);
+    for (const ids of [
+      ['c-1', 'c-2'],
+      ['c-1', 'c-2', 'c-3', 'c-4'],
+      ['c-2', 'c-1', 'c-3'],
+    ]) {
+      expectDecodeError(
+        () => decodeFenceResponse(bytes, ids),
+        'client.invalid_host_response',
+      );
+    }
+    const leased = encodeMessage({
+      wireVersion: 4,
+      msgKind: 'response',
+      frames: [
+        resp,
+        { type: 'LEASE', leaseId: 'lease-1', expiresAtMs: 1 },
+        rejected,
+      ],
+    });
+    expectDecodeError(
+      () => decodeFenceResponse(leased, ['c-2']),
+      'client.invalid_host_response',
+    );
+    expectDecodeError(
+      () => decodeFenceResponse(new Uint8Array([1, 2, 3]), []),
+      'client.invalid_host_response',
     );
   });
 });

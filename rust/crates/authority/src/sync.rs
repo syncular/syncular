@@ -14,7 +14,7 @@ use ssp2::primitives::RawJson;
 use ssp2::segment::{encode_rows_segment, RowsSegment, SegmentRow};
 use ssp2::{decode_message, encode_message, UnitEcho};
 
-use crate::push::process_commit;
+use crate::push::{fence_commit, process_commit};
 use crate::schema::{Schema, Table};
 use crate::store;
 use crate::AuthorityError;
@@ -552,6 +552,7 @@ fn respond(
     };
     let mut round_failure = None;
     let mut pushes = Vec::new();
+    let mut fences = Vec::new();
     let mut pull_header = None;
     let mut unit_frames = Vec::new();
     let mut progress_frames = Vec::new();
@@ -563,6 +564,7 @@ fn respond(
                 client_seq,
                 operations,
             } => pushes.push((client_commit_id.as_str(), *client_seq, operations)),
+            Frame::FenceCommit { client_commit_id } => fences.push(client_commit_id.as_str()),
             Frame::PullHeader { .. } => pull_header = Some(frame),
             Frame::Unit { scopes } => unit_frames.push(scopes.as_slice()),
             Frame::Progress {
@@ -586,10 +588,10 @@ fn respond(
             _ => {}
         }
     }
-    if log_epoch.is_none() && !pushes.is_empty() {
+    if log_epoch.is_none() && (!pushes.is_empty() || !fences.is_empty()) {
         return Err(AuthorityError::new(
             "sync.invalid_request",
-            "epoch acquisition requests must not carry push commits (§2.1)",
+            "epoch acquisition requests must not carry push commits or fences (§2.1)",
         ));
     }
     let adopt = message.frames.contains(&Frame::AdoptEpoch);
@@ -806,6 +808,11 @@ fn respond(
             now,
             cascade_cap,
         )?);
+    }
+    // §6.12: a fence request answers each fence in frame order; the decoder
+    // admits no other work frame beside them.
+    for client_commit_id in fences {
+        frames.extend(fence_commit(conn, schema, client_id, client_commit_id)?);
     }
     let keep_outcome = round_failure.is_some();
     let Some(Frame::PullHeader {

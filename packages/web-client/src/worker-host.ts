@@ -856,6 +856,19 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     ]);
   }
 
+  /** §7.2.3: the page mints the replacement id, so a retry is idempotent. */
+  replacePendingCommit(
+    clientCommitId: string,
+    operations: readonly MutationInput[],
+    replacementClientCommitId: string = crypto.randomUUID(),
+  ): Promise<string> {
+    return this.#call('replacePendingCommit', [
+      clientCommitId,
+      operations,
+      replacementClientCommitId,
+    ]);
+  }
+
   /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */
   pendingCommits(): Promise<OutboxCommit[]> {
     return this.#call('pendingCommits', []);

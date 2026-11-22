@@ -93,7 +93,8 @@ pub use api::{
 pub use client::ProjectionInput;
 pub use client::{
     authority_read_set, validate_authority_reads, CurrentBasePreparation, FileQuerySnapshotReader,
-    SnapshotReadRequest, SnapshotStatement, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE,
+    PreparedFenceRound, SnapshotReadRequest, SnapshotStatement, SyncClient,
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
 };
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{

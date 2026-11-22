@@ -1171,6 +1171,31 @@ pub fn dispatch<T: Transport>(
                 "effects": CommandEffects::interactive()
             }))
         }
+        "replacePendingCommit" => {
+            let id = params
+                .get("clientCommitId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    client_err("sync.invalid_request: clientCommitId must be a string".to_owned())
+                })?;
+            let replacement = params
+                .get("replacementClientCommitId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: replacementClientCommitId must be a string"
+                            .to_owned(),
+                    )
+                })?;
+            let mutations = parse_mutations(params.get("operations")).map_err(client_err)?;
+            let id = need_client(client)?
+                .replace_pending_commit(transport, id, mutations, replacement)
+                .map_err(CommandError::from_client)?;
+            Ok(json!({
+                "clientCommitId": id,
+                "effects": CommandEffects::interactive()
+            }))
+        }
         "patch" => {
             let table = params
                 .get("table")
@@ -1811,7 +1836,10 @@ pub fn dispatch<T: Transport>(
     if client.as_ref().is_some_and(|running| {
         running.transport_gate() == TransportGate::Closed
             || (running.transport_gate() == TransportGate::Pull
-                && matches!(method, "mutate" | "patch" | "replaceCommitOutcome"))
+                && matches!(
+                    method,
+                    "mutate" | "patch" | "replaceCommitOutcome" | "replacePendingCommit"
+                ))
     }) {
         if let Ok(value) = &mut result {
             if let Some(effects) = value.get_mut("effects").and_then(Value::as_object_mut) {
@@ -2552,6 +2580,87 @@ mod tests {
         )
         .expect_err("mutation must be gated");
         assert_eq!(blocked.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        let blocked = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "replacePendingCommit",
+            &json!({ "clientCommitId": "a", "operations": [], "replacementClientCommitId": "b" }),
+        )
+        .expect_err("a pending-commit replacement must be gated");
+        assert_eq!(blocked.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    #[test]
+    fn replace_pending_commit_replaces_a_never_sent_commit_without_transport() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "primaryKey": "id",
+                "scopes": []
+            }]
+        });
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let mut call = |method: &str, params: Value| {
+            dispatch(&mut transport, &mut client, &mut effects, method, &params)
+        };
+        call("create", json!({ "schema": schema })).expect("create");
+        let operations = json!([{
+            "op": "upsert", "table": "todos", "values": { "id": "t1", "title": "first" }
+        }]);
+        let original = call("mutate", json!({ "mutations": operations })).expect("mutate")
+            ["clientCommitId"]
+            .clone();
+        for (params, code) in [
+            (
+                json!({ "operations": [], "replacementClientCommitId": "r" }),
+                "sync.invalid_request",
+            ),
+            (
+                json!({ "clientCommitId": original, "operations": [] }),
+                "sync.invalid_request",
+            ),
+            (
+                json!({ "clientCommitId": "none", "operations": [], "replacementClientCommitId": "r" }),
+                "sync.outcome_not_found",
+            ),
+        ] {
+            let error = call("replacePendingCommit", params.clone()).expect_err("refused");
+            assert_eq!(error.code, code, "{params}");
+        }
+        let replace = json!({
+            "clientCommitId": original,
+            "operations": [{
+                "op": "upsert", "table": "todos", "values": { "id": "t1", "title": "second" }
+            }],
+            "replacementClientCommitId": "replacement-1"
+        });
+        for _ in 0..2 {
+            let replaced = call("replacePendingCommit", replace.clone()).expect("replaced");
+            assert_eq!(replaced["clientCommitId"], "replacement-1");
+        }
+        let pending = call("pendingCommitIds", Value::Null).expect("pending");
+        assert_eq!(pending["ids"], json!(["replacement-1"]));
+        let rows = call(
+            "query",
+            json!({ "sql": "SELECT title FROM todos", "params": [] }),
+        )
+        .expect("query");
+        assert_eq!(rows["rows"][0]["title"], "second");
+        let delivery =
+            call("commitDelivery", json!({ "clientCommitId": original })).expect("delivery");
+        assert_eq!(delivery["outcome"]["status"], "replaced", "{delivery}");
+        assert_eq!(
+            delivery["outcome"]["replacementClientCommitId"],
+            "replacement-1"
+        );
     }
 
     #[test]

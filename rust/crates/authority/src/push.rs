@@ -772,6 +772,120 @@ fn apply_commit(
     Ok(changes)
 }
 
+/// §6.12: the idempotency record of a fenced commit.
+const FENCED: &str = r#"{"fenced":true}"#;
+
+/// The frames that answer a commit whose idempotency record `text` exists:
+/// its replay (§2.3), or for a fenced record `COMMIT_FENCED` to a fence and
+/// the unpersisted `sync.commit_fenced` refusal to a push (§6.12).
+fn recorded_frames(
+    schema: &Schema,
+    client_id: &str,
+    client_commit_id: &str,
+    text: &str,
+    fence: bool,
+) -> Result<Vec<Frame>, AuthorityError> {
+    if text == FENCED {
+        if fence {
+            return Ok(vec![Frame::CommitFenced {
+                client_commit_id: client_commit_id.to_owned(),
+            }]);
+        }
+        return Ok(StoredResult {
+            applied: false,
+            commit_seq: None,
+            results: vec![StoredOp::Error {
+                op_index: 0,
+                code: "sync.commit_fenced".to_owned(),
+                message: "the commit is fenced and never applies (§6.12)".to_owned(),
+                retryable: false,
+                details: Some(
+                    json!({
+                        "references": {
+                            "client_commit_id": client_commit_id,
+                            "client_id": client_id,
+                        }
+                    })
+                    .to_string(),
+                ),
+            }],
+            conflict_authorization: None,
+        }
+        .frames(client_commit_id, false));
+    }
+    // §6.3: an unreadable record answers this commit with the
+    // retryable cache miss, never persisted, and never re-applies it.
+    let Ok(stored) = serde_json::from_str::<StoredResult>(text) else {
+        if fence {
+            // A fence answers a stored receipt or nothing: its request fails.
+            return Err(AuthorityError::new(
+                "sync.idempotency_cache_miss",
+                "persisted push result unreadable (§6.3)",
+            ));
+        }
+        return Ok(StoredResult {
+            applied: false,
+            commit_seq: None,
+            results: vec![StoredOp::Error {
+                op_index: 0,
+                code: "sync.idempotency_cache_miss".to_owned(),
+                message: "persisted push result unreadable (§6.3)".to_owned(),
+                retryable: true,
+                details: None,
+            }],
+            conflict_authorization: None,
+        }
+        .frames(client_commit_id, true));
+    };
+    if let Some(StoredOp::Conflict { op_index, .. }) = stored.results.first() {
+        let authorized_snapshot = stored
+            .conflict_authorization
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.schema_version == Some(schema.version)
+                    && schema
+                        .table(&snapshot.table)
+                        .is_some_and(|table| authorized(table, &snapshot.scopes))
+            });
+        if !authorized_snapshot {
+            return Ok(StoredResult {
+                applied: false,
+                commit_seq: None,
+                results: vec![StoredOp::Error {
+                    op_index: *op_index,
+                    code: "sync.forbidden".to_owned(),
+                    message: "conflict replay denied by scope authorization (§3.4)".to_owned(),
+                    retryable: false,
+                    details: None,
+                }],
+                conflict_authorization: None,
+            }
+            .frames(client_commit_id, true));
+        }
+    }
+    Ok(stored.frames(client_commit_id, true))
+}
+
+/// §6.12: fence one commit in its own transaction. With no record it writes
+/// a fenced one and answers `COMMIT_FENCED`; otherwise it answers the record.
+/// A fence appends no commit and settles no watermark.
+pub(crate) fn fence_commit(
+    conn: &Connection,
+    schema: &Schema,
+    client_id: &str,
+    client_commit_id: &str,
+) -> Result<Vec<Frame>, AuthorityError> {
+    store::transaction(conn, || {
+        if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
+            return recorded_frames(schema, client_id, client_commit_id, &text, true);
+        }
+        store::put_push_result(conn, client_id, client_commit_id, FENCED, None)?;
+        Ok(vec![Frame::CommitFenced {
+            client_commit_id: client_commit_id.to_owned(),
+        }])
+    })
+}
+
 /// Process one `PUSH_COMMIT` in its own transaction and answer its frames;
 /// the idempotency record persists with the commit's writes, a rejection
 /// with none of them. `outbox` is the request's `outboxId` and the commit's
@@ -796,52 +910,7 @@ pub(crate) fn process_commit(
             *watermark = store::settle_outbox(conn, client_id, outbox_id, commits)?;
         }
         if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
-            // §6.3: an unreadable record answers this commit with the
-            // retryable cache miss, never persisted, and never re-applies it.
-            let Ok(stored) = serde_json::from_str::<StoredResult>(&text) else {
-                return Ok(StoredResult {
-                    applied: false,
-                    commit_seq: None,
-                    results: vec![StoredOp::Error {
-                        op_index: 0,
-                        code: "sync.idempotency_cache_miss".to_owned(),
-                        message: "persisted push result unreadable (§6.3)".to_owned(),
-                        retryable: true,
-                        details: None,
-                    }],
-                    conflict_authorization: None,
-                }
-                .frames(client_commit_id, true));
-            };
-            if let Some(StoredOp::Conflict { op_index, .. }) = stored.results.first() {
-                let authorized_snapshot =
-                    stored
-                        .conflict_authorization
-                        .as_ref()
-                        .is_some_and(|snapshot| {
-                            snapshot.schema_version == Some(schema.version)
-                                && schema
-                                    .table(&snapshot.table)
-                                    .is_some_and(|table| authorized(table, &snapshot.scopes))
-                        });
-                if !authorized_snapshot {
-                    return Ok(StoredResult {
-                        applied: false,
-                        commit_seq: None,
-                        results: vec![StoredOp::Error {
-                            op_index: *op_index,
-                            code: "sync.forbidden".to_owned(),
-                            message: "conflict replay denied by scope authorization (§3.4)"
-                                .to_owned(),
-                            retryable: false,
-                            details: None,
-                        }],
-                        conflict_authorization: None,
-                    }
-                    .frames(client_commit_id, true));
-                }
-            }
-            return Ok(stored.frames(client_commit_id, true));
+            return recorded_frames(schema, client_id, client_commit_id, &text, false);
         }
         // §6.3.2 step 3: below the watermark without a retained result; the
         // refusal is never persisted.

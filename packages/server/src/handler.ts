@@ -11,6 +11,7 @@
  */
 import {
   DecodeError,
+  decodeFenceRequest,
   decodeRequest,
   echoDigest,
   type ProgressFrame,
@@ -44,6 +45,7 @@ import {
   type SyncularServerEvents,
 } from './events';
 import {
+  commitFencedFrameBytes,
   END_FRAME_BYTES,
   encodeResponseFrame,
   responseEnvelopeHeader,
@@ -104,6 +106,8 @@ interface RequestPlan {
   /** §1.5: the code this request reports for its last unseen round failure. */
   readonly roundFailure: RoundFailureFrame | undefined;
   readonly pushes: readonly PushCommitFrame[];
+  /** §6.12: the ids a fence request fences; a fence request has no push or pull. */
+  readonly fences: readonly string[];
   readonly pull: PullPlan | undefined;
   /** The client record read for the actor binding (§1.5, §4.5). */
   readonly record: ClientRecord | undefined;
@@ -194,6 +198,7 @@ async function resolveOnce(
   ctx: SyncRequestContext,
   clientId: string,
   schema: CompiledSchema,
+  issueLease: boolean,
 ): Promise<ResolveOutcome> {
   let allowed: ScopeMap | typeof RESOLVER_OUTAGE;
   try {
@@ -230,9 +235,10 @@ async function resolveOnce(
 
   validateResolvedKeys(allowed, schema);
   // §7.3.3: a successful authorized round issues/refreshes the lease
-  // (sliding window) and emits a LEASE frame — only when configured.
+  // (sliding window) and emits a LEASE frame — only when configured. A fence
+  // response carries no LEASE (§6.12).
   let leaseToEmit: LeaseRecord | undefined;
-  if (ctx.leases !== undefined) {
+  if (ctx.leases !== undefined && issueLease) {
     leaseToEmit = await ctx.leases.store.issue(
       ctx.partition,
       clientId,
@@ -248,6 +254,7 @@ async function resolveOnce(
 
 async function planRequest(
   request: RequestMessage,
+  fences: readonly string[],
   ctx: SyncRequestContext,
   schema: CompiledSchema,
   registry: PartitionRegistryEntry,
@@ -273,10 +280,10 @@ async function planRequest(
     else if (frame.type === 'PROGRESS') progressFrames.push(frame);
   }
 
-  if (header.logEpoch === undefined && pushes.length > 0) {
+  if (header.logEpoch === undefined && pushes.length + fences.length > 0) {
     throw syncError(
       'sync.invalid_request',
-      'epoch acquisition requests must not carry push commits (§2.1)',
+      'epoch acquisition requests must not carry push commits or fences (§2.1)',
     );
   }
   const adopt = request.frames.some((frame) => frame.type === 'ADOPT_EPOCH');
@@ -295,6 +302,7 @@ async function planRequest(
     header,
     roundFailure,
     pushes: [],
+    fences: [],
     pull: undefined,
     record: undefined,
     resolved: { ok: false },
@@ -462,6 +470,7 @@ async function planRequest(
     ctx,
     header.clientId,
     compileSchema(ctx.schema),
+    fences.length === 0,
   );
   const progress = new Map(progressFrames.map((frame) => [frame.id, frame]));
   return {
@@ -471,6 +480,7 @@ async function planRequest(
     header,
     roundFailure,
     pushes,
+    fences,
     pull:
       pullHeader === undefined
         ? undefined
@@ -660,45 +670,50 @@ async function* streamResponse(
     const currentSchema = compileSchema(ctx.schema);
     let acceptedThrough = 0;
     const pushed =
-      plan.pushes.length === 0
+      plan.pushes.length + plan.fences.length === 0
         ? []
         : await processPushCommitsWithTrace(
             ctx,
             currentSchema,
             plan.resolved,
             clientId,
-            plan.pushes.map((push) => {
-              // The frame names its rows before the transaction opens, so the
-              // admission read carries the commit's read-ahead. A rowId
-              // holding U+0000 is rejected per operation (§6.1) before any
-              // store reads it.
-              const targets = new Map<string, string[]>();
-              for (const op of push.operations) {
-                if (
-                  !currentSchema.tables.has(op.table) ||
-                  op.rowId.includes('\u0000')
-                ) {
-                  continue;
-                }
-                const ids = targets.get(op.table) ?? [];
-                ids.push(op.rowId);
-                targets.set(op.table, ids);
-              }
-              return {
-                clientCommitId: push.clientCommitId,
-                buildOperations: async () => push.operations,
-                ...(targets.size === 0
-                  ? {}
-                  : {
-                      targets: [...targets].map(([table, rowIds]) => ({
-                        table,
-                        rowIds,
-                      })),
-                    }),
-              };
-            }),
+            plan.fences.length > 0
+              ? plan.fences.map((clientCommitId) => ({
+                  clientCommitId,
+                  fence: true as const,
+                }))
+              : plan.pushes.map((push) => {
+                  // The frame names its rows before the transaction opens, so the
+                  // admission read carries the commit's read-ahead. A rowId
+                  // holding U+0000 is rejected per operation (§6.1) before any
+                  // store reads it.
+                  const targets = new Map<string, string[]>();
+                  for (const op of push.operations) {
+                    if (
+                      !currentSchema.tables.has(op.table) ||
+                      op.rowId.includes('\u0000')
+                    ) {
+                      continue;
+                    }
+                    const ids = targets.get(op.table) ?? [];
+                    ids.push(op.rowId);
+                    targets.set(op.table, ids);
+                  }
+                  return {
+                    clientCommitId: push.clientCommitId,
+                    buildOperations: async () => push.operations,
+                    ...(targets.size === 0
+                      ? {}
+                      : {
+                          targets: [...targets].map(([table, rowIds]) => ({
+                            table,
+                            rowIds,
+                          })),
+                        }),
+                  };
+                }),
             schema,
-            outboxId === undefined
+            outboxId === undefined || plan.pushes.length === 0
               ? undefined
               : {
                   outboxId,
@@ -708,8 +723,13 @@ async function* streamResponse(
                   })),
                 },
           );
-    for (const [index, push] of plan.pushes.entries()) {
-      const processed = pushed[index]!;
+    for (const [index, processed] of pushed.entries()) {
+      // §6.12: a fence request answers each fence in frame order.
+      const push = plan.pushes[index];
+      if (push === undefined && processed.fenced) {
+        yield commitFencedFrameBytes(processed.frame.clientCommitId);
+        continue;
+      }
       acceptedThrough = Math.max(
         acceptedThrough,
         processed.frame.commitSeq ?? 0,
@@ -720,26 +740,30 @@ async function* streamResponse(
           if (result.status !== 'conflict' || schema === currentSchema) {
             return result;
           }
-          const operation = push.operations[result.opIndex];
+          // A fence names no operation; its stored conflict names the table.
+          const table =
+            push === undefined
+              ? processed.conflictTable
+              : push.operations[result.opIndex]?.table;
           // §2.3: a replay returns the persisted result without rebuilding
           // operations, so a reused clientCommitId with changed operations
           // leaves no table to project the stored conflict row through.
-          if (operation === undefined) {
+          if (table === undefined) {
             throw syncError(
               'sync.invalid_request',
               'replayed clientCommitId carries changed operations',
               JSON.stringify({
-                clientCommitId: push.clientCommitId,
+                clientCommitId: processed.frame.clientCommitId,
                 opIndex: result.opIndex,
               }),
             );
           }
-          const target = schema.tables.get(operation.table)!;
+          const target = schema.tables.get(table)!;
           const bitmapBytes = Math.ceil(target.columns.length / 8);
           return {
             ...result,
             serverRow: projectRowPayload(
-              currentSchema.tables.get(operation.table)!,
+              currentSchema.tables.get(table)!,
               target,
               result.serverRow,
             ),
@@ -753,7 +777,7 @@ async function* streamResponse(
           };
         }),
       };
-      if (events !== undefined) {
+      if (events !== undefined && push !== undefined) {
         emitPushEvent(events, ctx, clientId, push, processed);
       }
       yield encodeResponseFrame(frame, plan.wireVersion);
@@ -1459,7 +1483,8 @@ export async function createSyncResponseStream(
 /** The `REQ_HEADER` clientId of a request that failed before planning. */
 function requestClientId(bytes: Uint8Array): string | undefined {
   try {
-    const header = decodeRequest(bytes).frames[0];
+    const header =
+      decodeFenceRequest(bytes)?.header ?? decodeRequest(bytes).frames[0];
     return header?.type === 'REQ_HEADER' ? header.clientId : undefined;
   } catch {
     return undefined;
@@ -1525,8 +1550,19 @@ async function createStreamCore(
   startedAtMs = 0,
 ): Promise<SyncResponseStream> {
   let request: RequestMessage;
+  let fences: readonly string[] = [];
   try {
-    request = decodeRequest(bytes);
+    // §6.12: a fence request carries no other work frame.
+    const fence = decodeFenceRequest(bytes);
+    request =
+      fence === undefined
+        ? decodeRequest(bytes)
+        : {
+            wireVersion: fence.wireVersion,
+            msgKind: 'request',
+            frames: [fence.header],
+          };
+    fences = fence?.clientCommitIds ?? [];
   } catch (error) {
     if (error instanceof DecodeError) {
       throw syncError(error.code, error.message);
@@ -1570,7 +1606,7 @@ async function createStreamCore(
       candidate.version === header.schemaVersion,
   );
   const served = selected ?? schema;
-  const plan = await planRequest(request, ctx, served, registry);
+  const plan = await planRequest(request, fences, ctx, served, registry);
   // §1.5/§4.5: record the reported round failure on the existing record
   // before the round runs (it never creates one, never touches another
   // actor's record). The completion of this round leaves it in place.

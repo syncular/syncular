@@ -2115,6 +2115,38 @@ test('Tauri bridge forwards a decision against an outcome as one command', async
   ]);
 });
 
+test('Tauri bridge forwards a pending-commit replacement with the page-minted id', async () => {
+  const commands: unknown[] = [];
+  const { tauri } = makeTauri((cmd, args) => {
+    const command = args.command as { method?: string; params?: unknown };
+    if (command?.method === 'replacePendingCommit') {
+      commands.push(command.params);
+      return OK({ clientCommitId: 'r1' });
+    }
+    return defaultResponder(cmd, args);
+  });
+  const client = await createRemoteTauriSyncClient({
+    schema: { version: 1, tables: [] },
+    tauri,
+  });
+  const operations = [
+    { table: 'notes', op: 'patch' as const, values: { id: 'n1' } },
+  ];
+  expect(await client.replacePendingCommit('c1', operations, 'r1')).toBe('r1');
+  await client.replacePendingCommit('c1', operations);
+  expect(commands[0]).toEqual({
+    clientCommitId: 'c1',
+    operations,
+    replacementClientCommitId: 'r1',
+  });
+  expect(commands[1]).toMatchObject({ clientCommitId: 'c1', operations });
+  expect(
+    (commands[1] as { replacementClientCommitId: string })
+      .replacementClientCommitId,
+  ).toMatch(/^[0-9a-f-]{36}$/);
+  await client.close();
+});
+
 test('authority-enabled Tauri bridge still exposes its state during preflight', async () => {
   const { tauri } = makeTauri((cmd, args) => {
     const method = (args.command as { method?: string } | undefined)?.method;

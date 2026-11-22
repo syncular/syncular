@@ -109,6 +109,12 @@
       "bin": "realtime-delta.bin",
       "json": "realtime-delta.json",
       "covers": "A delta: LIVE_START, one COMMIT spanning three tables, LIVE_END with throughSeq = its commitSeq and an empty echoDigest (§8.2)"
+    },
+    {
+      "name": "fence-answers",
+      "bin": "fence-answers.bin",
+      "json": "fence-answers.json",
+      "covers": "Fence answers in frame order (§6.12): COMMIT_FENCED, the cached receipt of an applied commit, a rejected receipt with its PUSH_RESULT_DETAILS"
     }
   ],
   "invalid": [

@@ -18,6 +18,7 @@
  */
 import {
   DecodeError,
+  decodeFenceRequest,
   decodeRequest,
   encodeResponse,
   encodePresenceError,
@@ -691,7 +692,9 @@ export class RealtimeSession {
       try {
         // §8.7: the round's clientId must match the connection's —
         // registration identity would otherwise be ambiguous.
-        const header = decodeRequest(requestBytes).frames[0];
+        const header =
+          decodeFenceRequest(requestBytes)?.header ??
+          decodeRequest(requestBytes).frames[0];
         if (header?.type !== 'REQ_HEADER') {
           throw syncError('sync.invalid_request', 'expected a request message');
         }

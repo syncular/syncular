@@ -1219,6 +1219,20 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     return result.clientCommitId;
   }
 
+  /** §7.2.3: the page mints the replacement id, so a retry is idempotent. */
+  async replacePendingCommit(
+    clientCommitId: string,
+    operations: readonly MutationInput[],
+    replacementClientCommitId: string = crypto.randomUUID(),
+  ): Promise<string> {
+    const result = (await this.command('replacePendingCommit', {
+      clientCommitId,
+      operations: encodeValue(operations),
+      replacementClientCommitId,
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
   async pendingCommits(): Promise<OutboxCommit[]> {
     const result = (await this.command('pendingCommits', {})) as {
       commits: OutboxCommit[];

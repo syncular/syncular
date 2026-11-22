@@ -7,6 +7,7 @@
 
 import { compileLocalProjections } from '@syncular/client/projections';
 import { defineAuthorityReads } from '@syncular/client/authority';
+import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -172,6 +173,9 @@ function driverOutcome(outcome: CommitOutcome): DriverCommitOutcome {
     clientCommitId: outcome.clientCommitId,
     status: outcome.status,
     resolution: outcome.resolution,
+    ...(outcome.replacementClientCommitId !== undefined
+      ? { replacementClientCommitId: outcome.replacementClientCommitId }
+      : {}),
     results: outcome.results.map((result) => {
       if (result.status === 'applied')
         return { status: 'applied' as const, opIndex: result.opIndex };
@@ -440,6 +444,7 @@ async function constructClient(
     database: db,
     schema: toClientSchema(schema),
     createProjections: compileLocalProjections,
+    pendingCommitReplacement: definePendingCommitReplacement(),
     clientId: options.clientId,
     ...(options.authorityReads !== undefined
       ? { authorityReads: defineAuthorityReads(options.authorityReads) }
@@ -555,6 +560,34 @@ function createClientDatabase(options: ClientCreateOptions): {
     db: new BunClientDatabase(join(dir, 'replica.db')),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+/** Driver mutations in the client's §7.1 host form. */
+function mutationInputs(mutations: readonly ClientMutation[]): MutationInput[] {
+  return mutations.map((mutation) => {
+    if (mutation.op === 'delete') {
+      return {
+        table: mutation.table,
+        op: 'delete',
+        rowId: mutation.rowId,
+        ...(mutation.baseVersion !== undefined
+          ? { baseVersion: mutation.baseVersion }
+          : {}),
+      };
+    }
+    // Driver values pass through unchanged: the client owns the §7.1 host
+    // form (`{$bytes}` envelopes included), so a malformed envelope is
+    // classified by the client instead of being normalized away here.
+    const values: Record<string, unknown> = { ...mutation.values };
+    return {
+      table: mutation.table,
+      op: mutation.op,
+      values,
+      ...(mutation.baseVersion !== undefined
+        ? { baseVersion: mutation.baseVersion }
+        : {}),
+    };
+  });
 }
 
 class TsClientInstance implements ClientInstance {
@@ -689,33 +722,22 @@ class TsClientInstance implements ClientInstance {
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
-    const inputs: MutationInput[] = mutations.map((mutation) => {
-      if (mutation.op === 'delete') {
-        return {
-          table: mutation.table,
-          op: 'delete',
-          rowId: mutation.rowId,
-          ...(mutation.baseVersion !== undefined
-            ? { baseVersion: mutation.baseVersion }
-            : {}),
-        };
-      }
-      // Driver values pass through unchanged: the client owns the §7.1 host
-      // form (`{$bytes}` envelopes included), so a malformed envelope is
-      // classified by the client instead of being normalized away here.
-      const values: Record<string, unknown> = { ...mutation.values };
-      return {
-        table: mutation.table,
-        op: mutation.op,
-        values,
-        ...(mutation.baseVersion !== undefined
-          ? { baseVersion: mutation.baseVersion }
-          : {}),
-      };
-    });
+    const inputs = mutationInputs(mutations);
     const result = this.#client.mutateCommand(inputs);
     this.#intents.push(result.effects.sync);
     return result.value;
+  }
+
+  async replacePendingCommit(
+    clientCommitId: string,
+    mutations: readonly ClientMutation[],
+    replacementClientCommitId: string,
+  ): Promise<string> {
+    return this.#client.replacePendingCommit(
+      clientCommitId,
+      mutationInputs(mutations),
+      replacementClientCommitId,
+    );
   }
 
   async patch(

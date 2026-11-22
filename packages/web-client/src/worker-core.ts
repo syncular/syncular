@@ -16,6 +16,7 @@
 import { definedObject } from '@syncular/core';
 import type { compileLocalProjections } from './projection';
 import type { defineAuthorityReads } from './authority';
+import type { definePendingCommitReplacement } from './pending-commit-replacement';
 import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
@@ -70,6 +71,8 @@ export interface SyncWorkerOverrides {
   /** Explicit authority reader factory. Required when init declares authorityReads. */
   readonly createAuthorityReads?: typeof defineAuthorityReads;
   readonly createProjections?: typeof compileLocalProjections;
+  /** §7.2.3: enables `replacePendingCommit` in this worker. */
+  readonly createPendingCommitReplacement?: typeof definePendingCommitReplacement;
   /** Database factory indirection: tests inject bun:sqlite here. */
   readonly openDatabase?: (
     config: WorkerInitConfig,
@@ -451,6 +454,7 @@ export function startSyncWorkerCore(
         realtimeHeartbeatMs: config.realtimeHeartbeatMs,
         encryption: config.encryption,
         createProjections: overrides.createProjections,
+        pendingCommitReplacement: overrides.createPendingCommitReplacement?.(),
         authorityReads:
           config.authorityReads &&
           overrides.createAuthorityReads!(config.authorityReads),
@@ -546,6 +550,7 @@ export function startSyncWorkerCore(
     'resolveCommitOutcome',
     'commitDelivery',
     'replaceCommitOutcome',
+    'replacePendingCommit',
     'pendingCommits',
     'units',
     'unit',

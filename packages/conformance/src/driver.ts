@@ -998,8 +998,9 @@ export type DriverDeliveryResult =
  * and resolution are preserved. */
 export interface DriverCommitOutcome {
   readonly clientCommitId: string;
-  readonly status: 'applied' | 'cached' | 'conflict' | 'rejected';
+  readonly status: 'applied' | 'cached' | 'conflict' | 'rejected' | 'replaced';
   readonly resolution: string;
+  readonly replacementClientCommitId?: string;
   readonly results: readonly DriverDeliveryResult[];
   readonly operations?: readonly {
     readonly op: string;
@@ -1203,7 +1204,7 @@ export interface DriverAuthorityQuery {
   readonly reads: Readonly<Record<string, readonly string[]>>;
   readonly resultColumns: readonly {
     readonly name: string;
-    readonly type: string;
+    readonly type: DriverColumnType;
     readonly nullable: boolean;
   }[];
 }
@@ -1366,7 +1367,9 @@ export interface ClientInstance {
   authorityRead(
     requests: readonly {
       readonly query: string;
-      readonly params: Readonly<Record<string, DriverRowValue>>;
+      readonly params: Readonly<
+        Record<string, string | number | boolean | null>
+      >;
     }[],
   ): Promise<DriverAuthorityReadResult>;
   beginSecurityPreflight(): Promise<void>;
@@ -1502,6 +1505,12 @@ export interface ClientInstance {
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
   mutate(mutations: readonly ClientMutation[]): Promise<string>;
+  /** §7.2.3: the page mints `replacementClientCommitId`. */
+  replacePendingCommit(
+    clientCommitId: string,
+    mutations: readonly ClientMutation[],
+    replacementClientCommitId: string,
+  ): Promise<string>;
   patch(
     table: string,
     rowId: string,

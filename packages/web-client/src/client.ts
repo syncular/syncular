@@ -5,6 +5,7 @@ import type {
   AuthorityReadRequest,
   AuthorityReadResult,
 } from './authority';
+import type { PendingCommitReplacement } from './pending-commit-replacement';
 import { hasUniqueIndex, pkSqlValue } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
@@ -560,6 +561,8 @@ export interface SyncClientConfig {
   readonly securityPreflight?: boolean;
   readonly authorityReads?: AuthorityReadPolicy;
   readonly createProjections?: typeof compileLocalProjections;
+  /** §7.2.3: `definePendingCommitReplacement()` enables `replacePendingCommit`. */
+  readonly pendingCommitReplacement?: PendingCommitReplacement;
   /**
    * RFC 0005 previous-version context. A feature flag, default off: when
    * absent or `enabled: false`, a schema bump behaves exactly as 0.22.0 did
@@ -3820,12 +3823,14 @@ export class SyncClient {
 
   /**
    * Append one local commit and apply it optimistically; `within` adds its
-   * own writes to the same transaction and change batch.
+   * own writes to the same transaction and change batch. §7.2.3: `replacing`
+   * rolls that commit back and records this one in its outbox position.
    */
   #appendCommit(
     clientCommitId: string,
     operations: readonly OutboxOperation[],
     within?: (batch: ChangeAccumulator) => void,
+    replacing?: OutboxCommit,
   ): void {
     // §5.11: a sealed row is read-only; a write could send NULL over
     // ciphertext this device cannot see.
@@ -3847,55 +3852,105 @@ export class SyncClient {
     }
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        appendOutboxCommit(
-          this.#db,
-          clientCommitId,
-          operations,
-          this.#now(),
-          this.#captureBeforeImages(operations),
-        );
-        for (const operation of operations) {
-          if (operation.op !== 'upsert') continue;
-          for (const column of this.#table(operation.table).columns) {
-            if (column.type !== 'blob_ref') continue;
-            const raw = operation.values?.[column.name];
-            if (typeof raw !== 'string') continue;
-            let blobId: string;
-            try {
-              blobId = parseBlobRef(raw).blobId;
-            } catch {
-              continue;
+        const append = () => {
+          appendOutboxCommit(
+            this.#db,
+            clientCommitId,
+            operations,
+            replacing?.createdAtMs ?? this.#now(),
+            this.#captureBeforeImages(operations),
+            replacing?.seq,
+          );
+          for (const operation of operations) {
+            if (operation.op !== 'upsert') continue;
+            for (const column of this.#table(operation.table).columns) {
+              if (column.type !== 'blob_ref') continue;
+              const raw = operation.values?.[column.name];
+              if (typeof raw !== 'string') continue;
+              let blobId: string;
+              try {
+                blobId = parseBlobRef(raw).blobId;
+              } catch {
+                continue;
+              }
+              this.#db.exec(
+                `INSERT OR IGNORE INTO ${BLOB_COMMIT_REFS}(commit_id,blob_id)SELECT ?,? WHERE EXISTS(SELECT 1 FROM _syncular_blobs WHERE blob_id=?)`,
+                [clientCommitId, blobId, blobId],
+              );
             }
-            this.#db.exec(
-              `INSERT OR IGNORE INTO ${BLOB_COMMIT_REFS}(commit_id,blob_id)SELECT ?,? WHERE EXISTS(SELECT 1 FROM _syncular_blobs WHERE blob_id=?)`,
-              [clientCommitId, blobId, blobId],
-            );
           }
-        }
-        try {
-          this.#applyOperationsLocally(operations, batch);
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message.includes('UNIQUE constraint failed:') &&
-            (('errno' in error && error.errno === 2067) ||
-              ('errcode' in error && error.errcode === 2067) ||
-              ('resultCode' in error &&
-                (error.resultCode === 19 || error.resultCode === 2067)))
-          ) {
-            throw new ClientSyncError(
-              'sync.constraint_violation',
-              'local write violates a unique constraint',
-            );
+          try {
+            this.#applyOperationsLocally(operations, batch);
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.includes('UNIQUE constraint failed:') &&
+              (('errno' in error && error.errno === 2067) ||
+                ('errcode' in error && error.errcode === 2067) ||
+                ('resultCode' in error &&
+                  (error.resultCode === 19 || error.resultCode === 2067)))
+            ) {
+              throw new ClientSyncError(
+                'sync.constraint_violation',
+                'local write violates a unique constraint',
+              );
+            }
+            throw error;
           }
-          throw error;
-        }
+        };
+        if (replacing)
+          this.#rollbackFailedCommit(
+            replacing,
+            batch,
+            undefined,
+            operations,
+            append,
+          );
+        else append();
         within?.(batch);
         batch.status();
       });
       this.#needsPull = true;
     });
     this.#emitSyncIntent({ kind: 'interactive' });
+  }
+
+  /**
+   * §7.2.3: replace the operations of a pending commit in its outbox
+   * position; resolves to the replacement's client commit id.
+   */
+  replacePendingCommit(
+    clientCommitId: string,
+    operations: readonly MutationInput[],
+    replacementClientCommitId: string = crypto.randomUUID(),
+  ): Promise<string> {
+    const replace = this.#config.pendingCommitReplacement;
+    if (!replace)
+      throw new ClientSyncError(
+        'client.pending_commit_replacement_unconfigured',
+        'pending commit replacement is not configured',
+      );
+    return this.#serialize(() =>
+      replace(
+        {
+          client: this,
+          now: this.#now,
+          send: (request) => this.#roundTrip(request),
+          receive: (message, commit) =>
+            this.#processResponse(message, [commit], undefined, 'delta'),
+          append: (id, mutations, within, replacing) =>
+            this.#appendCommit(
+              id,
+              this.#outboxOperations(mutations),
+              within,
+              replacing,
+            ),
+        },
+        clientCommitId,
+        operations,
+        replacementClientCommitId,
+      ),
+    );
   }
 
   /**
@@ -4936,6 +4991,11 @@ export class SyncClient {
         ...fixedFrames.slice(lead.length),
       ];
       const requestBytes = encodeRequestFrames(frames);
+      // §7.1 send attempts: committed before any byte of the request leaves.
+      if (outbox[0])
+        this.#db.exec(
+          `UPDATE ${OUTBOX_TABLE} SET attempted=1 WHERE seq IN(${outbox.map((commit) => commit.seq)})`,
+        );
       const responseBytes = await this.#roundTrip(requestBytes, signal);
       const message = decodeResponse(responseBytes);
       // §1.5: a complete, decodable response ends the report obligation.
@@ -5266,10 +5326,7 @@ export class SyncClient {
    * refuses the round with `RealtimeUnavailableError` instead of using the
    * seam (SPEC §8.8).
    */
-  #roundTrip(
-    request: Uint8Array,
-    signal: AbortSignal | undefined,
-  ): Promise<Uint8Array> {
+  #roundTrip(request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
     const socket = this.#socket;
     if (socket !== undefined && this.#realtimePolicy !== 'off') {
       return new Promise<Uint8Array>((resolve, reject) => {
@@ -7022,25 +7079,47 @@ export class SyncClient {
     upsertLocalRow(this.#db, table, values, image.syncVersion);
   }
 
+  /**
+   * §7.2 rollback; §7.2.3 passes the replacement's operations and `append`,
+   * which records the replacement where the commit stood, before later
+   * commits re-derive.
+   */
   #rollbackFailedCommit(
     commit: OutboxCommit,
     batch: ChangeAccumulator,
     classifiedFailures?: ReadonlySet<string>,
+    replacement: readonly OutboxOperation[] = [],
+    append?: () => void,
   ): void {
-    const images = listOutboxBeforeImages(this.#db, commit.clientCommitId);
-    const imageByIndex = new Map(images.map((image) => [image.opIndex, image]));
+    const imagesOf = (pending: OutboxCommit) =>
+      new Map(
+        listOutboxBeforeImages(this.#db, pending.clientCommitId).map(
+          (image) => [image.opIndex, image],
+        ),
+      );
+    const imageByIndex = imagesOf(commit);
     const complete = commit.operations.every((_, index) =>
       imageByIndex.has(index),
     );
-    const affectedKeys = new Set(commit.operations.map(rowKey));
+    const affectedKeys = new Set(
+      [...commit.operations, ...replacement].map(rowKey),
+    );
+    const later = listOutbox(this.#db, [...affectedKeys]).filter(
+      (pending) => pending.seq > commit.seq,
+    );
     if (complete) {
-      // The first operation on a row holds its pre-commit image.
+      // The first operation on a row holds its pre-commit image; a row only
+      // the replacement writes takes the image of the first later commit on it.
       const unrestored = new Set(affectedKeys);
-      commit.operations.forEach((operation, index) => {
-        const image = imageByIndex.get(index);
-        if (unrestored.delete(rowKey(operation)) && image)
-          this.#restoreBeforeImage(operation, image, batch);
-      });
+      for (const pending of [commit, ...later]) {
+        if (!unrestored.size) break;
+        const images = pending === commit ? imageByIndex : imagesOf(pending);
+        pending.operations.forEach((operation, index) => {
+          const image = images.get(index);
+          if (unrestored.delete(rowKey(operation)) && image)
+            this.#restoreBeforeImage(operation, image, batch);
+        });
+      }
     } else {
       // Pending commits written by older clients have no before-images.
       // Preserve the old fail-closed behavior rather than guessing a base.
@@ -7061,23 +7140,23 @@ export class SyncClient {
       }
     }
     deleteOutboxCommit(this.#db, commit.clientCommitId);
+    append?.();
 
     if (!complete) return;
-    for (const later of listOutbox(this.#db, [...affectedKeys])) {
-      if (later.seq <= commit.seq) continue;
-      const affectedOperations = later.operations.filter((operation) =>
+    for (const pending of later) {
+      const affectedOperations = pending.operations.filter((operation) =>
         affectedKeys.has(rowKey(operation)),
       );
       if (affectedOperations.length === 0) continue;
       replaceOutboxBeforeImages(
         this.#db,
-        later,
-        this.#captureBeforeImages(later.operations, affectedKeys),
+        pending,
+        this.#captureBeforeImages(pending.operations, affectedKeys),
       );
       // §7.4.4: a later commit the recovery already classified refused never
       // replays. Its before-image is still rebased above, so dropping it later
       // restores the same base this rollback just restored.
-      if (classifiedFailures?.has(later.clientCommitId)) continue;
+      if (classifiedFailures?.has(pending.clientCommitId)) continue;
       this.#applyOperationsLocally(affectedOperations, batch);
     }
   }

@@ -17,6 +17,8 @@ import {
   canonicalUnitJson,
   type CommitFrame,
   echoDigest,
+  encodeFenceRequest,
+  encodeFenceResponse,
   encodeMessage,
   encodeRow,
   encodeRowsSegment,
@@ -741,6 +743,42 @@ const pushCached: ResponseMessage = {
   ],
 };
 
+const fenceAnswers = encodeFenceResponse(RESP_HEADER, [
+  { type: 'COMMIT_FENCED', clientCommitId: 'c-0001' },
+  {
+    type: 'PUSH_RESULT',
+    result: {
+      type: 'PUSH_RESULT',
+      clientCommitId: 'c-0002',
+      status: 'cached',
+      commitSeq: 58,
+      results: [{ opIndex: 0, status: 'applied' }],
+    },
+  },
+  {
+    type: 'PUSH_RESULT',
+    result: {
+      type: 'PUSH_RESULT',
+      clientCommitId: 'c-0003',
+      status: 'rejected',
+      results: [
+        {
+          opIndex: 0,
+          status: 'error',
+          code: 'sync.constraint_violation',
+          message: 'write violates a relational constraint',
+          retryable: false,
+        },
+      ],
+    },
+    details: {
+      type: 'PUSH_RESULT_DETAILS',
+      clientCommitId: 'c-0003',
+      entries: [{ opIndex: 0, details: { reason: 'unique' } }],
+    },
+  },
+]);
+
 const unitRevoked: ResponseMessage = {
   wireVersion: 4,
   msgKind: 'response',
@@ -1160,6 +1198,12 @@ const rawProgress = (
     p.u8(bootstrapState === undefined ? 0 : 1);
     if (bootstrapState !== undefined) p.str(bootstrapState);
   },
+];
+
+/** §6.12: FENCE_COMMIT, whose layout the general codec does not carry. */
+const rawFenceCommit = (clientCommitId: string): RawFrame => [
+  0x09,
+  (p) => p.str(clientCommitId),
 ];
 
 const rawRoundFailure = (code: string): RawFrame => [
@@ -1838,6 +1882,22 @@ total += emitKind(
       covers:
         'A database-less producer push: no outboxId, clientSeq = 0 (§6.10)',
     },
+    {
+      name: 'fence',
+      bytes: encodeFenceRequest(
+        {
+          type: 'REQ_HEADER',
+          clientId: 'client-a',
+          schemaVersion: 2,
+          logEpoch: 'epoch-2026-07-02-a',
+          outboxId: 'outbox-7d1c',
+        },
+        ['c-0001', 'c-0002'],
+      ),
+      render: renderMessage,
+      covers:
+        'A fence request (§6.12): REQ_HEADER and two FENCE_COMMIT frames, no other frame',
+    },
   ],
   [],
   [
@@ -2103,6 +2163,32 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers: 'PUSH_COMMIT.clientSeq = -1 (§6.1: non-negative)',
     },
+    {
+      name: 'fence-mixed-push',
+      bytes: rawMessage(1, [
+        rawReqHeader('outbox-7d1c'),
+        rawFenceCommit('c-0001'),
+        rawPushCommit(1),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'FENCE_COMMIT with a PUSH_COMMIT in one request (§6.12)',
+    },
+    {
+      name: 'fence-mixed-pull',
+      bytes: rawMessage(1, [
+        rawReqHeader('outbox-7d1c'),
+        rawPullHeader(),
+        rawFenceCommit('c-0001'),
+      ]),
+      error: 'sync.invalid_request',
+      covers: 'FENCE_COMMIT after a PULL_HEADER in one request (§6.12)',
+    },
+    {
+      name: 'fence-commit-id-empty',
+      bytes: rawMessage(1, [rawReqHeader('outbox-7d1c'), rawFenceCommit('')]),
+      error: 'sync.invalid_request',
+      covers: 'FENCE_COMMIT.clientCommitId empty (§6.12)',
+    },
   ],
 );
 
@@ -2230,6 +2316,13 @@ total += emitKind(
       render: renderMessage,
       covers:
         'A delta: LIVE_START, one COMMIT spanning three tables, LIVE_END with throughSeq = its commitSeq and an empty echoDigest (§8.2)',
+    },
+    {
+      name: 'fence-answers',
+      bytes: fenceAnswers,
+      render: renderMessage,
+      covers:
+        'Fence answers in frame order (§6.12): COMMIT_FENCED, the cached receipt of an applied commit, a rejected receipt with its PUSH_RESULT_DETAILS',
     },
   ],
   [],
