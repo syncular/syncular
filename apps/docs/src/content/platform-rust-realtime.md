@@ -103,14 +103,15 @@ Applied deltas update the local tables directly, and `sync_needed()` flips when 
 
 ## Transport gate
 
-`set_transport_gate(&mut transport, TransportGate)` sets one of three states, and `transport_gate()` reads it. Call `client.set_transport_gate(&mut transport, TransportGate::Closed)` before releasing startup intents when the app has local authorization but no fresh bearer.
+`set_transport_gate(&mut transport, TransportGate)` sets one of four states and returns a `Result`, and `transport_gate()` reads it. Call `client.set_transport_gate(&mut transport, TransportGate::Closed)?` before releasing startup intents when the app has local authorization but no fresh bearer.
 
 - `Open`: rounds push the outbox and pull.
 - `Pull`: rounds pull, realtime and presence work, and no round carries a commit or uploads a staged blob. Use it while the app holds pending commits it may still replace.
+- `Through(client_commit_id)`: rounds pull as in `Pull` and push the pending commits up to and including `client_commit_id`, with the staged blobs they reference; later commits stay held. An id that is not pending fails with `sync.outcome_not_found` and leaves the gate as it was. The gate falls back to `Pull` when that commit is acknowledged, when a commit at or before it is rejected, replaced, purged or dropped, and when a request carrying the prefix gets no reply ([the transport gate](/platform-web-realtime/#transport-gate)).
 - `Closed`: new rounds, realtime connects, presence sends, and uncached blob downloads fail with `sync.offline` before the transport is invoked.
 - In every state, local queries, mutations, and staged blobs continue.
-- Moving to `Open` emits one interactive sync intent, and so does moving from `Closed` to `Pull`. Make sure the transport's header source (`HostTransport::set_header_source`) answers a fresh credential, then open the gate, and let the host scheduler drain the queued commits.
+- Moving to `Open` emits one interactive sync intent, and so do moving from `Closed` to `Pull` and setting `Through`. Make sure the transport's header source (`HostTransport::set_header_source`) answers a fresh credential, then open the gate, and let the host scheduler drain the queued commits.
 - The gate defaults to `Open` on each new core and is never persisted. Security activation, header changes, and schema resets keep its value.
-- A round whose network exchange already started finishes its captured exchange and applies it. A split-round host then calls `set_transport_gate(&mut transport, TransportGate::Closed)` again to release the socket. The core sends no returned control frames and starts no follow-up round while closed.
+- A round whose network exchange already started finishes its captured exchange and applies it. A split-round host then calls `disconnect_realtime` to release the socket. The core sends no returned control frames and starts no follow-up round while closed.
 
 Tauri implements this owner policy directly; see [Tauri](/platform-tauri/).

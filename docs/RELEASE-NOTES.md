@@ -2,6 +2,21 @@
 
 ## 0.103.0 release notes
 
+### A transport gate that pushes a verified prefix
+
+`setTransportGate({ through: clientCommitId })` pulls as `pull` does and pushes
+the pending commits up to and including `clientCommitId`, with the staged
+blobs they reference; later commits stay held. The gate falls back to `pull`
+by itself when `clientCommitId` is acknowledged, when a request carrying the
+prefix gets no response, and when a prefix commit leaves the outbox other than
+by its acknowledgement, a `replacePendingCommit` included. A commit that is not
+pending is refused with `sync.outcome_not_found`. Rust:
+`TransportGate::Through(id)`; the native command takes
+`setTransportGate { state: { through } }`. Creation still takes `closed`,
+`pull` or `open` (SPEC §8.8).
+
+[The transport gate](https://syncular.dev/platform-web-realtime/#transport-gate)
+
 ### Bootstrap extent counts read each scope variable once
 
 A fresh bootstrap pin counts the unit's rows per covered table (SPEC §4.7).
@@ -13,6 +28,17 @@ one index range per variable of the filter, index-only, and counts the rows
 that hold an entry for every variable. The count stays exact.
 
 [Server storage reference](https://syncular.dev/server-storage-reference/)
+
+### Upgrading
+
+- The forwarded `setTransportGate` takes the new state, so
+  `MULTI_TAB_PROTOCOL_VERSION` moves from 11 to 12. A tab still running an
+  older build reports `leader-incompatible` and must reload. The replica
+  storage, the server and the SSP2 wire do not change.
+- Rust: `set_transport_gate` returns `Result<(), ClientError>`, and
+  `TransportGate` is `Clone` without `Copy`. Handle the result; the three
+  string states never fail. A split-round host that set `Closed` again only to
+  release the socket calls `disconnect_realtime`.
 
 ## 0.102.0 release notes
 

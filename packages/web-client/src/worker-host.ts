@@ -206,7 +206,7 @@ export interface SyncClientHandleConfig {
   readonly authorityReads?: import('./authority').AuthorityReadPolicy;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
-  readonly transportGate?: TransportGate;
+  readonly transportGate?: Exclude<TransportGate, object>;
   /** SPEC §12: start against the worker's local authority (`WorkerInitConfig`). */
   readonly localAuthority?: boolean;
   readonly clientId?: string;

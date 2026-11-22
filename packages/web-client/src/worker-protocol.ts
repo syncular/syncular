@@ -134,7 +134,7 @@ export interface WorkerInitConfig {
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly authorityReads?: readonly import('./authority').AuthorityQuery[];
   readonly securityPreflight?: boolean;
-  readonly transportGate?: TransportGate;
+  readonly transportGate?: Exclude<TransportGate, object>;
   /**
    * SPEC §12: sync against a local authority in a sibling file until
    * `attachLocalAuthority` moves its rows to `endpoints.syncUrl`. Requires

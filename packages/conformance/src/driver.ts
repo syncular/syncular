@@ -1220,14 +1220,18 @@ export interface DriverAuthorityReadResult {
   }[];
 }
 /** SPEC §8.8 transport gate states. */
-export type DriverTransportGate = 'closed' | 'pull' | 'open';
+export type DriverTransportGate =
+  | 'closed'
+  | 'pull'
+  | 'open'
+  | { readonly through: string };
 
 export interface ClientCreateOptions {
   readonly authorityReads?: readonly DriverAuthorityQuery[];
   /** Harness-only native ceiling (SPEC §5.11); Rust pairing only. */
   readonly authorityColumns?: Readonly<Record<string, readonly string[]>>;
   readonly securityPreflight?: boolean;
-  readonly transportGate?: DriverTransportGate;
+  readonly transportGate?: Exclude<DriverTransportGate, object>;
   readonly retainFailedCommits?: boolean;
   readonly clientId: string;
   readonly schema: DriverSchema;
@@ -1638,6 +1642,7 @@ export interface ClientInstance {
   completeRound?(): Promise<ClientSyncResult>;
 
   setTransportGate(state: DriverTransportGate): Promise<void>;
+  transportGate(): Promise<DriverTransportGate>;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
   /**

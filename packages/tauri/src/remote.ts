@@ -90,7 +90,7 @@ export interface TauriSyncClientConfig extends NativeCreateConfig {
   /** Declared authority queries permitted before security activation. */
   readonly authorityReads?: AuthorityReadPolicy;
   /** SPEC §8.8 transport gate at create; default `open`. */
-  readonly transportGate?: TransportGate;
+  readonly transportGate?: Exclude<TransportGate, object>;
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in

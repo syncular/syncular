@@ -241,21 +241,40 @@ connects cannot orphan another socket.
 
 ## Transport gate
 
-The transport gate has three states: `closed`, `pull` and `open`. Direct
-clients, worker handles and the Tauri bridge accept `transportGate` at
-construction (default `open`) and expose `setTransportGate(state)`.
+The transport gate has four states: `closed`, `pull`, `open` and
+`{ through: clientCommitId }`. Direct clients, worker handles and the Tauri
+bridge accept `closed`, `pull` or `open` as `transportGate` at construction
+(default `open`) and expose `setTransportGate(state)` and `transportGate()`.
 
 - `open`: rounds push the outbox and pull.
 - `pull`: rounds pull, realtime and presence work, and no round sends a
   commit or uploads a staged blob. A local write owes no push intent, so the
   automatic host does not schedule a round for it. Create the client in `pull`
   when it holds pending commits it may still replace.
+- `{ through: clientCommitId }`: rounds pull as in `pull` and push the
+  pending commits up to and including `clientCommitId`, in outbox order, with
+  the staged blobs they reference. Commits queued after it stay held. Use it
+  to release a prefix of the outbox you have verified, for example sealed
+  edits whose signer evidence the app has checked. Setting it
+  for a commit that is not pending fails with `sync.outcome_not_found` and
+  `details.clientCommitId`, and leaves the gate as it was.
 - `closed`: new network work fails with `sync.offline`, and automatic retry
   scheduling is suspended.
 
+A `through` gate falls back to `pull` by itself when `clientCommitId` is
+acknowledged, when a request that carried a commit of the prefix gets no
+response (the commit stays pending with its attempt recorded), and when a
+commit at or before `clientCommitId` leaves the outbox other than by its
+acknowledgement: a rejection, a `replacePendingCommit`, a local purge or a
+drop. The fallback is a gate change like one the host makes. A replacement has
+a new id and is not covered, so set a new `through` for what you have
+verified again. A round already in flight finishes what it sent; the next round
+pulls.
+
 In every state, authorized SQLite reads and local writes stay available, and
 commits queue durably in order. Moving to `open` emits one interactive wake;
-moving from `closed` to `pull` emits one for the pull. An already-started
+moving from `closed` to `pull` emits one for the pull, and setting `through`
+emits one for its push. An already-started
 round finishes its atomic apply, and a gate change applies from the next round.
 On `closed`, the client closes realtime after that round and starts no
 follow-up round. The gate is independent of security preflight and starts in

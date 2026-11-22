@@ -568,6 +568,8 @@ struct Rollback {
     sync_needed: bool,
     active_round: Option<(uuid::Uuid, i64, u64)>,
     overlay_dirty: Option<BTreeSet<String>>,
+    transport_gate: crate::TransportGate,
+    transport_epoch: u64,
     change_queue: usize,
     projection_pending_queue: usize,
     sync_intent_queue: usize,
@@ -2701,34 +2703,84 @@ impl SyncClient {
     }
 
     /// Host-owned, non-persisted network gate (§8.8). Local operations remain
-    /// available.
+    /// available. `Through` names a pending commit; any other id fails with
+    /// `sync.outcome_not_found` and leaves the gate unchanged.
     pub fn set_transport_gate(
         &mut self,
         transport: &mut dyn Transport,
         state: crate::TransportGate,
-    ) {
-        use crate::TransportGate::{Closed, Open};
-        let from = self.transport_gate;
-        if from != state {
-            self.transport_gate = state;
-            self.transport_epoch = self.transport_epoch.wrapping_add(1);
+    ) -> Result<(), ClientError> {
+        if let crate::TransportGate::Through(id) = &state {
+            if !self
+                .outbox
+                .iter()
+                .any(|commit| commit.client_commit_id == *id)
+            {
+                return Err(ClientError {
+                    code: "sync.outcome_not_found".to_owned(),
+                    message: "the commit is not pending".to_owned(),
+                    details: Some(json!({ "clientCommitId": id })),
+                    retryable: false,
+                });
+            }
+        }
+        let closed = state == crate::TransportGate::Closed;
+        if self.transport_gate != state {
             self.sync_intent_queue.clear();
-            self.sync_intent_queue.push_back(
-                if state != Closed && from != Open && !self.security_preflight {
-                    SyncIntent::Interactive
-                } else {
-                    SyncIntent::None
-                },
-            );
+            self.move_transport_gate(state);
         }
         // A captured reply keeps its normal apply/revocation semantics.
-        if state == crate::TransportGate::Closed && self.active_round.is_none() {
+        if closed && self.active_round.is_none() {
             self.disconnect_realtime(transport);
+        }
+        Ok(())
+    }
+
+    /// §8.8: a gate change, set by the host or by a `through` fallback. A
+    /// change batch that rolls back restores the gate and epoch it captured.
+    fn move_transport_gate(&mut self, state: crate::TransportGate) {
+        use crate::TransportGate::{Closed, Open, Through};
+        let wake = state != Closed
+            && (self.transport_gate == Closed || matches!(state, Open | Through(_)))
+            && !self.security_preflight;
+        self.transport_gate = state;
+        self.transport_epoch = self.transport_epoch.wrapping_add(1);
+        self.sync_intent_queue.push_back(if wake {
+            SyncIntent::Interactive
+        } else {
+            SyncIntent::None
+        });
+    }
+
+    /// §8.8: how many outbox commits, from the front, a round may push.
+    fn pushable_commits(&self) -> usize {
+        match &self.transport_gate {
+            crate::TransportGate::Open => self.outbox.len(),
+            crate::TransportGate::Through(boundary) => self
+                .outbox
+                .iter()
+                .position(|commit| commit.client_commit_id == *boundary)
+                .map_or(0, |index| index + 1),
+            crate::TransportGate::Closed | crate::TransportGate::Pull => 0,
+        }
+    }
+
+    /// §8.8 through fallback: a commit of the prefix leaves the outbox other
+    /// than by its acknowledgement. Called before the in-memory removal.
+    fn leave_through(&mut self, client_commit_id: &str) {
+        if matches!(self.transport_gate, crate::TransportGate::Through(_))
+            && self
+                .outbox
+                .iter()
+                .take(self.pushable_commits())
+                .any(|commit| commit.client_commit_id == client_commit_id)
+        {
+            self.move_transport_gate(crate::TransportGate::Pull);
         }
     }
 
     pub fn transport_gate(&self) -> crate::TransportGate {
-        self.transport_gate
+        self.transport_gate.clone()
     }
 
     fn transport_closed(&self) -> bool {
@@ -3920,6 +3972,8 @@ impl SyncClient {
             sync_needed: self.sync_needed,
             active_round: self.active_round,
             overlay_dirty: self.overlay_dirty.snapshot(),
+            transport_gate: self.transport_gate.clone(),
+            transport_epoch: self.transport_epoch,
             change_queue: self.change_queue.len(),
             projection_pending_queue: self.projection_pending_queue.len(),
             sync_intent_queue: self.sync_intent_queue.len(),
@@ -3939,6 +3993,8 @@ impl SyncClient {
         self.upgrade_kept_tables = rollback.upgrade_kept_tables;
         self.sync_needed = rollback.sync_needed;
         self.active_round = rollback.active_round;
+        self.transport_gate = rollback.transport_gate;
+        self.transport_epoch = rollback.transport_epoch;
         self.overlay_dirty.restore(rollback.overlay_dirty);
         self.change_queue.truncate(rollback.change_queue);
         self.projection_pending_queue
@@ -4022,6 +4078,12 @@ impl SyncClient {
     ) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::ObservationCommit);
+        // §8.8: an acknowledged boundary ends a `through` gate.
+        if matches!(self.transport_gate, crate::TransportGate::Through(_))
+            && self.pushable_commits() == 0
+        {
+            self.move_transport_gate(crate::TransportGate::Pull);
+        }
         for table in &self.schema.tables {
             for projection in &table.local_projections {
                 if batch.tables.contains_key(&table.name)
@@ -4920,6 +4982,7 @@ impl SyncClient {
                     &results,
                     Some(&commit.ops),
                 )?;
+                self.leave_through(&commit.client_commit_id);
                 self.delete_outbox_persisted(&commit.client_commit_id)?;
                 // A removed table has no local projection to invalidate; every
                 // surviving table the dropped commit touched does.
@@ -7255,6 +7318,7 @@ impl SyncClient {
                     }],
                     representable.then_some(commit.ops.as_slice()),
                 )?;
+                self.leave_through(&commit.client_commit_id);
                 self.delete_outbox_persisted(&commit.client_commit_id)?;
                 self.outbox
                     .retain(|candidate| candidate.client_commit_id != commit.client_commit_id);
@@ -7932,6 +7996,7 @@ impl SyncClient {
                 )
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             self.persist_outbox_insert(&commit)?;
+            self.leave_through(client_commit_id);
             self.delete_outbox_persisted(client_commit_id)?;
             // §7.2.1: journaled as a purge journals its drops, decided.
             let results = (0..original.ops.len())
@@ -9100,24 +9165,17 @@ impl SyncClient {
             }
             None => 0,
         };
-        // §8.8: a `pull` round carries no commit and defers none.
-        let pushes = self.transport_gate == crate::TransportGate::Open;
-        let total_outbox = if log_epoch.is_some() && pushes {
-            self.outbox.len()
-        } else {
-            0
-        };
+        // §8.8: a `pull` round carries no commit and defers none; a `through`
+        // round pushes and defers only its prefix.
+        let pushable = self.pushable_commits();
+        let total_outbox = if log_epoch.is_some() { pushable } else { 0 };
         let mut push_frames: Vec<Frame> = Vec::new();
         let mut pushed_ids = Vec::new();
         let mut ops_in_request = 0usize;
         let mut bytes_in_request = 0usize;
         // §2.1: an epoch-less request withholds the whole outbox until the
         // next, epoch-bound request.
-        let mut deferred_commits = if pushes {
-            self.outbox.len() - total_outbox
-        } else {
-            0
-        };
+        let mut deferred_commits = pushable - total_outbox;
         // §7.2.2: a pending replacement is held; the push stops before it
         // without deferring work.
         let held: HashSet<String> = self
@@ -9582,8 +9640,11 @@ impl SyncClient {
                     recommended_action: None,
                 })
             })?;
-            let uploads = if has_log_epoch.is_some()
-                && self.transport_gate == crate::TransportGate::Open
+            let mut uploads = if has_log_epoch.is_some()
+                && matches!(
+                    self.transport_gate,
+                    crate::TransportGate::Open | crate::TransportGate::Through(_)
+                )
                 && self.schema_has_blobs()
             {
                 self.pending_blob_uploads().map_err(|e| {
@@ -9597,6 +9658,36 @@ impl SyncClient {
             } else {
                 Vec::new()
             };
+            // §8.8: a `through` round uploads only the blobs its prefix references.
+            if matches!(self.transport_gate, crate::TransportGate::Through(_)) {
+                let prefix = Value::Array(
+                    self.outbox
+                        .iter()
+                        .take(self.pushable_commits())
+                        .map(|commit| Value::String(commit.client_commit_id.clone()))
+                        .collect(),
+                );
+                let referenced = self
+                    .conn
+                    .prepare(
+                        "SELECT blob_id FROM _syncular_blob_commit_refs
+                          WHERE commit_id IN (SELECT value FROM json_each(?1))",
+                    )
+                    .and_then(|mut statement| {
+                        statement
+                            .query_map([prefix.to_string()], |row| row.get::<_, String>(0))?
+                            .collect::<Result<HashSet<_>, _>>()
+                    })
+                    .map_err(|error| {
+                        Box::new(SyncOutcome::Failed {
+                            error_code: "storage.failed".into(),
+                            message: Self::sqlite_failure(&self.storage_failure, error),
+                            details: None,
+                            recommended_action: None,
+                        })
+                    })?;
+                uploads.retain(|upload| referenced.contains(&upload.id));
+            }
             if self.realtime_state != RealtimeState::Connected
                 && self.realtime_policy == RealtimePolicy::Required
             {
@@ -9870,6 +9961,12 @@ impl SyncClient {
                     // client-local drive timeout never goes on the wire (§7.8).
                     if code != "sync.idle_timeout" && ssp2::model::valid_round_failure_code(&code) {
                         self.round_failure = Some(code.clone());
+                    }
+                    // §8.8: a prefix sent without a receipt is an uncertain delivery.
+                    if !prepared.meta.pushed_ids.is_empty()
+                        && matches!(self.transport_gate, crate::TransportGate::Through(_))
+                    {
+                        self.move_transport_gate(crate::TransportGate::Pull);
                     }
                     if transport_failed {
                         if prepared.realtime {
@@ -10966,6 +11063,7 @@ impl SyncClient {
                         } else {
                             CommitOutcomeStatus::Conflict
                         };
+                        self.leave_through(client_commit_id);
                         let persisted = self
                             .persist_commit_outcome(
                                 client_commit_id,
@@ -13046,6 +13144,7 @@ impl SyncClient {
                     &results,
                     None,
                 )?;
+                self.leave_through(&commit.client_commit_id);
                 self.delete_outbox_persisted(&commit.client_commit_id)?;
             }
             if !doomed.is_empty() {
@@ -13356,6 +13455,7 @@ impl SyncClient {
                 &results,
                 Some(&commit.ops),
             )?;
+            self.leave_through(&commit.client_commit_id);
             self.delete_outbox_persisted(&commit.client_commit_id)?;
         }
         self.prune_commit_outcomes()?;

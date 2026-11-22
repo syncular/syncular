@@ -486,7 +486,7 @@ export interface SyncClientConfig {
   /** Explicit development console registry; absent means no registration. */
   readonly devtools?: DevtoolsRegistrar;
   /** SPEC §8.8 transport gate at construction; default `open`. */
-  readonly transportGate?: TransportGate;
+  readonly transportGate?: Exclude<TransportGate, object>;
   /** Keep rejected/conflicting local intent visible until explicit resolution. */
   readonly retainFailedCommits?: boolean;
   readonly database: ClientDatabase;
@@ -592,8 +592,13 @@ export interface SyncClientConfig {
 
 /** The fail-closed local-replica security lifecycle shared by every host. */
 export type SecurityLifecycle = 'preflight' | 'active';
-/** SPEC §8.8: `pull` syncs down and sends no commit. */
-export type TransportGate = 'closed' | 'pull' | 'open';
+/** SPEC §8.8: `pull` syncs down and sends no commit; `through` also pushes
+ * the outbox up to and including one pending commit. */
+export type TransportGate =
+  | 'closed'
+  | 'pull'
+  | 'open'
+  | { readonly through: string };
 
 /** Stable client-local error while protected operations are preflight-gated. */
 /** Shared by the direct client and the native bridge. */
@@ -1027,7 +1032,9 @@ export class SyncClient {
   readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
   #securityEpoch = 0;
+  /** TRANSPORT_GATES index; 3 is `through` the outbox seq in #through. */
   #gate: number;
+  #through = 0;
   #transportEpoch = 0;
   #registrationEpoch = 0;
   /** The units of each window base's latest `setWindow` (§4.8). */
@@ -1683,14 +1690,33 @@ export class SyncClient {
   setTransportGate(state: TransportGate): void {
     this.#requireStarted();
     const from = this.#gate;
-    const to = transportGate(state);
-    if (from === to) return;
-    this.#gate = to;
+    const through = this.#through;
+    if (typeof state === 'object' && state !== null) {
+      const row = this.#db.query(
+        `SELECT seq FROM ${OUTBOX_TABLE} WHERE client_commit_id=?`,
+        [state.through],
+      )[0];
+      if (!row)
+        throw new ClientSyncError(
+          'sync.outcome_not_found',
+          'the commit is not pending',
+          false,
+          { clientCommitId: state.through },
+        );
+      this.#gate = 3;
+      this.#through = row.seq as number;
+    } else this.#gate = transportGate(state);
+    if (from !== this.#gate || through !== this.#through) this.#gateMoved(from);
+  }
+
+  /** §8.8: a gate change, set by the host or by a `through` fallback. */
+  #gateMoved(from: number): void {
+    const to = this.#gate;
     this.#transportEpoch += 1;
     this.#disarm();
     if (!to && !this.#syncOutstanding) this.disconnectRealtime();
     this.#emitSyncIntent(
-      to && from < 2 && this.#securityLifecycle === 'active'
+      to && (!from || to > 1) && this.#securityLifecycle === 'active'
         ? { kind: 'interactive' }
         : { kind: 'none' },
     );
@@ -1698,7 +1724,14 @@ export class SyncClient {
   }
 
   transportGate(): TransportGate {
-    return TRANSPORT_GATES[this.#gate]!;
+    return this.#gate > 2
+      ? {
+          through: this.#db.query(
+            `SELECT client_commit_id AS id FROM ${OUTBOX_TABLE} WHERE seq=?`,
+            [this.#through],
+          )[0]!.id as string,
+        }
+      : TRANSPORT_GATES[this.#gate]!;
   }
 
   #requireTransport(): void {
@@ -2509,6 +2542,7 @@ export class SyncClient {
     let revision: LocalRevision | undefined;
     let status: SyncStatusSnapshot | undefined;
     let result!: T;
+    const gate = this.#gate;
     try {
       this.#observedTransaction(() => {
         this.#batch = batch;
@@ -2535,9 +2569,19 @@ export class SyncClient {
       }, this.#held !== undefined);
     } catch (error) {
       this.#batch = undefined;
+      this.#gate = gate;
       onRollback?.(error);
       throw error;
     }
+    // §8.8: an acknowledged boundary ends a `through` gate.
+    if (
+      this.#gate > 2 &&
+      !this.#db.query(`SELECT 1 FROM ${OUTBOX_TABLE} WHERE seq=?`, [
+        this.#through,
+      ]).length
+    )
+      this.#gate = 1;
+    if (this.#gate !== gate) this.#gateMoved(gate);
     const publish = () => {
       const event = batch.finish(revision!, status);
       const tables = event.tables.map((entry) => entry.table);
@@ -2743,11 +2787,24 @@ export class SyncClient {
   /** Returns the ids of the commits a refused upload dropped (§5.9.7). */
   async #flushBlobUploads(
     signal: AbortSignal | undefined,
+    prefix?: readonly OutboxCommit[],
   ): Promise<ReadonlySet<string>> {
     const refused = new Set<string>();
     const transport = this.#config.blobs;
     if (transport === undefined || !this.#hasBlobs) return refused;
+    // §8.8: a `through` round uploads only the blobs its prefix references.
+    const only =
+      prefix &&
+      new Set(
+        this.#db
+          .query(
+            `SELECT blob_id FROM ${BLOB_COMMIT_REFS} WHERE commit_id IN(${prefix.map(() => '?')})`,
+            prefix.map((commit) => commit.clientCommitId),
+          )
+          .map((row) => row.blob_id),
+      );
     for (const pending of listPendingUploads(this.#db)) {
+      if (only && !only.has(pending.blobId)) continue;
       const cached = getCachedBlob(this.#db, pending.blobId);
       if (
         cached === undefined ||
@@ -4356,7 +4413,7 @@ export class SyncClient {
       value,
       effects: {
         sync: {
-          kind: this.#gate > 1 ? 'interactive' : 'none',
+          kind: this.#gate === 2 ? 'interactive' : 'none',
         },
       },
     };
@@ -4395,8 +4452,10 @@ export class SyncClient {
   }> {
     // Pin before the first encryption await: mutations can append while a
     // round is encoding, and belong to the next request.
+    // §8.8: a `through` gate bounds the push at its commit.
     const bounds = this.#db.query(
-      `SELECT COUNT(*)AS count,MAX(seq)AS last_seq FROM ${OUTBOX_TABLE}`,
+      `SELECT COUNT(*)AS count,MAX(seq)AS last_seq FROM ${OUTBOX_TABLE} WHERE seq<=?`,
+      [this.#gate > 2 ? this.#through : Number.MAX_SAFE_INTEGER],
     )[0]!;
     const pendingCount = bounds.count as number;
     const throughSeq = (bounds.last_seq as number | null) ?? 0;
@@ -4838,6 +4897,7 @@ export class SyncClient {
     // §8.8: a `pull` round sends no commit and uploads no blob; a gate change
     // applies from the next round.
     const pushes = this.#gate > 1;
+    const prefix = this.#gate > 2;
     try {
       await this.#drainPendingEvictions();
       await this.#revealSealed();
@@ -4889,7 +4949,10 @@ export class SyncClient {
         this.#hasBlobs &&
         this.#config.blobs !== undefined
       ) {
-        const refused = await this.#flushBlobUploads(signal);
+        const refused = await this.#flushBlobUploads(
+          signal,
+          prefix ? outbox : undefined,
+        );
         // §5.9.7: a commit whose blob the server refused left the outbox.
         for (let index = outbox.length - 1; index >= 0; index--) {
           if (!refused.has(outbox[index]!.clientCommitId)) continue;
@@ -4989,8 +5052,14 @@ export class SyncClient {
         this.#db.exec(
           `UPDATE ${OUTBOX_TABLE} SET attempted=1 WHERE seq IN(${outbox.map((commit) => commit.seq)})`,
         );
-      const responseBytes = await this.#roundTrip(requestBytes, signal);
-      const message = decodeResponse(responseBytes);
+      let message: ResponseMessage;
+      try {
+        message = decodeResponse(await this.#roundTrip(requestBytes, signal));
+      } catch (error) {
+        // §8.8: a prefix sent without a receipt is an uncertain delivery.
+        if (outbox[0] && this.#gate > 2) this.setTransportGate('pull');
+        throw error;
+      }
       // §1.5: a complete, decodable response ends the report obligation.
       this.#roundFailureCode = undefined;
       const summary = await this.#processResponse(
@@ -6969,7 +7038,8 @@ export class SyncClient {
             ownsLocalRow(table, lastEffective, owners, op.values),
         ),
       );
-      for (const { clientCommitId, operations } of doomed) {
+      for (const { seq, clientCommitId, operations } of doomed) {
+        if (this.#gate > 2 && seq <= this.#through) this.#gate = 1;
         deleteOutboxCommit(this.#db, clientCommitId);
         this.#journalDrop(
           batch,
@@ -7074,6 +7144,9 @@ export class SyncClient {
     replacement: readonly OutboxOperation[] = [],
     append?: () => void,
   ): void {
+    // §8.8: a prefix commit leaving other than by acknowledgement ends a
+    // `through` gate; the enclosing batch emits or restores the change.
+    if (this.#gate > 2 && commit.seq <= this.#through) this.#gate = 1;
     const imageByIndex = listOutboxBeforeImages(
       this.#db,
       commit.clientCommitId,

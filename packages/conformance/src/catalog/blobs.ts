@@ -81,6 +81,60 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 
 export const blobScenarios: readonly Scenario[] = [
   {
+    // §8.8: a `through` round uploads only the staged blobs its prefix
+    // references; a later commit's blob stays staged with the commit.
+    name: 'blobs/through-uploads-only-the-prefix-blobs',
+    requires: ['blobs'],
+    specRefs: ['§8.8', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'blob-through',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      await requireBlobs(owner);
+      await owner.api.subscribe(U1);
+      const first = await owner.api.uploadBlob!(bytesOf('prefix bytes'));
+      const second = await owner.api.uploadBlob!(bytesOf('tail bytes'));
+      const prefix = await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('a1', 'p1', first),
+        },
+      ]);
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('a2', 'p1', second),
+        },
+      ]);
+      await owner.api.setTransportGate({ through: prefix });
+      await syncIdle(owner);
+      checkEqual(
+        owner.blobUploads.length,
+        1,
+        'only the prefix blob is uploaded',
+      );
+      check(
+        first.includes(owner.blobUploads[0]!),
+        'the upload is the prefix blob',
+      );
+      checkEqual(
+        (await ctx.server.readRows('attachments')).map((row) => row.rowId),
+        ['a1'],
+        'only the prefix commit is pushed',
+      );
+      await owner.api.setTransportGate('open');
+      await syncIdle(owner);
+      checkEqual(owner.blobUploads.length, 2, 'open uploads the tail blob');
+    },
+  },
+  {
     name: 'blobs/closed-transport-stages-and-reads-cache-without-network',
     requires: ['blobs'],
     specRefs: ['§8.8', '§5.9.7'],

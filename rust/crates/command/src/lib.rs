@@ -946,7 +946,9 @@ pub fn dispatch<T: Transport>(
                 instance.begin_security_preflight().map_err(client_err)?;
             }
             if let Some(state) = params.get("transportGate") {
-                instance.set_transport_gate(transport, parse_transport_gate(state)?);
+                instance
+                    .set_transport_gate(transport, parse_transport_gate(state)?)
+                    .map_err(CommandError::from_client)?;
             }
             effects.security_preflight_pending = security_preflight;
             transport.set_client_id(instance.client_id());
@@ -1037,8 +1039,16 @@ pub fn dispatch<T: Transport>(
             Ok(json!({}))
         }
         "setTransportGate" => {
-            let state = parse_transport_gate(params.get("state").unwrap_or(&Value::Null))?;
-            need_client(client)?.set_transport_gate(transport, state);
+            let state = params.get("state").unwrap_or(&Value::Null);
+            // §8.8: `{ through }` names a pending commit; creation takes only
+            // the string states.
+            let state = match state.get("through").and_then(Value::as_str) {
+                Some(id) => TransportGate::Through(id.to_owned()),
+                None => parse_transport_gate(state)?,
+            };
+            need_client(client)?
+                .set_transport_gate(transport, state)
+                .map_err(CommandError::from_client)?;
             Ok(json!({}))
         }
         "shutdown" => {
@@ -1741,13 +1751,17 @@ pub fn dispatch<T: Transport>(
             // §12.3: hold the client's rounds while the authority uploads or
             // rolls back, then restore the host's transport gate.
             let gate = running.transport_gate();
-            running.set_transport_gate(transport, TransportGate::Closed);
+            running
+                .set_transport_gate(transport, TransportGate::Closed)
+                .map_err(CommandError::from_client)?;
             let outcome = if method == "attachLocalAuthority" {
                 transport.attach_local_authority()
             } else {
                 transport.abandon_local_authority_attach()
             };
-            running.set_transport_gate(transport, gate);
+            running
+                .set_transport_gate(transport, gate)
+                .map_err(CommandError::from_client)?;
             outcome.map_err(transport_command_error)?;
             Ok(json!({ "effects": CommandEffects::interactive() }))
         }
@@ -1831,11 +1845,11 @@ pub fn dispatch<T: Transport>(
 
         other => Err(client_err(format!("unknown method {other:?}"))),
     };
-    // §8.8: a closed gate owes no sync, and a `pull` gate owes no push for a
-    // local write.
+    // §8.8: a closed gate owes no sync, and a `pull` or `through` gate owes
+    // no push for a local write.
     if client.as_ref().is_some_and(|running| {
         running.transport_gate() == TransportGate::Closed
-            || (running.transport_gate() == TransportGate::Pull
+            || (running.transport_gate() != TransportGate::Open
                 && matches!(
                     method,
                     "mutate" | "patch" | "replaceCommitOutcome" | "replacePendingCommit"

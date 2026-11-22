@@ -7,7 +7,7 @@ import type { DriverCommitDelivery } from '../driver';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import { rawPushCommit, rawUpsert, responsePushResults } from '../raw';
 import { type ClientHandle, type Scenario, ScenarioSkip } from '../scenario';
-import { syncFails, syncIdle, syncOk } from './util';
+import { seedTasks, syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
@@ -52,6 +52,257 @@ async function serverTitles(
 }
 
 export const replaceScenarios: readonly Scenario[] = [
+  {
+    // §8.8 through: the outbox ordinary, A, ordinary, B, ordinary of one
+    // replica that releases each sealed prefix only with its own evidence.
+    // Each open starts held in `pull`; one `through` per prefix delivers it.
+    name: 'gate/through-delivers-each-prefix-in-turn',
+    specRefs: ['§8.8'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'through-prefixes',
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      await a.api.subscribe(U1);
+      const ids: string[] = [];
+      for (const [id, title] of [
+        ['o1', 'ordinary 1'],
+        ['sa', 'sealed A'],
+        ['o2', 'ordinary 2'],
+        ['sb', 'sealed B'],
+        ['o3', 'ordinary 3'],
+      ] as const)
+        ids.push(
+          await a.api.mutate([
+            { op: 'upsert', table: 'tasks', values: task(id, 'p1', title) },
+          ]),
+        );
+      await syncIdle(a);
+      checkEqual(await serverTitles(ctx), {}, 'a pull round pushes nothing');
+      // Practice A: a restart starts held, then A's prefix is released.
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(await a.api.transportGate(), 'pull', 'an open starts held');
+      await a.api.setTransportGate({ through: ids[2]! });
+      checkEqual(
+        await a.api.transportGate(),
+        { through: ids[2] },
+        'the gate reports its boundary',
+      );
+      await syncIdle(a);
+      checkEqual(
+        Object.keys(await serverTitles(ctx)).sort(),
+        ['o1', 'o2', 'sa'],
+        'the prefix through ordinary 2 is delivered and B is not',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        ids.slice(3),
+        'the later commits stay queued in order',
+      );
+      checkEqual(
+        await a.api.transportGate(),
+        'pull',
+        'the acknowledged boundary falls back to pull',
+      );
+      // Practice B, then A again.
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      await a.api.setTransportGate({ through: ids[4]! });
+      await syncIdle(a);
+      checkEqual(
+        Object.keys(await serverTitles(ctx)).sort(),
+        ['o1', 'o2', 'o3', 'sa', 'sb'],
+        'the second prefix is delivered',
+      );
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(await a.api.pendingCommitIds(), [], 'nothing stays queued');
+      checkEqual(await a.api.transportGate(), 'pull', 'the last open is held');
+    },
+  },
+  {
+    name: 'gate/through-refuses-a-commit-that-is-not-pending',
+    specRefs: ['§8.8'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'through-unknown',
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      checkEqual(
+        await failure(() => a.api.setTransportGate({ through: 'missing' })),
+        {
+          code: 'sync.outcome_not_found',
+          details: { clientCommitId: 'missing' },
+        },
+        'an id that is not pending is refused',
+      );
+      checkEqual(
+        await a.api.transportGate(),
+        'pull',
+        'the refusal leaves the gate',
+      );
+    },
+  },
+  {
+    // §8.8: a rejected boundary ends the state; the tail stays held.
+    name: 'gate/through-falls-back-after-a-rejection',
+    specRefs: ['§8.8', '§7.2'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'first')]);
+      await seedTasks(ctx, [task('t1', 'p1', 'server')]);
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'through-rejected',
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      await a.api.subscribe(U1);
+      // A write from the row's first version conflicts on every server.
+      const refused = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t1', 'p1', 'refused'),
+          baseVersion: 1,
+        },
+      ]);
+      const tail = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'tail') },
+      ]);
+      await a.api.setTransportGate({ through: refused });
+      await syncIdle(a);
+      checkEqual(
+        await a.api.transportGate(),
+        'pull',
+        'the rejected boundary falls back to pull',
+      );
+      checkEqual(await a.api.pendingCommitIds(), [tail], 'the tail is held');
+      checkEqual(
+        await serverTitles(ctx),
+        { t1: 'server' },
+        'the refused write did not apply',
+      );
+    },
+  },
+  {
+    // §8.8: a lost receipt is an uncertain delivery: the commit stays pending
+    // with its attempt recorded, and a restart plus a new `through` settles it.
+    name: 'gate/through-falls-back-after-an-uncertain-delivery',
+    specRefs: ['§8.8', '§7.1'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'through-lost',
+        allowed: P1,
+        transportGate: 'pull',
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      const sealed = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'sealed') },
+      ]);
+      const tail = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'tail') },
+      ]);
+      await a.api.setTransportGate({ through: sealed });
+      a.faults.dropNextResponses = 1;
+      await syncFails(a, 'transport.lost', 'the receipt is lost');
+      checkEqual(
+        await a.api.transportGate(),
+        'pull',
+        'the uncertain delivery falls back to pull',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [sealed, tail],
+        'the commit stays pending',
+      );
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      await a.api.setTransportGate({ through: sealed });
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [tail],
+        'the retry settles the boundary and holds the tail',
+      );
+      checkEqual(
+        await serverTitles(ctx),
+        { t1: 'sealed' },
+        'the server applied the boundary once',
+      );
+    },
+  },
+  ...(['the through commit', 'an earlier prefix commit'] as const).map(
+    (which): Scenario => ({
+      // §8.8: a replacement has a new identity and never inherits the state.
+      // A round in flight finishes what it captured; the next round pulls,
+      // and a write queued during the round stays held.
+      name: `gate/replacing-${which.replaceAll(' ', '-')}-drops-to-pull`,
+      specRefs: ['§8.8', '§7.2.3'],
+      async run(ctx) {
+        const a = await ctx.newClient({
+          actorId: 'a',
+          clientId: `through-replace-${which.length}`,
+          allowed: P1,
+          transportGate: 'pull',
+          limits: { maxPushCommitsPerRequest: 1 },
+        });
+        await a.api.subscribe(U1);
+        await syncIdle(a);
+        check(
+          a.api.prepareRound !== undefined && a.api.completeRound !== undefined,
+          'client supplies an in-flight request barrier',
+        );
+        const ids: string[] = [];
+        for (const id of ['o1', 'o2', 'sa'])
+          ids.push(
+            await a.api.mutate([
+              { op: 'upsert', table: 'tasks', values: task(id, 'p1', id) },
+            ]),
+          );
+        await a.api.setTransportGate({ through: ids[2]! });
+        // The bounded round carries o1 only.
+        await a.api.prepareRound();
+        const target = which === 'the through commit' ? ids[2]! : ids[1]!;
+        const replaced = a.api.replacePendingCommit(
+          target,
+          [
+            {
+              op: 'upsert',
+              table: 'tasks',
+              values: task(target === ids[2] ? 'sa' : 'o2', 'p1', 'replaced'),
+            },
+          ],
+          `${target}-next`,
+        );
+        const tail = await a.api.mutate([
+          { op: 'upsert', table: 'tasks', values: task('o3', 'p1', 'tail') },
+        ]);
+        check((await a.api.completeRound()).ok, 'the captured round completes');
+        checkEqual(await replaced, `${target}-next`, 'the replacement is made');
+        checkEqual(
+          await a.api.transportGate(),
+          'pull',
+          'the replacement drops the gate to pull',
+        );
+        await syncIdle(a);
+        checkEqual(
+          await serverTitles(ctx),
+          { o1: 'o1' },
+          'only the captured commit reached the server',
+        );
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          target === ids[2]
+            ? [ids[1], `${target}-next`, tail]
+            : [`${target}-next`, ids[2], tail],
+          'the replacement and the tail stay held in order',
+        );
+      },
+    }),
+  ),
   {
     name: 'gate/pull-pushes-nothing-then-open-pushes-the-replacement',
     specRefs: ['§8.8', '§7.2.3'],

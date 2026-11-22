@@ -1295,6 +1295,10 @@ class TsClientInstance implements ClientInstance {
     }
   }
 
+  async transportGate(): Promise<DriverTransportGate> {
+    return this.#client.transportGate();
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#client.connectRealtime();
   }

@@ -631,6 +631,20 @@ fn main() {
                     Ok(json!(std::mem::take(
                         &mut *progress_events.lock().expect("progress events")
                     )))
+                } else if method == "transportGate" {
+                    // §8.8: the gate in the TypeScript surface's shape.
+                    match client.as_ref().map(|instance| instance.transport_gate()) {
+                        Some(syncular_client::TransportGate::Closed) => Ok(json!("closed")),
+                        Some(syncular_client::TransportGate::Pull) => Ok(json!("pull")),
+                        Some(syncular_client::TransportGate::Open) => Ok(json!("open")),
+                        Some(syncular_client::TransportGate::Through(id)) => {
+                            Ok(json!({ "through": id }))
+                        }
+                        None => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "client is required",
+                        )),
+                    }
                 } else if method == "prepareRound" {
                     match client.as_mut() {
                         Some(instance) => {
@@ -671,10 +685,7 @@ fn main() {
                                                 let _ = io.realtime_send(&text);
                                             }
                                         } else {
-                                            instance.set_transport_gate(
-                                                &mut io,
-                                                syncular_client::TransportGate::Closed,
-                                            );
+                                            instance.disconnect_realtime(&mut io);
                                         }
                                         break Ok(outcome.to_json());
                                     }

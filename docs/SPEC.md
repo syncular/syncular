@@ -9262,10 +9262,12 @@ poll it replaced took half of production's coordinator time.
 
 ### 8.8 Realtime policy and connectivity state
 
-**Transport gate.** Each client holds one transport gate with three states:
-`closed`, `pull` and `open`. Construction takes it as `transportGate`
-(default `open`), and `setTransportGate(state)` changes it (native Rust:
-`set_transport_gate(TransportGate)`; the command `setTransportGate { state }`).
+**Transport gate.** Each client holds one transport gate with four states:
+`closed`, `pull`, `open` and `{ through: clientCommitId }`. Construction takes
+`closed`, `pull` or `open` as `transportGate` (default `open`), and
+`setTransportGate(state)` changes it (native Rust:
+`set_transport_gate(TransportGate)` with `TransportGate::Through(String)`; the
+command `setTransportGate { state }` with `state: { through }`).
 The gate is independent of security preflight and is never persisted: each new
 client instance starts in its construction state. Security activation,
 header-source answers, owner-loop rounds and schema resets MUST NOT change the
@@ -9279,6 +9281,15 @@ gate.
   gate is `pull`. An application that holds pending commits it may still
   replace creates the client in `pull`. A `pull` gate also admits fence
   rounds (§6.12).
+- `{ through: clientCommitId }`: rounds pull as in `pull` and push the outbox
+  commits up to and including `clientCommitId`, in outbox order, with the
+  staged blobs those commits reference; no commit after it is sent and no other
+  staged blob is uploaded. The state covers exactly the commits that were
+  pending at or before `clientCommitId` when it was set. Setting it for a
+  `clientCommitId` that is not pending fails with `sync.outcome_not_found`
+  (`details.clientCommitId`) and leaves the gate as it was. A pending
+  replacement decision (§7.2.2) and the request caps (§6.1) bound the prefix as
+  they bound an `open` push. A local write raises no push intent.
 - `closed`: new sync rounds, realtime connects, presence sends and uncached
   blob downloads fail with client-local `sync.offline` before invoking
   transport, and automatic hosts consume no sync or retry intent. Cached blob
@@ -9295,11 +9306,30 @@ applies from the next round. On `closed`, the host releases the socket when
 that round settles and sends no queued realtime controls. Security preflight
 still invalidates an in-flight authorization context.
 
+**Through fallback.** A `through` gate falls back to `pull` by itself, and the
+change is observable as a gate change:
+
+- when `clientCommitId` is acknowledged;
+- when a commit of the prefix leaves the outbox other than by its
+  acknowledgement: a rejection, a replacement (§7.2.3), a local purge, a
+  scope-revocation drop or an incompatible-commit drop. The fallback commits
+  with the transaction that removes the commit, and a transaction that rolls
+  back leaves the gate as it was. A replacement has a new identity and never
+  inherits the state;
+- when a request that carried a commit of the prefix gets no response: the
+  attempt is recorded and the commit stays pending (§7.1).
+
+Acknowledgements of the earlier commits of the prefix keep the state. A round
+already in flight finishes the request it captured; the next round is a
+`pull` round, and the application sets a new `through` for what it has
+verified. Commits queued after `clientCommitId` stay held in every case.
+
 Moving to `open` emits one interactive wake, and its round asks the header
 source (§1.1); the existing automatic scheduler drains queued work and performs
 its own pull. Moving from `closed` to `pull` emits one interactive wake for the
-pull. Realtime reconnect uses the host's existing lifecycle policy. Setting the
-current state again is idempotent.
+pull, and setting `through` emits one for its push. Realtime reconnect uses
+the host's existing lifecycle policy. Setting the current state again is
+idempotent.
 
 
 A client configures how a sync round treats the realtime binding with one

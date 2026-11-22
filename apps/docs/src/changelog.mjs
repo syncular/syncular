@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'Push a verified prefix of the outbox',
+    body: 'The transport gate takes a fourth state, `{ through: clientCommitId }`: rounds pull and push the pending commits up to that commit with the blobs they reference, and hold the rest. The gate returns to `pull` once the commit is acknowledged, its delivery is uncertain, or a commit of the prefix is rejected or replaced.',
+    links: [
+      {
+        href: '/platform-web-realtime/#transport-gate',
+        label: 'The transport gate',
+      },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Bootstrap extent counts read each scope variable once',
     body: 'The row count a fresh bootstrap reports as its extent reads one scope-index range per filter variable and counts the rows present in all of them. It used to seek every other variable once per candidate row, about 175,000 seeks for an 87,000-row release under two more variables, which delayed the first page of a pull on PostgreSQL.',
     links: [

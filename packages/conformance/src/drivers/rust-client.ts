@@ -2001,6 +2001,10 @@ class RustClientInstance implements ClientInstance {
     await this.#shim.call('setTransportGate', { state });
   }
 
+  async transportGate(): Promise<DriverTransportGate> {
+    return (await this.#shim.call('transportGate', {})) as DriverTransportGate;
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#shim.call('connectRealtime', {});
   }

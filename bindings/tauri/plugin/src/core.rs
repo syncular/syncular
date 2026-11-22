@@ -308,7 +308,7 @@ impl SyncularCore {
         self.round_pending = matches!(applied, syncular_client::AppliedSyncRound::Continue(_));
         if !self.round_pending && self.transport_closed() {
             if let Some(client) = self.client.as_mut() {
-                client.set_transport_gate(&mut self.transport, TransportGate::Closed);
+                client.disconnect_realtime(&mut self.transport);
             }
         }
         if let syncular_client::AppliedSyncRound::Complete { controls, .. } = &mut applied {

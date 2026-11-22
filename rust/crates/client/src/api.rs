@@ -484,14 +484,16 @@ impl RealtimePolicy {
     }
 }
 
-/// §8.8 transport gate. `Pull` rounds pull and send no commit; the client
+/// §8.8 transport gate. `Pull` rounds pull and send no commit; `Through`
+/// also pushes the outbox up to and including one pending commit. The client
 /// never persists the gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TransportGate {
     Closed,
     Pull,
     #[default]
     Open,
+    Through(String),
 }
 
 /// §8.8: the explicit availability state of the realtime binding. The

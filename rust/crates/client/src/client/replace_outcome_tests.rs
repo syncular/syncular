@@ -196,7 +196,7 @@ impl Drop for Setup {
 }
 
 fn gate(s: &mut Setup, state: crate::TransportGate) {
-    s.reader.set_transport_gate(&mut s.server, state);
+    s.reader.set_transport_gate(&mut s.server, state).unwrap();
 }
 
 fn replace(s: &mut Setup, replacement: Option<Vec<Mutation>>) -> Result<String, ClientError> {

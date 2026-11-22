@@ -164,7 +164,8 @@ fn replaced_by(client: &mut SyncClient, id: &str) -> Option<String> {
 fn a_never_attempted_commit_is_replaced_in_place_without_transport() {
     let mut server = server();
     let mut c = client(&mut server, "c");
-    c.set_transport_gate(&mut server, crate::TransportGate::Closed);
+    c.set_transport_gate(&mut server, crate::TransportGate::Closed)
+        .unwrap();
     let original = c.mutate(vec![note("n1", "first", "first", None)]).unwrap();
     let later = c.mutate(vec![note("n2", "later", "later", None)]).unwrap();
     assert!(!attempted(&c, &original));
@@ -229,11 +230,13 @@ fn a_retry_with_the_same_replacement_id_returns_it() {
 fn a_pull_round_marks_nothing_and_a_push_round_marks_what_it_carries() {
     let mut server = server();
     let mut c = client(&mut server, "c");
-    c.set_transport_gate(&mut server, crate::TransportGate::Pull);
+    c.set_transport_gate(&mut server, crate::TransportGate::Pull)
+        .unwrap();
     let original = c.mutate(vec![note("n1", "first", "first", None)]).unwrap();
     assert!(matches!(c.sync(&mut server), SyncOutcome::Ok(_)));
     assert!(!attempted(&c, &original));
-    c.set_transport_gate(&mut server, crate::TransportGate::Open);
+    c.set_transport_gate(&mut server, crate::TransportGate::Open)
+        .unwrap();
     lose_push(&mut c, &mut server);
     assert!(attempted(&c, &original));
 }
@@ -245,7 +248,8 @@ fn an_attempted_commit_is_fenced_then_replaced() {
     let mut peer = client(&mut server, "peer");
     let original = c.mutate(vec![note("n1", "first", "first", None)]).unwrap();
     lose_push(&mut c, &mut server);
-    c.set_transport_gate(&mut server, crate::TransportGate::Pull);
+    c.set_transport_gate(&mut server, crate::TransportGate::Pull)
+        .unwrap();
     let requests = server.requests;
     let id = c
         .replace_pending_commit(
@@ -258,7 +262,8 @@ fn an_attempted_commit_is_fenced_then_replaced() {
     assert_eq!((id.as_str(), server.requests), ("r1", requests + 1));
     assert_eq!(replaced_by(&mut c, &original).as_deref(), Some("r1"));
     assert!(!attempted(&c, "r1"));
-    c.set_transport_gate(&mut server, crate::TransportGate::Open);
+    c.set_transport_gate(&mut server, crate::TransportGate::Open)
+        .unwrap();
     idle(&mut c, &mut server);
     assert!(c.pending_commit_ids().is_empty());
     idle(&mut peer, &mut server);
@@ -304,7 +309,8 @@ fn a_closed_gate_refuses_the_fence_and_changes_nothing() {
     let mut c = client(&mut server, "c");
     let original = c.mutate(vec![note("n1", "first", "first", None)]).unwrap();
     lose_push(&mut c, &mut server);
-    c.set_transport_gate(&mut server, crate::TransportGate::Closed);
+    c.set_transport_gate(&mut server, crate::TransportGate::Closed)
+        .unwrap();
     let requests = server.requests;
     let error = c
         .replace_pending_commit(
@@ -394,7 +400,8 @@ fn a_crash_between_fence_and_replace_fences_again_on_retry() {
     let mut c = open();
     assert_eq!(c.pending_commit_ids(), vec![original.clone()]);
     assert!(attempted(&c, &original));
-    c.set_transport_gate(&mut server, crate::TransportGate::Pull);
+    c.set_transport_gate(&mut server, crate::TransportGate::Pull)
+        .unwrap();
     let id = c
         .replace_pending_commit(
             &mut server,
@@ -419,7 +426,8 @@ fn the_replacement_keeps_the_original_base_versions() {
     idle(&mut peer, &mut server);
     idle(&mut c, &mut server);
     let version = c.read_rows("notes").unwrap()[0].version;
-    c.set_transport_gate(&mut server, crate::TransportGate::Closed);
+    c.set_transport_gate(&mut server, crate::TransportGate::Closed)
+        .unwrap();
     let original = c
         .mutate(vec![note("n1", "mine", "mine", Some(version))])
         .unwrap();
@@ -451,7 +459,8 @@ fn a_dependent_later_commit_re_derives_over_the_replacement() {
     idle(&mut peer, &mut server);
     idle(&mut c, &mut server);
     let version = c.read_rows("notes").unwrap()[0].version;
-    c.set_transport_gate(&mut server, crate::TransportGate::Closed);
+    c.set_transport_gate(&mut server, crate::TransportGate::Closed)
+        .unwrap();
     let a = c.mutate(vec![note("n1", "a", "a", Some(version))]).unwrap();
     let b = c
         .patch(
@@ -465,7 +474,8 @@ fn a_dependent_later_commit_re_derives_over_the_replacement() {
         .unwrap();
     assert_eq!(c.pending_commit_ids(), vec!["r1".to_owned(), b.clone()]);
     assert_eq!(row(&c, "n1"), (json!("a2"), json!("b")));
-    c.set_transport_gate(&mut server, crate::TransportGate::Open);
+    c.set_transport_gate(&mut server, crate::TransportGate::Open)
+        .unwrap();
     idle(&mut c, &mut server);
     assert!(c.pending_commit_ids().is_empty());
     for id in ["r1", b.as_str()] {
@@ -611,7 +621,8 @@ fn a_replaced_commit_is_reported_replaced_and_kept_as_a_decided_rejection() {
 fn a_full_row_upsert_of_a_row_the_original_inserted_keeps_its_insert_intent() {
     let mut server = server();
     let mut c = client(&mut server, "c");
-    c.set_transport_gate(&mut server, crate::TransportGate::Closed);
+    c.set_transport_gate(&mut server, crate::TransportGate::Closed)
+        .unwrap();
     let original = c.mutate(vec![note("n1", "first", "first", None)]).unwrap();
     assert!(c.outbox[0].ops[0].insert);
     c.replace_pending_commit(
@@ -664,4 +675,142 @@ fn a_header_only_fence_response_records_a_schema_floor_or_refuses_a_reset() {
     );
     assert_eq!(c.pending_commit_ids(), vec![original.clone()]);
     assert_eq!(row(&c, "n1"), (json!("first"), json!("first")));
+}
+
+fn through(c: &mut SyncClient, server: &mut Server, id: &str) {
+    let gate = crate::TransportGate::Through(id.to_owned());
+    c.set_transport_gate(server, gate).unwrap();
+}
+
+/// A subscribed client whose push request carries one commit.
+fn capped_client(server: &mut Server, id: &str) -> SyncClient {
+    let limits = ClientLimits {
+        max_push_commits_per_request: Some(1),
+        ..ClientLimits::default()
+    };
+    let mut client = SyncClient::new(id.into(), &schema(), limits).unwrap();
+    let scopes = UnitScopes::from([("list_id".to_owned(), "one".to_owned())]);
+    client.subscribe(scopes).unwrap();
+    idle(&mut client, server);
+    client
+}
+
+/// Three commits queued under `pull`, the second named as the boundary.
+fn queued(c: &mut SyncClient, server: &mut Server) -> (String, String, String) {
+    c.set_transport_gate(server, crate::TransportGate::Pull)
+        .unwrap();
+    let a = c.mutate(vec![note("n1", "a", "a", None)]).unwrap();
+    let b = c.mutate(vec![note("n2", "b", "b", None)]).unwrap();
+    let later = c.mutate(vec![note("n3", "later", "later", None)]).unwrap();
+    c.drain_sync_intents();
+    through(c, server, &b);
+    (a, b, later)
+}
+
+fn deferred(c: &mut SyncClient, server: &mut Server) -> usize {
+    match c.sync(server) {
+        SyncOutcome::Ok(report) => report.deferred_commits,
+        other => panic!("round failed: {:?}", other.to_json()),
+    }
+}
+
+#[test]
+fn a_through_gate_pushes_its_prefix_and_the_boundary_ack_ends_it() {
+    let mut server = server();
+    let mut c = capped_client(&mut server, "c");
+    let (_, b, later) = queued(&mut c, &mut server);
+    let intents = c.drain_sync_intents();
+    assert!(matches!(intents.as_slice(), [SyncIntent::Interactive]));
+    through(&mut c, &mut server, &b);
+    assert!(c.drain_sync_intents().is_empty());
+    // The cap carries one commit; the deferred count covers the prefix only.
+    assert_eq!(deferred(&mut c, &mut server), 1);
+    assert_eq!(c.pending_commit_ids(), vec![b.clone(), later.clone()]);
+    assert_eq!(c.transport_gate(), crate::TransportGate::Through(b.clone()));
+    assert_eq!(deferred(&mut c, &mut server), 0);
+    assert_eq!(c.pending_commit_ids(), vec![later.clone()]);
+    assert!(!attempted(&c, &later));
+    assert_eq!(c.transport_gate(), crate::TransportGate::Pull);
+    idle(&mut c, &mut server);
+    assert_eq!(c.pending_commit_ids(), vec![later]);
+}
+
+#[test]
+fn a_through_gate_needs_a_pending_commit() {
+    let mut server = server();
+    let mut c = client(&mut server, "c");
+    c.set_transport_gate(&mut server, crate::TransportGate::Pull)
+        .unwrap();
+    c.drain_sync_intents();
+    let gate = crate::TransportGate::Through("missing".into());
+    let error = c.set_transport_gate(&mut server, gate).unwrap_err();
+    assert_eq!(error.code, "sync.outcome_not_found");
+    assert_eq!(error.details, Some(json!({ "clientCommitId": "missing" })));
+    assert_eq!(c.transport_gate(), crate::TransportGate::Pull);
+    assert!(c.drain_sync_intents().is_empty());
+}
+
+#[test]
+fn a_rejected_prefix_commit_ends_the_gate() {
+    let mut server = server();
+    let mut c = capped_client(&mut server, "c");
+    let mut peer = client(&mut server, "peer");
+    peer.mutate(vec![note("n1", "first", "first", None)])
+        .unwrap();
+    idle(&mut peer, &mut server);
+    idle(&mut c, &mut server);
+    let version = c.read_rows("notes").unwrap()[0].version;
+    peer.mutate(vec![note("n1", "second", "second", Some(version))])
+        .unwrap();
+    idle(&mut peer, &mut server);
+    c.set_transport_gate(&mut server, crate::TransportGate::Pull)
+        .unwrap();
+    let stale = c
+        .mutate(vec![note("n1", "mine", "mine", Some(version))])
+        .unwrap();
+    let b = c.mutate(vec![note("n2", "b", "b", None)]).unwrap();
+    through(&mut c, &mut server, &b);
+    // The round carries only the stale commit, which the server rejects.
+    deferred(&mut c, &mut server);
+    assert!(!c.pending_commit_ids().contains(&stale));
+    assert_eq!(c.transport_gate(), crate::TransportGate::Pull);
+    assert_eq!(c.pending_commit_ids(), vec![b.clone()]);
+    assert!(!attempted(&c, &b));
+}
+
+#[test]
+fn a_prefix_sent_without_a_receipt_ends_the_gate_and_stays_pending() {
+    let mut server = server();
+    let mut c = client(&mut server, "c");
+    let (a, b, later) = queued(&mut c, &mut server);
+    server.drop_reply = true;
+    assert!(matches!(c.sync(&mut server), SyncOutcome::Failed { .. }));
+    server.drop_reply = false;
+    assert_eq!(c.transport_gate(), crate::TransportGate::Pull);
+    let pending = vec![a.clone(), b.clone(), later.clone()];
+    assert_eq!(c.pending_commit_ids(), pending);
+    assert!(attempted(&c, &a) && attempted(&c, &b) && !attempted(&c, &later));
+}
+
+#[test]
+fn replacing_a_prefix_commit_ends_the_gate_and_a_failed_replacement_keeps_it() {
+    let mut server = server();
+    let mut c = client(&mut server, "c");
+    let (a, b, later) = queued(&mut c, &mut server);
+    let replacement = || vec![note("n1", "replaced", "replaced", None)];
+    let refuse = "CREATE TEMP TRIGGER refuse_outcomes BEFORE INSERT ON _syncular_commit_outcomes
+                  BEGIN SELECT RAISE(ABORT, 'refused'); END";
+    c.conn.execute_batch(refuse).unwrap();
+    let failed = c.replace_pending_commit(&mut server, &a, replacement(), "r1");
+    assert!(failed.is_err());
+    assert_eq!(c.transport_gate(), crate::TransportGate::Through(b.clone()));
+    let pending = vec![a.clone(), b.clone(), later.clone()];
+    assert_eq!(c.pending_commit_ids(), pending);
+    c.conn
+        .execute_batch("DROP TRIGGER refuse_outcomes")
+        .unwrap();
+    let id = c.replace_pending_commit(&mut server, &a, replacement(), "r1");
+    assert_eq!(id.unwrap(), "r1");
+    assert_eq!(c.transport_gate(), crate::TransportGate::Pull);
+    assert_eq!(c.pending_commit_ids(), vec!["r1".to_owned(), b, later]);
 }
