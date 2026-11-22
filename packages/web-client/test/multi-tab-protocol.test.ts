@@ -16,9 +16,9 @@ import { join } from 'node:path';
 import { MULTI_TAB_PROTOCOL_VERSION } from '../src/multi-tab';
 
 const PINNED = {
-  protocol: 13,
+  protocol: 14,
   fingerprint:
-    '3fa4e8b7207a999a49dca120725bd109d0be4210e2df6dde8e3c8bc31c0f7a77',
+    '97db3cfe5934877afe9868029c8c10e019cf41a2c77811286b69da0851609ed6',
 };
 
 const ROOTS = [
@@ -81,8 +81,10 @@ function surfaceFingerprint(): { fingerprint: string; types: string[] } {
     }).sort()) {
       if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
       const text = readFileSync(join(dir, file), 'utf8');
+      // A declaration continues with `=`, `<`, `{` or `extends`; an
+      // import specifier such as `type Foo,` is none.
       for (const match of text.matchAll(
-        /^[ \t]*(?:export\s+)?(interface|type)\s+([A-Za-z_]\w*)/gm,
+        /^[ \t]*(?:export\s+)?(interface|type)\s+([A-Za-z_]\w*)(?=\s*[=<{]|\s+extends\b)/gm,
       )) {
         const kind = match[1]!;
         const name = match[2]!;

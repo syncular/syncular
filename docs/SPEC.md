@@ -6465,7 +6465,8 @@ changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0,
 protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
 covers 0.101.0, protocol 11 covers 0.102.0, protocol 12 covers 0.103.0 and
-0.103.1, and protocol 13 starts with 0.103.2.
+0.103.1, protocol 13 covers 0.103.2 and 0.104.0, and protocol 14 starts with
+0.104.1.
 
 **Browser leader promotion.** A follower tab that wins the leader lock starts
 its own core and announces above every epoch it has seen. Epochs are per tab:
@@ -7264,6 +7265,21 @@ unchanged and that no newer migration names keeps its generation across a
 version, and any change to the table, including a statement that names it
 and changes nothing, changes its generation.
 
+A generated table MAY also carry `equivalentGenerations`, an array of
+strings, which the client reads only at a bump; it never enters a frame or
+any generation. `typegen` 0.101.0 and earlier also hashed declared indexes
+and FTS5 projections and counted the statements that declare them, so a
+replica those versions wrote persisted generations that differ for an
+unchanged table. For each table, `typegen` replays the locked migrations,
+rebuilds the table at every earlier schema version with today's manifest,
+and lists the generation that version had under the 0.101.0 formula
+whenever the version's generation under the current formula equals the
+table's, without duplicates and without the table's own generation; it
+omits the key when the list is empty. The lock records neither which
+`typegen` wrote a version nor the manifest of that version, so `typegen`
+lists every earlier version and relies on the exact match: a version
+rebuilt with a manifest it did not have yields a string no replica holds.
+
 Clients persist the generation of every table that has one in the
 `_syncular_meta` key `localTableGenerations`, a JSON object from table name
 to generation, at every site that writes the declaration evidence (fresh
@@ -7273,7 +7289,8 @@ existed. A value that is not a JSON object of strings MUST fail the reset
 with `sync.local_corrupt` before mutation.
 
 - **Kept table:** a table of the new schema whose generation is present and
-  equal to the generation the replica persisted for that name. Its rows,
+  the generation the replica persisted for that name equals it or is in the
+  table's `equivalentGenerations`. Its rows,
   its §4.5 version column, its base mirror where the client keeps one, its
   declared indexes (reconciled below), and its row-level bookkeeping (acknowledged rows awaiting their
   commit, delivery records) stay as they are. Its FTS projections hold the

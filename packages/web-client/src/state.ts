@@ -363,8 +363,8 @@ export function saveUnitScopeSchema(
  * registry rows and pending evictions; never translate scopes. At a bump
  * (§7.4.3) a unit also needs every variable unchanged in prefix and column on
  * every table it covered before, and the bump keeps each table whose
- * generation is unchanged and each unit that covers only kept tables, before
- * and after. Runs before the reset rewrites the evidence.
+ * generation is unchanged or among its equivalent generations, and each unit
+ * that covers only kept tables, before and after. Runs before the reset rewrites the evidence.
  */
 export function pruneUnknownUnits(
   db: ClientDatabase,
@@ -396,12 +396,17 @@ export function pruneUnknownUnits(
     throw localStateCorrupt('invalid persisted table generations');
   const kept = new Set(
     [...schema.tables.values()]
-      .filter(
-        (table) =>
+      .filter((table) => {
+        const stored = (generations as Record<string, string | undefined>)[
+          table.name
+        ];
+        return (
           table.generation !== undefined &&
-          (generations as Record<string, unknown>)[table.name] ===
-            table.generation,
-      )
+          stored !== undefined &&
+          (stored === table.generation ||
+            table.equivalentGenerations?.includes(stored))
+        );
+      })
       .map((table) => table.name),
   );
   // A table keeps the variables' meaning when each has the same prefix and

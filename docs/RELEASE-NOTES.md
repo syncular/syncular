@@ -1,5 +1,46 @@
 # Syncular release notes
 
+## 0.104.1 release notes
+
+### A bump keeps the unchanged tables of a 0.101.0 replica
+
+`typegen` 0.101.0 and earlier hashed declared indexes and FTS projections into
+the table generation, so the first schema bump on a replica those versions
+wrote reset every table with an index or FTS, even with an unchanged
+declaration. `typegen` now emits `equivalentGenerations` on such tables: the
+generations the 0.101.0 formula gave the table at earlier schema versions where
+it equals today's table (SPEC §7.4.3). The TypeScript and Rust clients keep a
+table at a bump when the persisted generation equals `generation` or is in
+that list, with its rows, its units and its FTS, and send no request for it.
+`typegen` derives the list from the locked migrations and the manifest; it
+takes no archived IR and no flag. A real change still resets the table: a
+column relaxed to nullable at an intermediate version resets it on a replica
+from before that version and keeps it on one from after.
+
+[Schema upgrades](https://syncular.dev/concepts-schema-upgrades/#replicas-written-by-typegen-01010-and-earlier)
+
+### Upgrading
+
+- Upgrade `@syncular/typegen` and the client packages to 0.104.1 and run
+  `syncular generate`. The manifest, the migrations and the migration lock do
+  not change. No app-side bridge is needed; remove any code that rewrote
+  `localTableGenerations`.
+- The IR and every generated schema (TypeScript, Swift, Kotlin, Dart) gain
+  `equivalentGenerations: string[]` after `generation` on each table that has
+  one, which changes the IR hash. The key is absent when the list is empty, so
+  a table without an index or FTS stays byte-identical. The field is local
+  metadata: it never goes on the wire and never reaches the server, so a
+  wire-shape comparison strips it with `generation` and `localProjections`.
+- Both clients refuse to compile a schema whose `equivalentGenerations` is not
+  an array of strings.
+- The multi-tab protocol moves to 14, because the worker init configuration
+  carries the schema and its tables gain `equivalentGenerations`. A 0.104.0
+  tab and a 0.104.1 tab refuse each other's link until every tab runs
+  0.104.1. The first 0.104.1 tab takes the lock from a 0.104.0 leader, and
+  each 0.104.0 tab stays `blocked` with reason `leader-incompatible` and
+  `leader: 'newer'`, its calls rejecting with `client.leader_incompatible`,
+  until it reloads. Reload older tabs after deploying.
+
 ## 0.104.0 release notes
 
 ### A follower that wins the lock keeps its calls
@@ -294,7 +335,8 @@ drops an index the app created.
   0.101.0 generations, so every table that has an index or FTS, or that a
   migration names only in a `CREATE INDEX`, `DROP INDEX` or fts5
   `CREATE VIRTUAL TABLE` statement, resets once, bootstraps again and replays
-  the outbox on top.
+  the outbox on top. Since 0.104.1, `typegen` lists the 0.101.0 generations of
+  unchanged tables, and such a bump keeps them.
 - **TypeScript apps with FTS add the projection implementation.** FTS search is
   a projection, so a schema with FTS needs it, like app-filled projections:
 

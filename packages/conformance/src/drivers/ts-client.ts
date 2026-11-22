@@ -104,6 +104,9 @@ function toClientSchema(schema: DriverSchema): ClientSchema {
     tables: schema.tables.map((table) => ({
       name: table.name,
       ...(table.generation ? { generation: table.generation } : {}),
+      ...(table.equivalentGenerations
+        ? { equivalentGenerations: table.equivalentGenerations }
+        : {}),
       columns: table.columns,
       primaryKey: table.primaryKey,
       ...(table.indexes ? { indexes: table.indexes } : {}),

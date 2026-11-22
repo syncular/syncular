@@ -31,6 +31,9 @@ pub struct TableIr {
     /// §7.4.3 table generation (typegen); absent for hand-written schemas.
     #[serde(default)]
     pub generation: Option<String>,
+    /// §7.4.3: generations typegen 0.101.0 wrote for an equal table.
+    #[serde(default)]
+    pub equivalent_generations: Vec<String>,
     /// Built-in FTS left this key in 0.102; its presence is refused so an
     /// old generated schema never silently loses search.
     #[serde(default)]
@@ -187,6 +190,8 @@ pub struct TableSchema {
     pub server_owned_columns: Vec<usize>,
     /// §7.4.3: a schema bump keeps the table while this equals the persisted one.
     pub generation: Option<String>,
+    /// §7.4.3: earlier generations of an equal table the bump also keeps.
+    pub equivalent_generations: Vec<String>,
 }
 
 impl TableSchema {
@@ -402,6 +407,7 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         }
         tables.push(TableSchema {
             generation: table.generation.clone(),
+            equivalent_generations: table.equivalent_generations.clone(),
             name: table.name.clone(),
             columns,
             wire_columns,
@@ -599,6 +605,29 @@ mod tests {
         out_of_range["schemaVersion"] = json!(0);
         let error = parse_schema_json(&out_of_range).expect_err("out-of-range alias");
         assert!(error.starts_with("sync.invalid_request:"), "{error}");
+    }
+
+    #[test]
+    fn carries_equivalent_generations_and_refuses_a_non_string_list() {
+        let table = |list: serde_json::Value| {
+            json!({
+                "version": 1,
+                "tables": [{
+                    "name": "tasks",
+                    "generation": "g2",
+                    "equivalentGenerations": list,
+                    "primaryKey": "id",
+                    "columns": [{ "name": "id", "type": "string", "nullable": false }],
+                    "scopes": []
+                }]
+            })
+        };
+        let compiled = parse_schema_json(&table(json!(["g1"]))).expect("a string list compiles");
+        assert_eq!(compiled.tables[0].equivalent_generations, ["g1"]);
+        for list in [json!("g1"), json!([1])] {
+            let error = parse_schema_json(&table(list)).expect_err("a non-string list");
+            assert!(error.starts_with("bad schema IR:"), "{error}");
+        }
     }
 
     #[test]

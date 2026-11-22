@@ -4669,8 +4669,9 @@ impl SyncClient {
         // older schema.
         read_local_schema_version(&self.conn, self.schema.version)
             .map_err(|error| error.to_string())?;
-        // §7.4.3: a schema bump keeps every table whose generation equals the
-        // persisted one; the log-epoch reset keeps nothing. The previous
+        // §7.4.3: a schema bump keeps every table whose generation or one of
+        // its equivalent generations equals the persisted one; the log-epoch
+        // reset keeps nothing. The previous
         // declaration evidence decides which units cover only kept tables.
         let mut kept = BTreeSet::new();
         let mut previous_declarations: Option<BTreeMap<String, BTreeMap<String, Value>>> = None;
@@ -4687,7 +4688,10 @@ impl SyncClient {
                 .iter()
                 .filter(|table| {
                     table.generation.is_some()
-                        && table.generation.as_ref() == persisted.get(&table.name)
+                        && persisted.get(&table.name).is_some_and(|stored| {
+                            table.generation.as_ref() == Some(stored)
+                                || table.equivalent_generations.contains(stored)
+                        })
                 })
                 .map(|table| table.name.clone())
                 .collect();

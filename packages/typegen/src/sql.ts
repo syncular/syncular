@@ -120,6 +120,9 @@ export interface ApplyMigrationSqlOptions {
    * immutable, so checks that would require editing them are skipped for the
    * locked prefix and enforced for appended migrations. */
   readonly lockedHistory?: boolean;
+  /** Collects every table a statement names by the 0.101.0 rule, which also
+   * counts index and FTS5 statements (`generation-0101.ts`). */
+  readonly named0101?: Set<string>;
 }
 
 /** ASCII identifier contract shared with named-query analysis: query
@@ -1154,6 +1157,16 @@ export function applyMigrationSql(
         `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, ALTER TABLE … ALTER COLUMN … DROP NOT NULL, DROP INDEX, and DROP TABLE)`,
       );
     }
+    const names = new Set(
+      [...tables.keys(), ...droppedTables].map((name) => name.toLowerCase()),
+    );
+    const statementNames = tokens
+      .filter(
+        (token) =>
+          token.kind !== 'punct' && names.has(token.text.toLowerCase()),
+      )
+      .map((token) => token.text.toLowerCase());
+    for (const name of statementNames) options.named0101?.add(name);
     // §7.4.3: a statement that only declares or drops an index or an FTS5
     // projection names no table, so it leaves every table generation alone.
     const second = tokens[1]?.text.toUpperCase();
@@ -1163,12 +1176,7 @@ export function applyMigrationSql(
       (word === 'DROP' && second === 'INDEX')
     )
       continue;
-    const names = new Set(
-      [...tables.keys(), ...droppedTables].map((name) => name.toLowerCase()),
-    );
-    for (const token of tokens)
-      if (token.kind !== 'punct' && names.has(token.text.toLowerCase()))
-        named.add(token.text.toLowerCase());
+    for (const name of statementNames) named.add(name);
   }
   return named;
 }

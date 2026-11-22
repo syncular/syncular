@@ -922,6 +922,7 @@ mod tests {
                 indexes: Vec::new(),
                 local_projections: Vec::new(),
                 generation: None,
+                equivalent_generations: Vec::new(),
                 fts_indexes: None,
             }],
         })

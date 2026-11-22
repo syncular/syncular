@@ -22,6 +22,7 @@ import { emitQueriesRustModule } from './emit-queries-rust';
 import { emitQueriesSwiftModule } from './emit-queries-swift';
 import { emitSwiftModule } from './emit-swift';
 import { TypegenError } from './errors';
+import { generation0101 } from './generation-0101';
 import {
   appColumnType,
   canonicalizeExtensions,
@@ -416,17 +417,49 @@ export function buildIr(
   }
   const parsedTables = new Map<string, ParsedTable>();
   const droppedTables = new Set<string>();
-  // §7.4.3: per table, the migrations that name it, in application order.
+  // §7.4.3: per table, the migrations that name it, in application order,
+  // by the current rule and by the 0.101.0 rule.
   const namedBy = new Map<string, string[]>();
+  const namedBy0101 = new Map<string, string[]>();
+  // Per table, its current and 0.101.0 generation at each earlier version.
+  const history = new Map<string, { now: string; old: string }[]>();
+  const boundaries = new Set(
+    manifest.schemaVersions.slice(0, -1).map((entry) => entry.through),
+  );
   for (const migration of migrations) {
+    const named0101 = new Set<string>();
     for (const name of applyMigrationSql(
       parsedTables,
       migration.sql,
       `${migration.name}/up.sql`,
       droppedTables,
-      { lockedHistory: lockedNames?.has(migration.name) === true },
+      { lockedHistory: lockedNames?.has(migration.name) === true, named0101 },
     ))
       namedBy.set(name, [...(namedBy.get(name) ?? []), migration.name]);
+    for (const name of named0101)
+      namedBy0101.set(name, [...(namedBy0101.get(name) ?? []), migration.name]);
+    if (!boundaries.has(migration.name)) continue;
+    for (const manifestTable of manifest.tables) {
+      const parsed = parsedTables.get(manifestTable.name);
+      if (parsed === undefined) continue;
+      let table: IrTable;
+      try {
+        table = buildTable(manifestTable, parsed);
+      } catch (error) {
+        // The declaration does not hold at this version, so no replica of it
+        // can carry the target's shape.
+        if (error instanceof TypegenError) continue;
+        throw error;
+      }
+      const key = table.name.toLowerCase();
+      history.set(key, [
+        ...(history.get(key) ?? []),
+        {
+          now: tableGeneration(table, namedBy.get(key) ?? []),
+          old: generation0101(table, namedBy0101.get(key) ?? []),
+        },
+      ]);
+    }
   }
   validateFinalSchemaIdentifiers(parsedTables);
   const schemaVersions = buildSchemaVersions(
@@ -442,12 +475,25 @@ export function buildIr(
       );
     }
     const table = buildTable(manifestTable, parsed);
+    const generation = tableGeneration(
+      table,
+      namedBy.get(table.name.toLowerCase()) ?? [],
+    );
+    // §7.4.3: the 0.101.0 generations of earlier versions whose table equals
+    // this one by the current formula.
+    const equivalentGenerations = [
+      ...new Set(
+        (history.get(table.name.toLowerCase()) ?? [])
+          .filter(
+            (entry) => entry.now === generation && entry.old !== generation,
+          )
+          .map((entry) => entry.old),
+      ),
+    ];
     return {
       ...table,
-      generation: tableGeneration(
-        table,
-        namedBy.get(table.name.toLowerCase()) ?? [],
-      ),
+      generation,
+      ...(equivalentGenerations.length > 0 ? { equivalentGenerations } : {}),
     };
   });
   const listed = new Set(manifest.tables.map((t) => t.name));

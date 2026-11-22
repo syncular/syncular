@@ -73,6 +73,14 @@ Schema validation refusals leave the replica's journal mode and contents untouch
 
 Migration SQL cannot change rows: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a migration, so every data change reaches clients through the change log ([Data changes and backfills](/guide-schema/#data-changes-and-backfills)). A migration that names a table, even one that only adds a column whose name matches the table, changes that table's generation and resets it. A migration that only adds or drops an index does not: the client reconciles declared indexes at open without a reset. A schema written by hand has no generations, and a replica written before 0.77 persisted none: its next bump resets every table, as before. One open at the unchanged schema version on a build that writes generations records them, so the bump after that keeps unchanged tables.
 
+### Replicas written by typegen 0.101.0 and earlier
+
+`typegen` 0.101.0 and earlier also hashed declared indexes and FTS projections into the generation, and counted the statements that declare them as naming the table. A replica those versions wrote persisted those generations, so without help its first bump after the upgrade resets every table with an index or FTS projection, even when the declaration is unchanged.
+
+Since 0.104.1, `typegen` adds `equivalentGenerations` to such tables in the IR and in every generated schema: the generations the 0.101.0 formula gave the table at earlier schema versions where the table equals today's. `typegen` derives the list from the locked migrations and the manifest it already reads; it needs no archived IR and no flag. The lock records neither the manifest of a past version nor which `typegen` wrote it, so `typegen` rebuilds every earlier version with today's manifest. A string rebuilt from a manifest the version did not have matches no persisted generation. At a bump the client keeps a table when the persisted generation equals `generation` or is in `equivalentGenerations`. The key is absent when the list is empty. The client reads it only at a bump: it never goes on the wire, never reaches the server and is part of no generation, so a wire-shape comparison can strip it with `generation` and `localProjections`.
+
+To adopt it, upgrade `@syncular/typegen` and the client packages to 0.104.1 and run `syncular generate`. The manifest, the migrations and the lock stay as they are. The app needs no bridge of its own; remove any code that rewrote `localTableGenerations`. A real change still resets its table: a column relaxed to nullable at an intermediate version resets the table on a replica from before that version and keeps it on one from after.
+
 A unit keeps its cursor, echo and status only when every table it covers, under the old schema and the new one, is kept. The replica cursor stays while at least one kept unit is live.
 
 ### Units that cover changed and unchanged tables

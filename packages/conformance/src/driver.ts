@@ -119,6 +119,8 @@ export interface DriverTable {
   readonly name: string;
   /** §7.4.3 table generation; a bump keeps the table while it is equal. */
   readonly generation?: string;
+  /** §7.4.3: earlier generations of an equal table a bump also keeps. */
+  readonly equivalentGenerations?: readonly string[];
   readonly columns: readonly DriverColumn[];
   readonly primaryKey: string;
   readonly scopes: readonly DriverScopePattern[];

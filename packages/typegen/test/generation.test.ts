@@ -10,6 +10,7 @@ import {
   buildIr,
   generate,
   type IrDocument,
+  loadMigrations,
   type MigrationInput,
   parseManifest,
   TypegenError,
@@ -151,4 +152,97 @@ test('0.102.0 changed the 0.101.0 generation of exactly the tables with an index
       table.name,
       table.indexes.length > 0 || (table.localProjections?.length ?? 0) > 0,
     ]);
+});
+
+test('a later version lists the 0.101.0 generation of each table it keeps', async () => {
+  // The golden fixtures' generations as typegen 0.101.0 emitted them; a
+  // table without an index or FTS had the same string under both formulas.
+  const released: Record<string, string> = {
+    tasks: '243810361624f6ed9d828938a22f4429',
+    docs: '71fd58d27b5d1b5388ce8888473f8e1d',
+    doc_revisions: 'd9a19878f3172c1072258fe4dd071a37',
+    patients: '14985731ce0d72ecf985becf53831183',
+  };
+  for (const fixture of ['basic', 'sealed']) {
+    const dir = join(import.meta.dir, 'fixtures', fixture);
+    const raw = await Bun.file(join(dir, 'syncular.json')).json();
+    const last = raw.schemaVersions.at(-1).version;
+    raw.schemaVersions.push({ version: last + 1, through: '9999_next' });
+    const ir = buildIr(parseManifest(raw), [
+      ...loadMigrations(join(dir, 'migrations')),
+      { name: '9999_next', sql: '-- no statement' },
+    ]);
+    for (const table of ir.tables) {
+      const old = released[table.name] ?? '';
+      expect([table.name, table.equivalentGenerations]).toEqual([
+        table.name,
+        table.generation === old ? undefined : [old],
+      ]);
+    }
+  }
+});
+
+describe('equivalent generations', () => {
+  // Version 1 indexes both tables, so their 0.101.0 strings differ from
+  // the current ones; the last version names neither table.
+  const INDEXED = `${V1.sql}
+    CREATE INDEX idx_catalog_title ON catalog (title);
+    CREATE INDEX idx_notes_body ON notes (body);`;
+  const lists = (
+    sql: readonly string[],
+    notesScopes: unknown[] = ['shelf:{shelf_id}'],
+  ) =>
+    Object.fromEntries(
+      buildIr(
+        parseManifest({
+          manifestVersion: 1,
+          schemaVersions: sql.map((_, i) => ({
+            version: i + 1,
+            through: `000${i + 1}_v`,
+          })),
+          tables: [
+            { name: 'catalog', scopes: ['shelf:{shelf_id}'] },
+            { name: 'notes', scopes: notesScopes },
+          ],
+        }),
+        sql.map((up, i) => ({ name: `000${i + 1}_v`, sql: up })),
+      ).tables.map((table) => [table.name, table.equivalentGenerations]),
+    );
+  const NEXT = 'CREATE INDEX idx_catalog_shelf ON catalog (shelf_id)';
+  const fromV1 = lists([INDEXED, '-- none']);
+
+  test('a NOT NULL drop at an intermediate version keeps the later replicas only', () => {
+    const relaxed = lists([
+      INDEXED,
+      'ALTER TABLE notes ALTER COLUMN body DROP NOT NULL',
+      '-- none',
+    ]);
+    // catalog: one string, identical at both earlier versions.
+    expect(relaxed.catalog).toEqual(fromV1.catalog);
+    // notes: the version 2 string only; a version 1 replica resets.
+    expect(relaxed.notes).toHaveLength(1);
+    expect(relaxed.notes).not.toContain(fromV1.notes?.[0]);
+  });
+
+  test('a migration that changes a table drops every earlier string of it', () => {
+    expect(
+      lists([INDEXED, 'ALTER TABLE notes ADD COLUMN pinned BOOLEAN']).notes,
+    ).toBeUndefined();
+  });
+
+  test('a scope added in the manifest lists no string a past replica holds', () => {
+    // The lock keeps no past manifest: typegen rebuilds version 1 with
+    // today's scopes, which hash to a string no replica wrote.
+    const scoped = lists(
+      [INDEXED, '-- none'],
+      ['shelf:{shelf_id}', 'owner:{owner_id}'],
+    );
+    expect(scoped.notes).toHaveLength(1);
+    expect(scoped.notes).not.toContain(fromV1.notes?.[0]);
+    expect(scoped.catalog).toEqual(fromV1.catalog);
+  });
+
+  test('a migration on another table keeps the string', () => {
+    expect(lists([INDEXED, NEXT, '-- none']).notes).toEqual(fromV1.notes);
+  });
 });

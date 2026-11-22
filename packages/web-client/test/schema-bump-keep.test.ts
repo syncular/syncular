@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifySyncAvailability, type ClientSchema } from '@syncular/client';
 import type { ServerSchema } from '@syncular/server';
+import { compileClientSchema } from '../src/schema';
 import { makeClient, makeServer, type TestServer } from './helpers';
 
 const CATALOG_COLUMNS: readonly RowColumn[] = [
@@ -314,4 +315,16 @@ describe('schema bump keeps tables with unchanged generations (§7.4.3)', () => 
     expect(db.query('SELECT COUNT(*) AS n FROM notes')).toEqual([{ n: 1 }]);
     db.close();
   });
+});
+
+test('a schema whose equivalentGenerations are not strings is refused (§7.4.3)', () => {
+  // A hand-edited generated module: JSON carries no static type.
+  for (const list of ['"g1"', '[1]']) {
+    const schema: ClientSchema = JSON.parse(
+      `{"version":1,"tables":[${JSON.stringify(catalog('g2')).slice(0, -1)},"equivalentGenerations":${list}}]}`,
+    );
+    expect(() => compileClientSchema(schema)).toThrow(
+      'equivalentGenerations must be strings',
+    );
+  }
 });

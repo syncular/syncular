@@ -466,46 +466,123 @@ export const schemaBumpScenarios: readonly Scenario[] = [
     },
   },
   {
-    // 0.102.0 Upgrading: a bump that ships with the upgrade compares against
-    // the 0.101.0 generations, so exactly the table with an index or FTS
-    // resets, bootstraps again and replays the outbox.
-    name: 'schema-bump/a-bump-shipped-with-0.102.0-resets-the-index-and-fts-tables',
+    // 0.104.1 Upgrading: typegen lists the 0.101.0 generation of each table
+    // whose declaration is unchanged, so the bump keeps the table with an
+    // index and FTS without a request, and rebuilds FTS and the index in place.
+    name: 'schema-bump/a-0.101.0-replica-keeps-its-equivalent-tables-across-a-bump',
     specRefs: ['§7.4.3'],
     requires: ['storage-fault'],
     server: { schema: UPGRADE },
     async run(ctx) {
-      const { a, docs } = await replicaOf0101(ctx);
-      const v2 = { ...UPGRADE, version: 2 };
+      const { a, tasks, docs } = await replicaOf0101(ctx);
+      const v2: DriverSchema = {
+        version: 2,
+        tables: [
+          {
+            ...(UPGRADE.tables[0] as DriverTable),
+            equivalentGenerations: ['tasks-1'],
+          },
+          UPGRADE.tables[1] as DriverTable,
+        ],
+      };
       await ctx.server.restart(v2);
+      const sent = a.sentRequests.length;
       await ctx.recreateClient(a, v2);
       checkEqual(
-        (await a.api.unitState(unitId(U1)))?.cursor,
-        -1,
-        'the table with an index and FTS resets',
+        [await unitProgress(a, U1), await unitProgress(a, DOCS_UNIT)],
+        [tasks, docs],
+        'the bump keeps every unit',
       );
       checkEqual(
-        await unitProgress(a, DOCS_UNIT),
-        docs,
-        'the table with neither keeps its unit',
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't3'],
+        'the bump keeps the table with an index and FTS and the queued write',
       );
-      checkEqual(
-        (await a.api.readRows('docs')).map((row) => row.rowId),
-        ['d1'],
-        'the table with neither keeps its rows',
-      );
-      checkEqual(
-        (await a.api.readRows('tasks')).map((row) => row.rowId),
-        ['t3'],
-        'the reset table holds the replayed write',
-      );
-      await syncIdle(a);
       checkEqual(
         await upgradedState(a),
-        { ...UPGRADED, attempted: [] },
-        'the reset table bootstraps again under the current layout',
+        UPGRADED,
+        'FTS, the declared index, the attempt marker and the generations are current',
+      );
+      checkEqual(a.sentRequests.length, sent, 'the bump sends no request');
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the queued write drained',
       );
     },
   },
+  // 0.104.1 Upgrading: a real change still resets a 0.101.0 table. A NOT NULL
+  // relaxation names the table, so typegen lists none of its strings. An
+  // appended encrypted column carries a list built from today's manifest,
+  // which holds no string a replica wrote.
+  ...(
+    [
+      {
+        change: 'relaxed-to-nullable',
+        docs: {
+          generation: 'docs-relaxed',
+          columns: (UPGRADE.tables[1] as DriverTable).columns.map((column) =>
+            column.name === 'body' ? { ...column, nullable: true } : column,
+          ),
+        },
+      },
+      {
+        change: 'newly-encrypted',
+        docs: {
+          generation: 'docs-sealed',
+          equivalentGenerations: ['docs-sealed-0101'],
+          columns: [
+            ...(UPGRADE.tables[1] as DriverTable).columns,
+            {
+              name: 'secret',
+              type: 'bytes',
+              nullable: true,
+              encrypted: true,
+              declaredType: 'string',
+            },
+          ],
+        },
+      },
+    ] satisfies { change: string; docs: Partial<DriverTable> }[]
+  ).map(
+    ({ change, docs }): Scenario => ({
+      name: `schema-bump/a-0.101.0-table-with-a-${change}-column-resets`,
+      specRefs: ['§7.4.3'],
+      requires: ['storage-fault'],
+      server: { schema: UPGRADE },
+      async run(ctx) {
+        const { a, tasks } = await replicaOf0101(ctx);
+        const v2: DriverSchema = {
+          version: 2,
+          tables: [
+            {
+              ...(UPGRADE.tables[0] as DriverTable),
+              equivalentGenerations: ['tasks-1'],
+            },
+            { ...(UPGRADE.tables[1] as DriverTable), ...docs },
+          ],
+        };
+        await ctx.server.restart(v2);
+        await ctx.recreateClient(a, v2);
+        checkEqual(
+          await unitProgress(a, U1),
+          tasks,
+          'the unchanged table keeps its unit',
+        );
+        checkEqual(
+          (await a.api.unitState(unitId(DOCS_UNIT)))?.cursor,
+          -1,
+          'the changed table resets',
+        );
+        checkEqual(
+          await a.api.readRows('docs'),
+          [],
+          'the changed table is recreated',
+        );
+      },
+    }),
+  ),
   {
     // §7.4.3 declared indexes: an index-only change reconciles in place and
     // resets no table and no unit.

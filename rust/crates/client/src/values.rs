@@ -976,6 +976,7 @@ mod naming_tests {
             }],
             server_owned_columns: Vec::new(),
             generation: None,
+            equivalent_generations: Vec::new(),
         };
         let mut config = EncryptionConfig::default();
         config
@@ -1031,6 +1032,7 @@ mod naming_tests {
             encrypted_columns: Vec::new(),
             server_owned_columns: Vec::new(),
             generation: None,
+            equivalent_generations: Vec::new(),
         }
     }
 
@@ -1169,6 +1171,7 @@ mod sparse_key_tests {
             }],
             server_owned_columns: Vec::new(),
             generation: None,
+            equivalent_generations: Vec::new(),
         }
     }
 

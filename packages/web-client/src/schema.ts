@@ -44,6 +44,9 @@ export interface ClientTableSchema {
    * while it equals the generation the replica persisted. Absent in a
    * hand-written schema, whose bumps reset every table. */
   readonly generation?: string;
+  /** §7.4.3: generations typegen 0.101.0 wrote for an equal table; a bump
+   * keeps the table when the persisted one is among them. */
+  readonly equivalentGenerations?: readonly string[];
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
   readonly columns: readonly RowColumn[];
   readonly primaryKey: string;
@@ -63,6 +66,7 @@ export interface ClientSchema {
 export interface CompiledClientTable {
   readonly name: string;
   readonly generation?: string;
+  readonly equivalentGenerations?: readonly string[];
   readonly columns: readonly RowColumn[];
   readonly primaryKey: string;
   readonly primaryKeyIndex: number;
@@ -136,6 +140,14 @@ export function compileClientSchema(
       (typeof table.generation !== 'string' || table.generation === '')
     )
       invalidSchema(`${tableLabel}: generation must be a non-empty string`);
+    if (
+      table.equivalentGenerations !== undefined &&
+      !(
+        Array.isArray(table.equivalentGenerations) &&
+        table.equivalentGenerations.every((g) => typeof g === 'string')
+      )
+    )
+      invalidSchema(`${tableLabel}: equivalentGenerations must be strings`);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
@@ -222,7 +234,10 @@ export function compileClientSchema(
     }
     tables.set(table.name, {
       name: table.name,
-      ...definedObject({ generation: table.generation }),
+      ...definedObject({
+        generation: table.generation,
+        equivalentGenerations: table.equivalentGenerations,
+      }),
       columns: table.columns,
       primaryKey: table.primaryKey,
       primaryKeyIndex,

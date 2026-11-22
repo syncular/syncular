@@ -158,3 +158,16 @@ package set, the GitHub release (`gh release view v<version>`, marked latest for
 the newest version), the version banner on syncular.dev, and one clean external
 consumer install before announcing the release. A release is not done until all
 of them show the version.
+
+## Compatibility code for a major release
+
+A major release may remove these; each one exists only for replicas that
+older releases wrote.
+
+- `packages/typegen/src/generation-0101.ts` and the `named0101` set in
+  `packages/typegen/src/sql.ts` compute the table generations `typegen`
+  0.101.0 and earlier emitted, for `equivalentGenerations` (SPEC §7.4.3,
+  since 0.104.1). With them gone, the first bump after an upgrade from a
+  0.101.0 replica resets every table with a declared index or FTS5
+  projection. The client lookup can stay: a schema without the key keeps
+  the generation rule alone.

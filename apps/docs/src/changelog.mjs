@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'A bump keeps the unchanged tables of a 0.101.0 replica',
+    body: "typegen emits equivalentGenerations on each table whose index or FTS projection changed its generation in 0.102.0: the generations typegen 0.101.0 gave the table at earlier versions where it equals today's. At a schema bump both clients keep a table whose persisted generation is in that list, with its rows, units and FTS. Regenerate after upgrading; the field never goes on the wire.",
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#replicas-written-by-typegen-01010-and-earlier',
+        label: 'Replicas written by typegen 0.101.0 and earlier',
+      },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Previous-version capture is an opt-in entry',
     body: 'The RFC 0005 previous-version capture moved to @syncular/client/previous-version: pass definePreviousVersionContext(budgets) as previousVersionContext, or startSyncWorker({ createPreviousVersionContext: definePreviousVersionContext }) in a worker. The ordinary client and worker bundles are about 6.3 KB and 6.0 KB smaller minified; any other previousVersionContext value fails with client.previous_version_unconfigured.',
     links: [

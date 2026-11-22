@@ -125,6 +125,10 @@ export interface IrTable {
    * A client keeps a table across a schema bump only while it is equal.
    * Absent in IR built without generations. */
   readonly generation?: string;
+  /** §7.4.3: the generations typegen 0.101.0 and earlier wrote for tables
+   * that equal this one by the current formula, from locked history. Local
+   * metadata only; absent when empty. */
+  readonly equivalentGenerations?: readonly string[];
   readonly primaryKey: string;
   /** Declaration order — this IS the §2.4 row-codec positional order. */
   readonly columns: readonly IrColumn[];
@@ -208,6 +212,9 @@ function serializeTableShape(
   return {
     name: table.name,
     ...(table.generation !== undefined ? { generation: table.generation } : {}),
+    ...(table.equivalentGenerations !== undefined
+      ? { equivalentGenerations: table.equivalentGenerations }
+      : {}),
     primaryKey: table.primaryKey,
     columns: table.columns.map((column) => ({
       name: column.name,
@@ -248,10 +255,11 @@ export function tableGeneration(
   table: IrTable,
   migrations: readonly string[],
 ): string {
-  const { generation, indexes, ...shape } = serializeTableShape(
-    table,
-    table.scopes.map((scope) => ({ ...scope })),
-  );
+  const { generation, equivalentGenerations, indexes, ...shape } =
+    serializeTableShape(
+      table,
+      table.scopes.map((scope) => ({ ...scope })),
+    );
   return createHash('sha256')
     .update(
       JSON.stringify({
