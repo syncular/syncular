@@ -1,3 +1,5 @@
+import { definePreviousVersionContext } from '../src/previous-version-context';
+import type { PreviousVersionBudgets } from '../src/previous-version';
 /**
  * RFC 0005 previous-version context (TS core). Covers the contract acceptance
  * items 1-8 and 10: default off, opt-in typed round-trip, no-descriptor, the
@@ -18,6 +20,7 @@ import {
   type ClientSchema,
   type SiblingDatabase,
   type SqlValue,
+  SyncClient,
   type SyncClientConfig,
 } from '@syncular/client';
 import type { RowColumn } from '@syncular/core';
@@ -126,11 +129,9 @@ function tempPath(label: string): string {
 }
 
 function enabled(
-  overrides: Partial<
-    NonNullable<SyncClientConfig['previousVersionContext']>
-  > = {},
+  overrides: PreviousVersionBudgets = {},
 ): SyncClientConfig['previousVersionContext'] {
-  return { enabled: true, ...overrides };
+  return definePreviousVersionContext(overrides);
 }
 
 /** The sibling file the bun adapter uses for the container. */
@@ -1032,4 +1033,53 @@ describe('RFC 0005 coverage exclusion', () => {
       bumped.db.close();
     }
   });
+});
+
+test('previousVersionContext without the entry refuses construction (RFC 0005)', () => {
+  // A config written for 0.103.1 or a hand-built object arrives untyped, as a
+  // persisted or bridged config does.
+  const refuse = (json: string) =>
+    expect(
+      () =>
+        new SyncClient({
+          database: new BunClientDatabase(),
+          schema: V1_SCHEMA,
+          transport: async () => new Uint8Array(),
+          previousVersionContext: JSON.parse(json),
+        }),
+    ).toThrow(
+      expect.objectContaining({ code: 'client.previous_version_unconfigured' }),
+    );
+  refuse('{"enabled":true}');
+  refuse('{"maxBytes":1024}');
+  expect(() =>
+    definePreviousVersionContext(JSON.parse('{"enabled":true}')),
+  ).toThrow(
+    expect.objectContaining({ code: 'client.previous_version_unconfigured' }),
+  );
+});
+
+test('a boot without the entry discards a leftover container (RFC 0005 D9)', async () => {
+  const server = v2Server();
+  const path = tempPath('without-entry');
+  await seedV1(server, path);
+  const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+  expect(
+    bumped.client.previousVersionSnapshot({ table: 'things' }).available,
+  ).toBe(true);
+  await bumped.client.close();
+  bumped.db.close();
+  const plain = await openAt(server, path, V2_SCHEMA);
+  try {
+    expect(existsSync(containerPath(path))).toBe(false);
+    expect(plain.client.statusSnapshot().previousVersionContext).toEqual({
+      present: false,
+    });
+    expect(
+      plain.client.previousVersionSnapshot({ table: 'things' }).reason,
+    ).toBe('not-configured');
+  } finally {
+    await plain.client.close();
+    plain.db.close();
+  }
 });

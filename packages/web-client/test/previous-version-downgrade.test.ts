@@ -1,3 +1,4 @@
+import { definePreviousVersionContext } from '../src/previous-version-context';
 /**
  * RFC 0005 "Separate-file regression, recorded": the REAL pre-change binary.
  *
@@ -301,7 +302,7 @@ describe('RFC 0005 separate-file regression against the real 8b22d819 binary', (
       clientId: CLIENT_ID,
       databasePath: path,
       schema: V2_SCHEMA,
-      previousVersionContext: { enabled: true },
+      previousVersionContext: definePreviousVersionContext(),
     });
     try {
       expect(existsSync(containerPath(path))).toBe(true);

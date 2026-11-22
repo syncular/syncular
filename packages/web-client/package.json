@@ -98,6 +98,14 @@
         "default": "./dist/projection.js"
       }
     },
+    "./previous-version": {
+      "bun": "./src/previous-version-context.ts",
+      "browser": "./dist/previous-version-context.js",
+      "import": {
+        "types": "./dist/previous-version-context.d.ts",
+        "default": "./dist/previous-version-context.js"
+      }
+    },
     "./outbox-control": {
       "bun": "./src/outbox-control.ts",
       "browser": "./dist/outbox-control.js",

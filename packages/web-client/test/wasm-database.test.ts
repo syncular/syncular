@@ -45,3 +45,15 @@ test('statements beyond the cache bound still run and re-prepare', async () => {
   expect(db.query('SELECT 0 AS n WHERE ?', [1])).toEqual([{ n: 0 }]);
   db.close();
 });
+
+test('sqlite-wasm meets the SQLite 3.38 floor of the TypeScript core', async () => {
+  const db = await openWasmDatabase();
+  const [major = 0, minor = 0] = String(
+    db.query('SELECT sqlite_version() AS v')[0]?.v,
+  )
+    .split('.')
+    .map(Number);
+  expect(major > 3 || (major === 3 && minor >= 38)).toBe(true);
+  expect(db.query(`SELECT '["a","b"]'->>1 AS v`)).toEqual([{ v: 'b' }]);
+  db.close();
+});

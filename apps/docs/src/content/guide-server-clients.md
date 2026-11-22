@@ -83,7 +83,7 @@ await client.syncUntilIdle();
 
 This is a complete client for batch-style work. `syncUntilIdle()` runs sync rounds until the outbox is pushed and the unit is live. A CLI or cron worker calls it explicitly, once after start and again after writing. The [quickstart](/quickstart/) runs this shape in a terminal.
 
-The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.16 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`.
+The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.16 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`. The TypeScript client needs SQLite 3.38 or newer; both runtimes ship it, and a custom `ClientDatabase` adapter must provide it too.
 
 ::checkpoint[`client.query('SELECT count(*) FROM appointments')` returns the rows in `clinic-42`.]
 ::::

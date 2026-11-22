@@ -1,3 +1,4 @@
+import { definePreviousVersionContext } from '../src/previous-version-context';
 /**
  * RFC 0005 storage boundary: the captured container lives in its own database
  * file and is NOT on the connection `client.query()` uses.
@@ -83,7 +84,7 @@ describe('RFC 0005 container is off the replica query connection', () => {
       clientId: 'guard-boundary',
       databasePath: path,
       schema: V2_SCHEMA,
-      previousVersionContext: { enabled: true },
+      previousVersionContext: definePreviousVersionContext(),
     });
     try {
       // The capture ran and the feature can read it.

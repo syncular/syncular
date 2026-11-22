@@ -209,28 +209,18 @@ import {
   scrubPurgedOutcomes,
 } from './outcomes';
 import {
-  buildPreviousVersionAudit,
-  capturePreviousVersion,
-  clearPreviousVersionAudit,
+  clearPreviousVersionMeta,
   clearPreviousVersionRefusal,
   dropPreviousVersionContainer,
-  loadLocalSchemaDescriptor,
   PREVIOUS_VERSION_CONTAINER_NAME,
-  PREVIOUS_VERSION_MAX_LIMIT,
   type PreviousVersionAudit,
-  type PreviousVersionCaptureConfig,
+  type PreviousVersionContext,
   type PreviousVersionReason,
   type PreviousVersionReadSpec,
   type PreviousVersionRecord,
   type PreviousVersionSnapshot,
-  readPreviousVersionContainer,
-  readPreviousVersionRows,
   setLocalSchemaDescriptor,
-  storedPreviousVersionAudit,
-  storedPreviousVersionRefusal,
   withPreviousVersionContainer,
-  writePreviousVersionAudit,
-  writePreviousVersionRefusal,
 } from './previous-version';
 import type {
   ProjectionStore,
@@ -567,30 +557,18 @@ export interface SyncClientConfig {
    * and the `through` transport gate. */
   readonly outboxControl?: OutboxControl;
   /**
-   * RFC 0005 previous-version context. A feature flag, default off: when
-   * absent or `enabled: false`, a schema bump behaves exactly as 0.22.0 did
-   * apart from the schema-descriptor write and the unconditional orphan
-   * sweep. It is not a security control.
+   * RFC 0005 previous-version context, from `definePreviousVersionContext()`
+   * in `@syncular/client/previous-version`. When absent, a schema bump
+   * captures nothing apart from the schema-descriptor write and the
+   * unconditional orphan sweep. It is not a security control.
    *
-   * When enabled, the §7.4.3 reset captures a bounded typed copy of the
-   * pre-reset rows and `previousVersionSnapshot()` can read it until
-   * coverage completes, the lease ends, a scope is revoked, the TTL passes,
-   * the data is purged, or the host discards it.
+   * When set, the §7.4.3 reset captures a bounded typed copy of the pre-reset
+   * rows and `previousVersionSnapshot()` can read it until coverage completes,
+   * the lease ends, a scope is revoked, the TTL passes, the data is purged, or
+   * the host discards it. Any other value fails construction with
+   * `client.previous_version_unconfigured`.
    */
-  readonly previousVersionContext?: {
-    readonly enabled: boolean;
-    /** Total captured bytes; default 8 MiB. */
-    readonly maxBytes?: number;
-    /** Total captured rows; default 20,000. */
-    readonly maxRows?: number;
-    /** Captured table count; default 32. */
-    readonly maxTables?: number;
-    /** Largest single captured row in bytes; default 1 MiB. */
-    readonly maxRowBytes?: number;
-    /** Aware-binary hygiene TTL; default 24h. It does not bound an
-     * unaware same-schema rollback, which runs none of this code. */
-    readonly maxAgeMs?: number;
-  };
+  readonly previousVersionContext?: PreviousVersionContext;
 }
 
 /** The fail-closed local-replica security lifecycle shared by every host. */
@@ -915,33 +893,6 @@ function requireRoundBudget(maxRounds: number | undefined): void {
     throw invalidRequest('maxRounds must be a positive integer');
 }
 
-/** RFC 0005 defaults (D2/A4/D7). */
-function boundedBudget(
-  config: SyncClientConfig['previousVersionContext'],
-  name: 'maxBytes' | 'maxRows' | 'maxTables' | 'maxRowBytes' | 'maxAgeMs',
-  fallback: number,
-): number {
-  const value = config?.[name];
-  if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw invalidRequest(
-      `previousVersionContext.${name} must be a positive safe integer`,
-    );
-  }
-  return value;
-}
-
-/** RFC 0005 D7: `limit` defaults to 50 and is capped at 200. */
-function resolvePreviousVersionLimit(limit: number | undefined): number {
-  if (limit === undefined) return 50;
-  if (!Number.isFinite(limit) || limit < 1) {
-    throw invalidRequest(
-      'previousVersionSnapshot limit must be a positive number',
-    );
-  }
-  return Math.min(PREVIOUS_VERSION_MAX_LIMIT, Math.trunc(limit));
-}
-
 function isFinalPushResult(frame: PushResultFrame): boolean {
   return (
     frame.status !== 'rejected' ||
@@ -1031,8 +982,8 @@ export class SyncClient {
   readonly #schema: CompiledClientSchema;
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
   #encryption: Keyring | undefined;
-  /** RFC 0005 resolved capture budgets; undefined ⇒ feature off. */
-  readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
+  /** RFC 0005 previous-version context; undefined ⇒ feature off. */
+  readonly #previousVersion: PreviousVersionContext | undefined;
   #securityLifecycle: SecurityLifecycle;
   #securityEpoch = 0;
   /** TRANSPORT_GATES index; 3 is `through` #throughId at outbox seq #through. */
@@ -1244,15 +1195,16 @@ export class SyncClient {
     // that capability (native bridges today) has no storage for it, so the
     // feature resolves as not configured rather than pretending to capture.
     const context = config.previousVersionContext;
+    if (
+      context !== undefined &&
+      typeof context.capturePreviousVersion !== 'function'
+    )
+      throw new ClientSyncError(
+        'client.previous_version_unconfigured',
+        'previousVersionContext needs definePreviousVersionContext() from @syncular/client/previous-version',
+      );
     this.#previousVersion =
-      this.#db.openSibling === undefined || context?.enabled !== true
-        ? undefined
-        : {
-            maxBytes: boundedBudget(context, 'maxBytes', 8 * 1024 * 1024),
-            maxRows: boundedBudget(context, 'maxRows', 20_000),
-            maxTables: boundedBudget(context, 'maxTables', 32),
-            maxRowBytes: boundedBudget(context, 'maxRowBytes', 1024 * 1024),
-          };
+      this.#db.openSibling === undefined ? undefined : context;
     this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
 
@@ -1476,10 +1428,11 @@ export class SyncClient {
       this.#db.transaction(() => {
         // §4.8: the reset is a transition of every persisted unit.
         for (const unit of loadUnits(this.#db)) this.#unitWindow(unit);
-        if (this.#previousVersion !== undefined) {
-          writePreviousVersionAudit(
+        const context = this.#previousVersion;
+        if (context !== undefined) {
+          context.writePreviousVersionAudit(
             this.#db,
-            buildPreviousVersionAudit(
+            context.buildPreviousVersionAudit(
               this.#schema,
               listOutbox(this.#db),
               previousVersion,
@@ -1511,11 +1464,11 @@ export class SyncClient {
    * stores nothing and records its reason for the read surface.
    */
   #capturePreviousVersion(previousVersion: number): void {
-    const config = this.#previousVersion;
-    if (config === undefined) return;
-    const descriptor = loadLocalSchemaDescriptor(this.#db);
+    const context = this.#previousVersion;
+    if (context === undefined) return;
+    const descriptor = context.loadLocalSchemaDescriptor(this.#db);
     if (descriptor === undefined || descriptor.version !== previousVersion) {
-      writePreviousVersionRefusal(this.#db, 'no-previous-descriptor', {
+      context.writePreviousVersionRefusal(this.#db, 'no-previous-descriptor', {
         tables: 0,
         rows: 0,
         bytes: 0,
@@ -1526,19 +1479,19 @@ export class SyncClient {
     if (handle === undefined) return;
     let captured = false;
     try {
-      const outcome = capturePreviousVersion(
+      const outcome = context.capturePreviousVersion(
         this.#db,
         handle.database,
         descriptor,
         this.#schema,
-        config,
+        context.capture,
         this.#now(),
       );
       if (outcome.ok) {
         captured = true;
         clearPreviousVersionRefusal(this.#db);
       } else {
-        writePreviousVersionRefusal(
+        context.writePreviousVersionRefusal(
           this.#db,
           outcome.reason,
           outcome.measurement,
@@ -2075,7 +2028,8 @@ export class SyncClient {
   ): PreviousVersionSnapshot {
     this.#requireActive();
     const currentVersion = this.#schema.version;
-    if (this.#previousVersion === undefined) {
+    const context = this.#previousVersion;
+    if (context === undefined) {
       return this.#previousVersionUnavailable(currentVersion, 'not-configured');
     }
     const record = this.#readPreviousVersionRecord();
@@ -2102,7 +2056,7 @@ export class SyncClient {
     if (record === undefined)
       return this.#previousVersionUnavailable(
         currentVersion,
-        storedPreviousVersionRefusal(this.#db)?.reason ??
+        context.storedPreviousVersionRefusal(this.#db)?.reason ??
           'no-previous-descriptor',
       );
     const table = record.tables.find((entry) => entry.name === spec.table);
@@ -2112,11 +2066,11 @@ export class SyncClient {
       );
     }
     const read = withPreviousVersionContainer(this.#db, (container) =>
-      readPreviousVersionRows(
+      context.readPreviousVersionRows(
         container,
         table,
         spec.rowIds?.map(String) ?? [],
-        resolvePreviousVersionLimit(spec.limit),
+        spec.limit,
       ),
     );
     if (read === undefined) {
@@ -2138,7 +2092,7 @@ export class SyncClient {
   /** RFC 0005 D6: the pre-reset compatibility audit, advisory only. */
   previousVersionAudit(): PreviousVersionAudit | undefined {
     this.#requireActive();
-    return storedPreviousVersionAudit(this.#db);
+    return this.#previousVersion?.storedPreviousVersionAudit(this.#db);
   }
 
   /**
@@ -2176,7 +2130,13 @@ export class SyncClient {
 
   /** Read the container's own metadata; opens the file for that window only. */
   #readPreviousVersionRecord(): PreviousVersionRecord | undefined {
-    return withPreviousVersionContainer(this.#db, readPreviousVersionContainer);
+    const context = this.#previousVersion;
+    return context
+      ? withPreviousVersionContainer(
+          this.#db,
+          context.readPreviousVersionContainer,
+        )
+      : undefined;
   }
 
   #previousVersionLeaseInactive(nowMs: number): boolean {
@@ -2205,15 +2165,10 @@ export class SyncClient {
    * state wrap it with {@link #discardPreviousVersion}.
    */
   #dropPreviousVersion(): boolean {
-    const present =
-      this.#dropPreviousVersionContainerFile() ||
-      storedPreviousVersionRefusal(this.#db) !== undefined ||
-      storedPreviousVersionAudit(this.#db) !== undefined;
-    this.#db.transaction(() => {
-      clearPreviousVersionRefusal(this.#db);
-      clearPreviousVersionAudit(this.#db);
-    });
-    return present;
+    const dropped = this.#dropPreviousVersionContainerFile();
+    return (
+      this.#db.transaction(() => clearPreviousVersionMeta(this.#db)) || dropped
+    );
   }
 
   #discardPreviousVersion(): boolean {
@@ -2245,14 +2200,7 @@ export class SyncClient {
     record: PreviousVersionRecord,
     nowMs = this.#now(),
   ): boolean {
-    return (
-      nowMs - record.createdAtMs >
-      boundedBudget(
-        this.#config.previousVersionContext,
-        'maxAgeMs',
-        24 * 60 * 60 * 1000,
-      )
-    );
+    return nowMs - record.createdAtMs > (this.#previousVersion?.maxAgeMs ?? 0);
   }
 
   /**
@@ -2266,8 +2214,7 @@ export class SyncClient {
     if (
       record === undefined ||
       record.currentVersion !== this.#schema.version ||
-      (this.#previousVersion !== undefined &&
-        this.#previousVersionExpired(record))
+      this.#previousVersionExpired(record)
     )
       this.#dropPreviousVersion();
   }

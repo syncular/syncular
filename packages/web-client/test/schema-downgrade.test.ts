@@ -1,3 +1,4 @@
+import { definePreviousVersionContext } from '../src/previous-version-context';
 import { expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,7 +44,7 @@ test('v3 queued write survives v2 reopen, before bookkeeping and container clean
     transport: async (): Promise<Uint8Array> => {
       throw new Error('offline');
     },
-    previousVersionContext: { enabled: true },
+    previousVersionContext: definePreviousVersionContext(),
   };
   try {
     const client = new SyncClient(config);

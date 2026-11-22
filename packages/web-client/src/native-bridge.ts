@@ -72,6 +72,7 @@ import type {
 import {
   decodePreviousVersionAuditResult,
   decodePreviousVersionDiscardResult,
+  type PreviousVersionBudgets,
   decodePreviousVersionSnapshot,
   type PreviousVersionAudit,
   type PreviousVersionReadSpec,
@@ -130,8 +131,10 @@ export interface NativeCreateConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the native replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
-  /** RFC 0005 previous-version context (default off). */
-  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  /** RFC 0005 previous-version context for the native core (default off). */
+  readonly previousVersionContext?: PreviousVersionBudgets & {
+    readonly enabled: boolean;
+  };
 }
 
 /** The error a native `{error}` reply surfaces (mirrors `ClientSyncError`). */

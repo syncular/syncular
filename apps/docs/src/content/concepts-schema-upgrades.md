@@ -148,24 +148,28 @@ The window permits added tables and appended nullable columns. It rejects remove
 
 A bump wipes the changed local tables, so for a moment the app can see that its own rows are gone while the bootstrap runs. **Previous-version context** is an opt-in feature that keeps a bounded, typed, read-only copy of the pre-bump rows so the app can answer "what did this look like before the upgrade" until the replacement data arrives ([SPEC §7.4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)).
 
-The feature is off by default. With it absent or `enabled: false`, a bump behaves as described above, apart from two small bookkeeping writes that always run: the schema descriptor and the container sweep. It is a feature flag and not a security control.
+The feature is off by default. Without it, a bump behaves as described above, apart from two small bookkeeping writes that always run: the schema descriptor and the container sweep. It is a feature flag and not a security control.
 
 ### Turn it on
 
+The TypeScript client ships the capture in the opt-in `@syncular/client/previous-version` entry. `definePreviousVersionContext()` turns it on; every budget is optional and the defaults are shown.
+
 ```ts title="src/client.ts"
+import { definePreviousVersionContext } from '@syncular/client/previous-version';
+
 const client = await createClient({
   ...config,
-  previousVersionContext: {
-    enabled: true,
-    // All optional; the defaults are shown.
+  previousVersionContext: definePreviousVersionContext({
     maxBytes: 8 * 1024 * 1024,
     maxRows: 20_000,
     maxTables: 32,
     maxRowBytes: 1024 * 1024,
     maxAgeMs: 24 * 60 * 60 * 1000,
-  },
+  }),
 });
 ```
+
+A worker handle takes the same budgets as plain `previousVersionContext: { maxBytes, ... }`, and the worker turns them into the context with `startSyncWorker({ createPreviousVersionContext: definePreviousVersionContext })`. A `previousVersionContext` without the entry, the earlier `{ enabled: true }` included, fails construction with `client.previous_version_unconfigured`. The Rust core and the Tauri and React Native bridges keep `{ enabled: true, ... }`.
 
 The capture happens during the reset, before the wipe. It copies every table of the previous schema, unchanged tables included. The client measures it against every bound before it materializes any row, and the capture is all-or-nothing. If any bound is exceeded, nothing is captured, no container file is left behind, and the read surface reports `reason: 'capture-exceeded-budget'` with the measured totals (counts only).
 

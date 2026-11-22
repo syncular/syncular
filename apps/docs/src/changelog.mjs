@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'Previous-version capture is an opt-in entry',
+    body: 'The RFC 0005 previous-version capture moved to @syncular/client/previous-version: pass definePreviousVersionContext(budgets) as previousVersionContext, or startSyncWorker({ createPreviousVersionContext: definePreviousVersionContext }) in a worker. The ordinary client and worker bundles are about 6.3 KB and 6.0 KB smaller minified; any other previousVersionContext value fails with client.previous_version_unconfigured.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#advanced-previous-version-context',
+        label: 'Previous-version context',
+      },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Tauri clients the Rust host creates',
     body: "A client the Rust host creates through app.syncular().command() keeps the host's schema, database and authority declarations. Webviews reach it with attachTauriSyncClient() and run commands, queries and authority reads on it; the plugin refuses a webview create, shutdown, activateSecurity or beginSecurityPreflight with client.host_owned until the host shuts the client down.",
     links: [

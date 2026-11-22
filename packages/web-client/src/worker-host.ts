@@ -52,7 +52,6 @@ import type {
   TransportGate,
   SnapshotRead,
   SnapshotReadRequest,
-  SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
   SyncIdleOptions,
@@ -110,6 +109,7 @@ import type {
 import {
   decodePreviousVersionAuditResult,
   decodePreviousVersionDiscardResult,
+  type PreviousVersionBudgets,
   decodePreviousVersionSnapshot,
   type PreviousVersionAudit,
   type PreviousVersionReadSpec,
@@ -220,10 +220,11 @@ export interface SyncClientHandleConfig {
   /** SPEC §8.5 heartbeat interval, forwarded into `WorkerInitConfig`. */
   readonly realtimeHeartbeatMs?: number;
   /**
-   * RFC 0005 previous-version context, forwarded into the worker's
-   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   * RFC 0005 previous-version budgets for a worker started with
+   * `startSyncWorker({ createPreviousVersionContext })`. Absent ⇒ the feature
+   * stays off.
    */
-  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  readonly previousVersionContext?: PreviousVersionBudgets;
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
   /**

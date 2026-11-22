@@ -64,6 +64,18 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         Infinity,
       ],
       [
+        'previous-version-client',
+        `import { SyncClient } from '${root}/packages/web-client/src/client.ts'; import { definePreviousVersionContext } from '${root}/packages/web-client/src/previous-version-context.ts'; export const create = config => new SyncClient({ ...config, previousVersionContext: definePreviousVersionContext() });`,
+        false,
+        Infinity,
+      ],
+      [
+        'previous-version-worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { definePreviousVersionContext } from '${root}/packages/web-client/src/previous-version-context.ts'; startSyncWorker({ createPreviousVersionContext: definePreviousVersionContext });`,
+        false,
+        Infinity,
+      ],
+      [
         'authority-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { defineAuthorityReads } from '${root}/packages/web-client/src/authority.ts'; startSyncWorker({ createAuthorityReads: defineAuthorityReads });`,
         true,
@@ -92,6 +104,7 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       writeFileSync(entry, source);
       const authorityModules: string[] = [];
       const outboxControlModules: string[] = [];
+      const previousVersionModules: string[] = [];
       const result = await Bun.build({
         entrypoints: [entry],
         target: 'browser',
@@ -126,6 +139,13 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
                 outboxControlModules.push(args.path);
                 return undefined;
               });
+              build.onLoad(
+                { filter: /\/previous-version-context\.ts$/ },
+                (args) => {
+                  previousVersionModules.push(args.path);
+                  return undefined;
+                },
+              );
             },
           },
         ],
@@ -145,6 +165,10 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       // §7.2.3: only the opt-in lanes load the replacement entry.
       expect(outboxControlModules.length > 0).toBe(
         lane.startsWith('outbox-control-'),
+      );
+      // RFC 0005: only the opt-in lanes load the previous-version entry.
+      expect(previousVersionModules.length > 0).toBe(
+        lane.startsWith('previous-version-'),
       );
       const code = new TextDecoder().decode(bytes);
       expect(

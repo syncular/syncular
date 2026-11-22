@@ -755,7 +755,7 @@ test('the worker host forwards previousVersionContext into the worker core', asy
   const { handle } = await makeHandle({
     clientId: 'rpc-previous-version-enabled',
     autoSync: false,
-    previousVersionContext: { enabled: true },
+    previousVersionContext: {},
   });
   const snapshot = await handle.previousVersionSnapshot({ table: 'tasks' });
   expect(snapshot.state).toBe('previousVersion');
@@ -1561,6 +1561,23 @@ test('ordinary worker rejects authority declarations before opening storage', as
       authorityReads: defineAuthorityReads([projectTitles]),
     }),
     'client.authority_read_forbidden',
+  );
+});
+
+test('ordinary worker refuses previous-version budgets without the factory', async () => {
+  await expectRejectsWithCode(
+    createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
+      worker: () =>
+        new Worker(new URL('./ordinary-rpc-worker.ts', import.meta.url).href),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: 'https://invalid.test/sync' },
+      autoSync: false,
+      multiTab: false,
+      previousVersionContext: {},
+    }),
+    'client.previous_version_unconfigured',
   );
 });
 

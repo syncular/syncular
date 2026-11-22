@@ -1,3 +1,4 @@
+import { definePreviousVersionContext } from '../src/previous-version-context';
 /**
  * The REAL worker entry, run inside a bun `Worker` by the RPC tests —
  * same bootstrap, same protocol as the browser, with the database
@@ -14,6 +15,7 @@ let opens = 0;
 startSyncWorker({
   createAuthorityReads: defineAuthorityReads,
   createOutboxControl: defineOutboxControl,
+  createPreviousVersionContext: definePreviousVersionContext,
   waitForStorageRetry: async (delayMs) => {
     postMessage({ t: 'storage-retry', delayMs });
   },

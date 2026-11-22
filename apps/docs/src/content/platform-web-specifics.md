@@ -351,6 +351,9 @@ or overwritten journal data needs separate recovery.
 The only main-thread mode is ephemeral: `openWasmDatabase()` returns an
 in-memory sqlite-wasm database for tests, demos, and SSR. Reload wipes it.
 
+Both modes run on the `@sqlite.org/sqlite-wasm` 3.53 dependency. The client
+needs SQLite 3.38 or newer for its `->>` JSON reads.
+
 ```ts title="src/test-client.ts"
 import { SyncClient } from '@syncular/client';
 import { openWasmDatabase } from '@syncular/client/wasm';

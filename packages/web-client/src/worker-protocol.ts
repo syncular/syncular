@@ -35,7 +35,6 @@ import type {
   QueryReadSpec,
   QuerySnapshot,
   SecurityLifecycle,
-  SyncClientConfig,
   TransportGate,
   SyncClientLimits,
   SyncSummary,
@@ -56,6 +55,7 @@ import type { OutboxCommit } from './outbox';
 import type { CommitOutcome } from './outcomes';
 import type {
   PreviousVersionAudit,
+  PreviousVersionBudgets,
   PreviousVersionReadSpec,
   PreviousVersionSnapshot,
 } from './previous-version';
@@ -152,10 +152,11 @@ export interface WorkerInitConfig {
   /** SPEC §8.5 heartbeat interval for the worker-owned core; forwarded verbatim. */
   readonly realtimeHeartbeatMs?: number;
   /**
-   * RFC 0005 previous-version context, forwarded verbatim into the worker's
-   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   * RFC 0005 previous-version budgets. The worker's
+   * `startSyncWorker({ createPreviousVersionContext })` turns them into the
+   * context; a worker without it refuses them. Absent ⇒ the feature stays off.
    */
-  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  readonly previousVersionContext?: PreviousVersionBudgets;
   /**
    * Worker-side host loop (§8.4): coalesce interactive work immediately and
    * honor explicit background retry deadlines

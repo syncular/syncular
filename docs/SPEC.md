@@ -6198,6 +6198,11 @@ deletes that client's records.
 
 ## 7. Offline writes and replay
 
+A TypeScript client's local SQLite MUST be version 3.38 or newer: the client
+core reads JSON through the `->>` operator. The shipped `bun:sqlite`,
+`node:sqlite` and sqlite-wasm adapters meet it, and a custom
+`ClientDatabase` adapter must too. The client runs no version check.
+
 Sync storage MUST provide read-after-write consistency for commit sequences,
 commit windows, current rows and authorization. A query cache that survives
 writes is incompatible with this contract. A combined push/pull whose storage
@@ -7499,7 +7504,14 @@ default off**, and never a security control (§7.4.6.6).
   maxRows?, maxTables?, maxRowBytes?, maxAgeMs? }`. Every numeric bound
   MUST be a positive safe integer; a violation is
   `sync.invalid_request`. `enabled` is a feature flag and MUST NOT be
-  described as a security control.
+  described as a security control. The TypeScript client takes the budgets
+  through `definePreviousVersionContext()` from the opt-in
+  `@syncular/client/previous-version` entry, which is its `enabled`; a
+  worker takes the budgets in its handle config and the factory as
+  `startSyncWorker({ createPreviousVersionContext })`. Any other
+  `previousVersionContext` value, `{ enabled: true }` included, and
+  budgets for a worker without the factory fail construction with
+  `client.previous_version_unconfigured`.
 
 **7.4.6.1 The persisted schema descriptor — the only source of semantic
 types.** A client persists the semantic local type of every table and
@@ -9854,6 +9866,9 @@ commit's stored result, so it can no longer be replaced; details
 `client.outbox_control_unconfigured` [§7.2.3, §8.8: the TypeScript
 client was created without `outboxControl`, so `replacePendingCommit` and
 `setTransportGate({ through })` are unavailable; non-retryable],
+`client.previous_version_unconfigured` [§7.4.6: a TypeScript client or
+worker got a `previousVersionContext` without the
+`@syncular/client/previous-version` implementation; non-retryable],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],

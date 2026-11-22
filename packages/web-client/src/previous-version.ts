@@ -149,6 +149,45 @@ export interface PreviousVersionCaptureConfig {
   readonly maxRowBytes: number;
 }
 
+/** RFC 0005 budgets for `definePreviousVersionContext()`. */
+export interface PreviousVersionBudgets {
+  /** Total captured bytes; default 8 MiB. */
+  readonly maxBytes?: number;
+  /** Total captured rows; default 20,000. */
+  readonly maxRows?: number;
+  /** Captured table count; default 32. */
+  readonly maxTables?: number;
+  /** Largest single captured row in bytes; default 1 MiB. */
+  readonly maxRowBytes?: number;
+  /** Aware-binary hygiene TTL; default 24h. It does not bound an
+   * unaware same-schema rollback, which runs none of this code. */
+  readonly maxAgeMs?: number;
+}
+
+/**
+ * What `definePreviousVersionContext()` returns. The client core calls the
+ * capture, read and audit code only through it, so a client without the entry
+ * does not bundle that code.
+ */
+export interface PreviousVersionContext {
+  readonly capture: PreviousVersionCaptureConfig;
+  readonly maxAgeMs: number;
+  readonly capturePreviousVersion: typeof capturePreviousVersion;
+  readonly loadLocalSchemaDescriptor: typeof loadLocalSchemaDescriptor;
+  readonly readPreviousVersionContainer: typeof readPreviousVersionContainer;
+  readonly readPreviousVersionRows: (
+    container: ClientDatabase,
+    table: LocalSchemaDescriptorTable,
+    rowIds: readonly string[],
+    limit?: number,
+  ) => { rows: SqlRow[]; truncated: boolean };
+  readonly buildPreviousVersionAudit: typeof buildPreviousVersionAudit;
+  readonly writePreviousVersionAudit: typeof writePreviousVersionAudit;
+  readonly storedPreviousVersionAudit: typeof storedPreviousVersionAudit;
+  readonly writePreviousVersionRefusal: typeof writePreviousVersionRefusal;
+  readonly storedPreviousVersionRefusal: typeof storedPreviousVersionRefusal;
+}
+
 interface PreviousVersionCaptureMeasurement {
   readonly tables: number;
   readonly rows: number;
@@ -893,10 +932,18 @@ export function writePreviousVersionAudit(
 }
 
 /** Delete the advisory audit. Part of a discard, never of a normal bump. */
-export function clearPreviousVersionAudit(db: ClientDatabase): void {
-  db.exec(`DELETE FROM ${META_TABLE} WHERE key=?`, [
+/** Delete the refusal and the audit; returns whether either was stored. */
+export function clearPreviousVersionMeta(db: ClientDatabase): boolean {
+  const present =
+    db.query(`SELECT 1 FROM ${META_TABLE} WHERE key IN(?,?)`, [
+      PREVIOUS_VERSION_CONTEXT_KEY,
+      PREVIOUS_VERSION_AUDIT_KEY,
+    ]).length > 0;
+  db.exec(`DELETE FROM ${META_TABLE} WHERE key IN(?,?)`, [
+    PREVIOUS_VERSION_CONTEXT_KEY,
     PREVIOUS_VERSION_AUDIT_KEY,
   ]);
+  return present;
 }
 
 // ---------------------------------------------------------------------------

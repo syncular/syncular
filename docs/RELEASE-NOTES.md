@@ -15,10 +15,46 @@ the table runs the same statements as before. With P pending rows on a table
 that has a unique index, every transaction that writes server rows into it
 restores and replays those P rows; an image import in that state commits chunks
 of at most 1,024 rows (SPEC §5.3), so the restore costs P deletes and P upserts
-per chunk, because any chunk can bring a winner. The Rust client already
-behaved this way; conformance now covers both.
+per chunk, because any chunk can bring a winner. In headless Chromium on an
+OPFS replica, a 67,302-row table imported in 67 chunks; the restore added 0.3
+ms per chunk with one pending row and 1.3 ms with 100 (median chunk callback
+8.9 against 8.5 ms and 9.8 against 8.3 ms). The Rust client already behaved
+this way; conformance now covers both.
 
 [Unique-index collisions](https://syncular.dev/reference-outbox-outcomes/#unique-index-collisions)
+
+### Previous-version capture is an opt-in entry
+
+`@syncular/client/previous-version` exports
+`definePreviousVersionContext(budgets)`. The RFC 0005 capture, read and audit
+code moved there from the client core. With the fix above included, the
+ordinary client bundle is 6,275 B and the worker bundle 6,017 B smaller than in
+0.103.1 (minified). `statusSnapshot()`,
+`previousVersionSnapshot()`, `previousVersionAudit()` and
+`previousVersionDiscard()` keep their shapes. Without the entry the snapshot
+answers `not-configured`, and a boot discards a container an earlier build left
+behind. The Rust core and the Tauri and React Native bridges change nothing.
+
+[Previous-version context](https://syncular.dev/concepts-schema-upgrades/#advanced-previous-version-context)
+
+### Upgrading
+
+- Replace `previousVersionContext: { enabled: true, ...budgets }` with
+  `import { definePreviousVersionContext } from '@syncular/client/previous-version'`
+  and `previousVersionContext: definePreviousVersionContext({ ...budgets })`.
+  A worker handle keeps `previousVersionContext: { ...budgets }` without
+  `enabled`, and the worker starts with
+  `startSyncWorker({ createPreviousVersionContext: definePreviousVersionContext })`.
+  Any other value, `{ enabled: true }` included, and budgets for a worker
+  without the factory fail construction with
+  `client.previous_version_unconfigured`.
+- The TypeScript client needs SQLite 3.38 or newer for its `->>` JSON reads.
+  `bun:sqlite`, `node:sqlite` and the `@sqlite.org/sqlite-wasm` 3.53
+  dependency meet it; a custom `ClientDatabase` adapter must too.
+- The worker handle's `previousVersionContext` takes budgets, so
+  `MULTI_TAB_PROTOCOL_VERSION` moves from 12 to 13. A tab still running an
+  older build reports `leader-incompatible` and must reload. The replica
+  storage, the server and the SSP2 wire do not change.
 
 ## 0.103.1 release notes
 

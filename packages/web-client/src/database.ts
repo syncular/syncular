@@ -29,6 +29,11 @@ export interface SiblingDatabase {
   removeFile(): void;
 }
 
+/**
+ * The local SQLite connection the client core runs on. It must be SQLite 3.38
+ * or newer: the core reads JSON through the `->>` operator and runs no version
+ * check. The shipped bun:sqlite, node:sqlite and sqlite-wasm adapters meet it.
+ */
 export interface ClientDatabase {
   /** Execute a single statement (no result rows). */
   exec(sql: string, params?: readonly SqlValue[]): void;

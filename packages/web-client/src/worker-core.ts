@@ -17,6 +17,7 @@ import { definedObject } from '@syncular/core';
 import type { compileLocalProjections } from './projection';
 import type { defineAuthorityReads } from './authority';
 import type { defineOutboxControl } from './outbox-control';
+import type { definePreviousVersionContext } from './previous-version-context';
 import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
@@ -73,6 +74,8 @@ export interface SyncWorkerOverrides {
   readonly createProjections?: typeof compileLocalProjections;
   /** §7.2.3: enables `replacePendingCommit` in this worker. */
   readonly createOutboxControl?: typeof defineOutboxControl;
+  /** RFC 0005: enables the previous-version context in this worker. */
+  readonly createPreviousVersionContext?: typeof definePreviousVersionContext;
   /** Database factory indirection: tests inject bun:sqlite here. */
   readonly openDatabase?: (
     config: WorkerInitConfig,
@@ -381,6 +384,14 @@ export function startSyncWorkerCore(
         LOCAL_AUTHORITY_UNCONFIGURED_CODE,
         'this worker has no local authority',
       );
+    if (
+      config.previousVersionContext !== undefined &&
+      !overrides.createPreviousVersionContext
+    )
+      throw new ClientSyncError(
+        'client.previous_version_unconfigured',
+        'previousVersionContext needs startSyncWorker({ createPreviousVersionContext })',
+      );
     if (config.authorityReads !== undefined && !overrides.createAuthorityReads)
       throw new ClientSyncError(
         'client.authority_read_forbidden',
@@ -459,7 +470,11 @@ export function startSyncWorkerCore(
           config.authorityReads &&
           overrides.createAuthorityReads!(config.authorityReads),
         securityPreflight: config.securityPreflight,
-        previousVersionContext: config.previousVersionContext,
+        previousVersionContext:
+          config.previousVersionContext &&
+          overrides.createPreviousVersionContext!(
+            config.previousVersionContext,
+          ),
         transportGate: config.transportGate,
       }),
       database,

@@ -33,6 +33,15 @@ export async function runAdapterContract(
 ): Promise<void> {
   const db = open();
 
+  // --- SQLite floor: the TypeScript core reads JSON with `->>` (3.38) ---
+  const [major = 0, minor = 0] = String(
+    db.query('SELECT sqlite_version() AS v')[0]?.v,
+  )
+    .split('.')
+    .map(Number);
+  assert(major > 3 || (major === 3 && minor >= 38), 'SQLite 3.38 or newer');
+  eq(db.query(`SELECT '["a","b"]'->>1 AS v`), [{ v: 'b' }], 'the ->> operator');
+
   // --- exec / query round-trip, params, and result shape ---
   db.exec(
     'CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER, f REAL, b BLOB, flag INTEGER)',

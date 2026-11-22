@@ -8,6 +8,7 @@
 import { compileLocalProjections } from '@syncular/client/projections';
 import { defineAuthorityReads } from '@syncular/client/authority';
 import { defineOutboxControl } from '@syncular/client/outbox-control';
+import { definePreviousVersionContext } from '@syncular/client/previous-version';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -394,7 +395,14 @@ async function constructClient(
       : undefined;
   // §5.11: build a key provider from the driver's `{ $bytes: hex }` keys.
   const encryption = buildEncryption(options.encryption);
-  const previousVersionContext = options.previousVersionContext;
+  // RFC 0005: the TS client takes the entry's context; `enabled` is the
+  // driver-surface switch shared with the Rust host.
+  const { enabled, ...budgets } = options.previousVersionContext ?? {
+    enabled: false,
+  };
+  const previousVersionContext = enabled
+    ? definePreviousVersionContext(budgets)
+    : undefined;
   let loseRealtime: (() => void) | undefined;
   let held:
     | {
