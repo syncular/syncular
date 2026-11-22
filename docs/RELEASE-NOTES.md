@@ -80,21 +80,22 @@ drops an index the app created.
 
 ### Upgrading
 
-- **One-time resets, once, at the first open of 0.102.0.** These tables take a
-  new generation, so the first open after the upgrade resets exactly them,
-  bootstraps them again and replays the outbox on top; every other table and
-  its units stay:
-  - every table that declares a secondary index, because declared indexes left
-    the generation hash;
-  - every table that owns an FTS projection, because FTS projections left the
-    generation hash and became built-in local projections;
-  - every table a migration names only in a `CREATE INDEX`, `DROP INDEX` or
-    fts5 `CREATE VIRTUAL TABLE` statement, because those statements no longer
-    name a table.
+- **Upgrade without a schema bump to avoid any reset.** Declared indexes, FTS
+  projections, and migration statements that only create or drop an index or
+  an fts5 table left the table generation, so most tables with an index or FTS
+  carry a new generation in 0.102.0. The client compares generations only on a
+  schema version bump (§7.4.3). The first open of 0.102.0 at the app's current
+  schema version resets no table. It drops each old contentful FTS table and
+  rebuilds it in the external-content form from the source rows, creates or
+  drops the declared indexes in place, and stores the new generations. A
+  later schema bump then resets only the tables it really changes.
 
-  The old contentful FTS tables are dropped and rebuilt in the
-  external-content form in the same step. After this one reset, index and
-  projection changes reset nothing.
+  Ship 0.102.0 in an app release that keeps its schema version. An app release
+  that combines the upgrade to 0.102.0 with a schema bump compares against the
+  0.101.0 generations, so every table that has an index or FTS, or that a
+  migration names only in a `CREATE INDEX`, `DROP INDEX` or fts5
+  `CREATE VIRTUAL TABLE` statement, resets once, bootstraps again and replays
+  the outbox on top.
 - **TypeScript apps with FTS add the projection implementation.** FTS search is
   a projection, so a schema with FTS needs it, like app-filled projections:
 
@@ -128,9 +129,11 @@ drops an index the app created.
   `defineAuthorityReads`, and call `authorityRead` with one request per scope
   value. `snapshot.complete` becomes the conjunction of the results'
   `complete`, and `hasLocalIntent` and `localIntentRowIds` have no replacement.
-- The client adds a send-attempt marker to the outbox and rebuilds the outcome
-  journal once at open, so the journal admits `replaced`. Commits queued before
-  the upgrade count as attempted. Fencing needs a 0.102.0 server: an older
+- The client adds a send-attempt column to the outbox at open. Commits queued
+  before the upgrade count as attempted. The outcome journal keeps its table:
+  a replaced commit is stored as rejected with one `client.commit_replaced`
+  result per operation and a link to its replacement, and
+  `commitOutcomes()` and `commitDelivery()` report it as `replaced`. Fencing needs a 0.102.0 server: an older
   server refuses the fence request, and the replacement fails without changing
   the commit.
 - Coverage entries carry their table: `querySnapshot` and `snapshotRead` take

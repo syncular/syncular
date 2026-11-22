@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-11-22',
     title: 'Index changes without a table reset',
-    body: 'Declared indexes and FTS projections left the table generation. The client creates and drops the indexes it declared in place at open, so adding or dropping an index resets no table. The first open of 0.102.0 resets each table with an index or an FTS projection once.',
+    body: 'Declared indexes and FTS projections left the table generation. The client creates and drops the indexes it declared in place at open, so adding or dropping an index resets no table. The first open of 0.102.0 at an unchanged schema version resets no table; an app release that also bumps its schema resets each table with an index or an FTS projection once.',
     links: [{ href: '/concepts-schema-upgrades/', label: 'Schema upgrades' }],
   },
   {
