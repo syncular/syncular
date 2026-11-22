@@ -144,6 +144,9 @@ export interface PgLaneResult {
   readonly rowsPerSec: number;
   readonly propP50: number;
   readonly propP95: number;
+  /** §4.7 extent count of a 175-row seek variable whose two other filter
+   * variables each cover `rows` entries: median of 5 warm counts. */
+  readonly narrowCountMs: number;
 }
 
 /** Every run owns an isolated schema; cleanup never touches existing tables. */
@@ -309,12 +312,52 @@ export async function runPgLane(
     await b.close();
     samples.sort((x, y) => x - y);
 
+    // -- Narrow extent count: the seek variable holds 175 rows, the other two
+    // filter variables cover every row of the table. --------------------
+    const scoped = new SQL(url, {
+      connection: { search_path: server.ctx.partition },
+    });
+    const counts: number[] = [];
+    try {
+      for (const [v, value, rows] of [
+        ['release', 'narrow', 175],
+        ['availability', 'offered', bootstrapRows],
+        ['set', 'wide', bootstrapRows],
+      ] as const)
+        await scoped.unsafe(
+          `INSERT INTO sync_row_scopes SELECT $1, 'narrow_count', $2, $3, md5(g::text) FROM generate_series(1, $4::int) g`,
+          [server.ctx.partition, v, value, rows],
+        );
+      await scoped.unsafe('VACUUM ANALYZE sync_row_scopes');
+      const query = {
+        table: 'narrow_count',
+        scopeFilter: {
+          release: ['narrow'],
+          availability: ['offered'],
+          set: ['wide'],
+        },
+      };
+      for (let run = 0; run < 6; run++) {
+        const t = performance.now();
+        const n = await server.storage.countScopedRows(
+          server.ctx.partition,
+          query,
+        );
+        if (n !== 175) throw new Error(`pg narrow count wrong: ${n}`);
+        if (run > 0) counts.push(performance.now() - t);
+      }
+    } finally {
+      await scoped.close();
+    }
+    counts.sort((x, y) => x - y);
+
     return {
       rows: bootstrapRows,
       bootstrapMs,
       rowsPerSec: Math.round(bootstrapRows / (bootstrapMs / 1000)),
       propP50: percentile(samples, 50),
       propP95: percentile(samples, 95),
+      narrowCountMs: percentile(counts, 50),
     };
   } finally {
     await server.close();
@@ -332,5 +375,6 @@ export function reportPgLane(
     `bench: pg lane (SYNCULAR_PG_URL) — ${result.rows.toLocaleString('en-US')} rows`,
     `  bootstrap ${fmtMs(result.bootstrapMs)} (${result.rowsPerSec.toLocaleString('en-US')} rows/s)`,
     `  propagation p50 ${fmtMs(result.propP50)} p95 ${fmtMs(result.propP95)}`,
+    `  narrow extent count (175 vs ${result.rows.toLocaleString('en-US')}) p50 ${fmtMs(result.narrowCountMs)}`,
   ].join('\n');
 }

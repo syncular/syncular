@@ -17,6 +17,14 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'Bootstrap extent counts read each scope variable once',
+    body: 'The row count a fresh bootstrap reports as its extent reads one scope-index range per filter variable and counts the rows present in all of them. It used to seek every other variable once per candidate row, about 175,000 seeks for an 87,000-row release under two more variables, which delayed the first page of a pull on PostgreSQL.',
+    links: [
+      { href: '/server-storage-reference/', label: 'Server storage reference' },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Index changes without a table reset',
     body: 'Declared indexes and FTS projections left the table generation. The client creates and drops the indexes it declared in place at open, so adding or dropping an index resets no table. The first open of 0.102.0 at an unchanged schema version resets no table; an app release that also bumps its schema resets each table with an index or an FTS projection once.',
     links: [{ href: '/concepts-schema-upgrades/', label: 'Schema upgrades' }],

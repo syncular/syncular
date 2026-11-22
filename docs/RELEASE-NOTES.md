@@ -1,5 +1,19 @@
 # Syncular release notes
 
+## 0.103.0 release notes
+
+### Bootstrap extent counts read each scope variable once
+
+A fresh bootstrap pin counts the unit's rows per covered table (SPEC §4.7).
+`countScopedRows` used to range the scope index for one variable and seek every
+other variable once per candidate row; on PostgreSQL the planner answered each
+seek through the by-row index with a heap filter, about 175,000 seeks for an
+87,000-row release under two more variables. Every shipped storage now reads
+one index range per variable of the filter, index-only, and counts the rows
+that hold an entry for every variable. The count stays exact.
+
+[Server storage reference](https://syncular.dev/server-storage-reference/)
+
 ## 0.102.0 release notes
 
 ### A transport gate that pulls without pushing

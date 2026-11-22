@@ -161,7 +161,18 @@ An HTTP `POST /sync` request and a realtime socket round run the same handler. A
 
 A page reads at most `limit` index entries per value of the sought variable, in `row_id` order. PostgreSQL reads one LIMITed index range per value and merges them; SQLite and D1 end the range at the smallest of the values' `limit`th entries after the cursor. On PostgreSQL 17 with a 200,000-row release, a 1,000-row page takes 12 to 15 ms warm at any depth. Before 0.97.0 a page read and sorted every entry after the cursor before its LIMIT: 114 to 121 ms warm at the start of the release, and 12.7 s for the first page after a restart with the page cache dropped.
 
-`countScopedRows({ table, scopeFilter })` counts the rows `scanRows` returns for the same filter from the start of the table. A bootstrap calls it once per covered table when it takes a fresh pin and states the sum to the client as the unit's extent ([sync progress](/platform-web-realtime/#sync-progress)). It reads only the scope index: one index range of the variable `scanRows` would seek, plus one index seek per other variable and candidate row, never the row table. `PostgresServerStorage` sends the counts of one pull as one statement. A custom `ServerStorage` implements the method; it is required.
+`countScopedRows({ table, scopeFilter })` counts the rows `scanRows` returns for the same filter from the start of the table. A bootstrap calls it once per covered table when it takes a fresh pin and states the sum to the client as the unit's extent ([sync progress](/platform-web-realtime/#sync-progress)). It reads only the scope index, never the row table: one index range per variable of the filter, each read once, with the rows that hold an entry for every variable counted. Before 0.103.0 it sought the other variables once per candidate row of the seek variable, about 175,000 seeks for an 87,000-row release under two more variables. `PostgresServerStorage` sends the counts of one pull as one statement. A custom `ServerStorage` implements the method; it is required.
+
+The count reads every variable's range in full, so its cost follows the sum of the ranges, not the seek variable alone. On PostgreSQL 17 with 219,022 rows under three scope variables (131,324 codes and 87,698 relations; release, availability and content set), the median of 5 warm counts was:
+
+| Filter | Rows per variable | 0.102.0, vacuumed | 0.103.0, vacuumed | 0.102.0, 102,302 dead entries | 0.103.0, 102,302 dead entries |
+|---|---|---|---|---|---|
+| One pull: a release's codes and relations | 7,148 and 87,267 release rows; 123,053 and 87,442 availability rows; every row in the content set | 362 ms | 117 ms | 469 ms | 183 ms |
+| A release's relations | 87,267 release rows against 87,442 and 87,698 | 372 ms | 67 ms | 357 ms | 83 ms |
+| A release's codes | 7,148 against 123,053 and 131,324 | 26 ms | 64 ms | 29 ms | 94 ms |
+| A small release's relations | 175 against 87,442 and 87,698 | 0.7 ms | 40.8 ms | 0.6 ms | 44.2 ms |
+
+A filter whose narrowest variable is far smaller than the others pays for the broad ranges: in the 175 against 87,000 shape the count costs about 40 ms more per fresh bootstrap pin and table, once per bootstrap. The Postgres bench lane (`SYNCULAR_PG_URL`) reports that case as `narrow extent count`.
 
 ### Multi-instance fanout
 

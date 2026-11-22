@@ -3483,11 +3483,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       partition,
       {
         tbl: query.table,
-        var: variable,
-        vals: query.scopeFilter[variable],
-        rest: Object.entries(query.scopeFilter).flatMap(([name, vals]) =>
-          name === variable ? [] : [{ var: name, vals }],
-        ),
+        vars: Object.entries(query.scopeFilter).map(([name, vals]) => ({
+          var: name,
+          vals,
+        })),
       },
     );
     return row === undefined ? 0 : asNumber(row.n);

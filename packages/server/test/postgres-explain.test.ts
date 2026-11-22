@@ -17,6 +17,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { encodeRow, type RowColumn } from '@syncular/core';
 import {
   compileSchema,
+  countRowsSql,
   indexRowPageStatement,
   PostgresServerStorage,
   rowsReferencingBlobSql,
@@ -336,5 +337,134 @@ test('listRowsReferencingBlob candidate scan is index-driven (no Seq Scan)', asy
   );
   expect(plan).toContain('sync_blob_refs_by_blob');
   expect(plan).not.toContain('Seq Scan on sync_blob_refs');
+  await db.close();
+});
+
+test('the §4.7 extent count reads each variable once, exact against brute force', async () => {
+  // A catalogue-shaped pair: one seek variable and two more filter variables
+  // over tens of thousands of rows.
+  const columns: readonly RowColumn[] = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'set_id', type: 'string', nullable: false },
+    { name: 'availability', type: 'string', nullable: false },
+    { name: 'release_id', type: 'string', nullable: false },
+  ];
+  const db = await PGlite.create();
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.ensureSchema(
+    compileSchema({
+      version: 1,
+      tables: [
+        {
+          name: 'relations',
+          columns,
+          primaryKey: 'id',
+          scopes: [
+            'set:{set_id}',
+            'availability:{availability}',
+            'release:{release_id}',
+          ],
+        },
+      ],
+    }),
+  );
+  const rows = Array.from({ length: 30_000 }, (_, i) => ({
+    rowId: `r${String(i).padStart(6, '0')}`,
+    scopes: {
+      set_id: `s${i % 3}`,
+      availability: i % 5 === 0 ? 'hidden' : 'public',
+      release_id: `v${i % 7}`,
+    },
+  }));
+  for (let offset = 0; offset < rows.length; offset += 1_000) {
+    const tx = await storage.begin(PARTITION);
+    for (const { rowId, scopes } of rows.slice(offset, offset + 1_000))
+      await tx.upsertRow('relations', {
+        rowId,
+        serverVersion: 1,
+        scopes,
+        payload: encodeRow(columns, [
+          rowId,
+          scopes.set_id,
+          scopes.availability,
+          scopes.release_id,
+        ]),
+      });
+    await tx.commit();
+  }
+  // Index-only reads need the visibility map autovacuum keeps in production.
+  await db.exec('VACUUM ANALYZE');
+  const filters: Record<string, string[]>[] = [
+    { set_id: ['s1'], availability: ['public'], release_id: ['v2', 'v3'] },
+    { set_id: ['s0', 's2'], availability: ['hidden'], release_id: ['v6'] },
+    { set_id: ['s1'], availability: ['public', 'hidden'] },
+    { set_id: ['s9'], availability: ['public'], release_id: ['v1'] },
+  ];
+  for (const scopeFilter of filters)
+    expect(
+      await storage.countScopedRows(PARTITION, {
+        table: 'relations',
+        scopeFilter,
+      }),
+    ).toBe(
+      rows.filter(({ scopes }) =>
+        Object.entries(scopeFilter).every(([name, vals]) =>
+          vals.includes(scopes[name as keyof typeof scopes]),
+        ),
+      ).length,
+    );
+  const result = await db.query<{ 'QUERY PLAN': unknown }>(
+    `EXPLAIN (FORMAT JSON) ${countRowsSql('postgres')}`,
+    [
+      PARTITION,
+      JSON.stringify(
+        filters.map((scopeFilter, i) => ({
+          i,
+          tbl: 'relations',
+          vars: Object.entries(scopeFilter).map(([name, vals]) => ({
+            var: name,
+            vals,
+          })),
+        })),
+      ),
+    ],
+  );
+  const raw = result.rows[0]!['QUERY PLAN'];
+  interface PlanNode {
+    readonly 'Node Type': string;
+    readonly 'Parent Relationship'?: string;
+    readonly 'Relation Name'?: string;
+    readonly 'Index Name'?: string;
+    readonly 'Index Cond'?: string;
+    readonly Plans?: readonly PlanNode[];
+  }
+  const [{ Plan }] = (typeof raw === 'string' ? JSON.parse(raw) : raw) as [
+    { Plan: PlanNode },
+  ];
+  const nodes: PlanNode[] = [];
+  const walk = (node: PlanNode) => {
+    nodes.push(node);
+    node.Plans?.forEach(walk);
+  };
+  walk(Plan);
+  // Each variable's entries come from one index-only range of the primary
+  // key; the by-row index never answers a per-candidate probe.
+  const scopeScans = nodes.filter(
+    (node) => node['Relation Name'] === 'sync_row_scopes',
+  );
+  expect(scopeScans.length).toBeGreaterThan(0);
+  for (const node of scopeScans) {
+    expect(node['Node Type']).toBe('Index Only Scan');
+    expect(node['Index Name']).toBe('sync_row_scopes_pkey');
+    expect(node['Index Cond']).toContain('(var = f.var)');
+  }
+  // The one correlated subplan is the per-record count; nothing correlates
+  // per candidate row.
+  expect(
+    nodes.filter((node) => node['Parent Relationship'] === 'SubPlan'),
+  ).toHaveLength(1);
+  expect(nodes.filter((node) => /Anti|Semi/.test(node['Node Type']))).toEqual(
+    [],
+  );
   await db.close();
 });

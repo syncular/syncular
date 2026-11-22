@@ -1155,12 +1155,11 @@ export abstract class SqliteFamilyStorage {
     const [row] = await this.guardedAll<{ n: number }>(countRowsSql('sqlite'), [
       partition,
       query.table,
-      variable,
-      JSON.stringify(query.scopeFilter[variable]),
       JSON.stringify(
-        Object.entries(query.scopeFilter).flatMap(([name, vals]) =>
-          name === variable ? [] : [{ var: name, vals }],
-        ),
+        Object.entries(query.scopeFilter).map(([name, vals]) => ({
+          var: name,
+          vals,
+        })),
       ),
     ]);
     return Number(row?.n ?? 0);

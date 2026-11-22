@@ -733,31 +733,36 @@ export function scanRowPageSql(
 }
 
 /**
- * The §4.7 bootstrap extent of one (table, filter): the `sync_row_scopes`
- * entries of the seek variable whose row also holds an entry of every other
- * variable of the filter. A row holds one entry per variable, so the count is
- * the matching rows; the index changes in the transaction of each row write.
+ * The §4.7 bootstrap extent of one (table, filter): the rows holding a
+ * `sync_row_scopes` entry for every variable of the filter. Each variable's
+ * entries are one primary-key range, read once and index-only; the rows are
+ * grouped by `row_id`. A row holds one entry per variable, so a row matches
+ * when its group has one entry per filter variable. The index changes in the
+ * transaction of each row write.
+ *
+ * Both planners would otherwise merge the per-variable reads into one range
+ * of the table's whole scope index, every variable's entries included:
+ * PostgreSQL keeps a LATERAL subquery with `OFFSET 0` as its own scan, and
+ * SQLite's CROSS JOIN fixes the variables as the outer loop.
  *
  * Bind order:
  *   - postgres: [partition, records as JSON text]; one `(sub, n)` row per
- *     `{i, tbl, var, vals, rest}` record, so the counts of concurrent
- *     bootstraps share one statement;
- *   - sqlite:   [partition, tbl, var, values as JSON array text, rest as
- *     JSON text]; one `n` row.
- * `rest` is the JSON array of `{var, vals}` for the other variables.
+ *     `{i, tbl, vars}` record, so the counts of concurrent bootstraps share
+ *     one statement;
+ *   - sqlite:   [partition, tbl, vars as JSON text]; one `n` row.
+ * `vars` is the JSON array of `{var, vals}` for the variables of the filter.
  */
 export function countRowsSql(dialect: RelationalDialect): string {
   return dialect === 'sqlite'
-    ? `SELECT count(*) AS n FROM sync_row_scopes a
-       WHERE a.partition=?1 AND a.tbl=?2 AND a.var=?3 AND a.value IN (SELECT value FROM json_each(?4))
-         AND NOT EXISTS (SELECT 1 FROM json_each(?5) f WHERE NOT EXISTS (SELECT 1 FROM sync_row_scopes b
-           WHERE b.partition=?1 AND b.tbl=?2 AND b.var=json_extract(f.value, '$.var')
-             AND b.value IN (SELECT value FROM json_each(f.value, '$.vals')) AND b.row_id=a.row_id))`
-    : `SELECT s.i AS sub, (SELECT count(*) FROM sync_row_scopes a
-         WHERE a.partition=$1 AND a.tbl=s.tbl AND a.var=s.var AND a.value=ANY(s.vals)
-           AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(s.rest) AS f(var text, vals text[]) WHERE NOT EXISTS (SELECT 1 FROM sync_row_scopes b
-             WHERE b.partition=$1 AND b.tbl=s.tbl AND b.var=f.var AND b.value=ANY(f.vals) AND b.row_id=a.row_id))) AS n
-       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], rest jsonb)`;
+    ? `SELECT count(*) AS n FROM (SELECT b.row_id FROM json_each(?3) f
+         CROSS JOIN sync_row_scopes b WHERE b.partition=?1 AND b.tbl=?2 AND b.var=json_extract(f.value, '$.var')
+           AND b.value IN (SELECT value FROM json_each(f.value, '$.vals'))
+       GROUP BY b.row_id HAVING count(*)=json_array_length(?3))`
+    : `SELECT s.i AS sub, (SELECT count(*) FROM (SELECT b.row_id FROM jsonb_to_recordset(s.vars) AS f(var text, vals text[])
+         CROSS JOIN LATERAL (SELECT row_id FROM sync_row_scopes
+           WHERE partition=$1 AND tbl=s.tbl AND var=f.var AND value=ANY(f.vals) OFFSET 0) b
+         GROUP BY b.row_id HAVING count(*)=jsonb_array_length(s.vars)) x) AS n
+       FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, vars jsonb)`;
 }
 
 /**

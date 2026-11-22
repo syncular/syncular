@@ -1053,38 +1053,36 @@ for (const kind of KINDS) {
     // Several variables: the scan's selectivity probe, then the count.
     expect(await count({ org_id: ['o0'], project_id: ['p1', 'p2'] })).toBe(20);
     expect(drain()).toHaveLength(2 + 2 * guard);
-    const rest = [{ var: 'org_id', vals: ['o0'] }];
+    const vars = [
+      { var: 'org_id', vals: ['o0'] },
+      { var: 'project_id', vals: ['p1'] },
+    ];
     const lines =
       kind === 'postgres'
         ? await plan(countRowsSql('postgres'), [
             PARTITION,
-            JSON.stringify([
-              { i: 0, tbl: 'docs', var: 'project_id', vals: ['p1'], rest },
-            ]),
+            JSON.stringify([{ i: 0, tbl: 'docs', vars }]),
           ])
         : await plan(countRowsSql('sqlite'), [
             PARTITION,
             'docs',
-            'project_id',
-            JSON.stringify(['p1']),
-            JSON.stringify(rest),
+            JSON.stringify(vars),
           ]);
     const text = lines.join('\n');
     expect(text).not.toMatch(/docs/);
     if (kind === 'postgres') {
       expect(text).toContain('Index Only Scan using sync_row_scopes_pk');
+      expect(text).not.toContain('sync_row_scopes_by_row');
       expect(text).not.toContain('Seq Scan');
     } else {
-      // `a` ranges the seek variable, `b` seeks each other variable.
+      // `b` ranges each variable once on the covering primary key.
       const scopeSteps = lines.filter((line) =>
-        /^(SCAN|SEARCH) [ab]\b/.test(line),
+        /^(SCAN|SEARCH) b\b/.test(line),
       );
-      expect(scopeSteps).toHaveLength(2);
-      for (const step of scopeSteps) {
-        expect(step).toMatch(
-          /^SEARCH [ab] USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 \(partition=\? AND tbl=\? AND var=\? AND value=\?/,
-        );
-      }
+      expect(scopeSteps).toHaveLength(1);
+      expect(scopeSteps[0]).toMatch(
+        /^SEARCH b USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 \(partition=\? AND tbl=\? AND var=\? AND value=\?/,
+      );
     }
   });
 }
