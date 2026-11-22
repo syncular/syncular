@@ -1,5 +1,22 @@
 # Syncular release notes
 
+## 0.103.3 release notes
+
+### A follower that wins the lock keeps its calls
+
+When the tab holding the database closed, the follower that won its lock could
+fail calls with `client.worker_failed` "the follower link was closed". While the
+follower's own core started, an announce the closing leader had posted could
+still arrive. The follower bound to that leader again and sent its queued and
+new calls to it, and those calls failed when the follower's core took over. A
+follower now drops an announce at or below the departed leader's epoch while
+its core starts, so the calls run on its own core. Calls in flight to the
+departed leader keep their behavior: `replayOnHandover` methods replay, and
+the others fail with the retryable leader-handover code. The multi-tab protocol
+does not change.
+
+[Multi-tab](https://syncular.dev/platform-web-specifics/#multi-tab)
+
 ## 0.103.2 release notes
 
 ### A pull lands a unique-key winner over a pending insert

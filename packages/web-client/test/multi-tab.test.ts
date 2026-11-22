@@ -3081,3 +3081,145 @@ test('a follower disconnectRealtime in flight when the leader tab closes settles
   expect(workerMethods).toContain('disconnectRealtime');
   await follower.close();
 });
+
+test('a departed leader announcing during the handover window cannot take the calls for this tab’s core', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: noop,
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+    replayOnHandover: ['projectionPending'],
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  const inFlight = link.call('projectionPending', ['local_titles']);
+  // The leader tab closed and this tab won the lock; its core starts.
+  link.unbind();
+  // An announce the departed leader posted before it closed arrives now.
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  const during = link.call('writeProjection', ['local_titles']);
+  const invoked: string[] = [];
+  link.handOver((method) => {
+    invoked.push(method);
+    return Promise.resolve(method);
+  });
+  expect(await inFlight).toBe('projectionPending');
+  expect(await during).toBe('writeProjection');
+  expect(invoked).toEqual(['projectionPending', 'writeProjection']);
+});
+
+test('a leader above every seen epoch still binds while this tab’s core starts', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const sent: MultiTabMessage[] = [];
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => sent.push(message),
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  link.unbind();
+  // Another tab took the lock over at maxEpochSeen + 1.
+  deliver?.({ data: { t: 'announce', epoch: 2, clientId: 'taker', ...ID } });
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'taker',
+    epoch: 2,
+  });
+  const call = link.call('query', ['q']);
+  const request = sent.findLast((message) => message.t === 'req');
+  expect(request).toMatchObject({ t: 'req', epoch: 2, method: 'query' });
+  deliver?.({
+    data: {
+      t: 'res',
+      epoch: 2,
+      to: 'f',
+      reqId: request?.t === 'req' ? request.reqId : -1,
+      ok: true,
+      value: 'from-taker',
+    },
+  });
+  expect(await call).toBe('from-taker');
+  link.close();
+});
+
+test('a leader whose tab saw fewer announces binds once this tab stops starting its core', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const sent: MultiTabMessage[] = [];
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => sent.push(message),
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 3, clientId: 'lead', ...ID } });
+  link.unbind();
+  // A tab that saw no announce takes the lock over at epoch 0 while this
+  // tab's core starts; the announce is ignored as possibly stale.
+  deliver?.({ data: { t: 'announce', epoch: 0, clientId: 'fresh', ...ID } });
+  expect(link.leadershipState.state).toBe('waiting');
+  const call = link.call('query', ['q']);
+  // The lock loss ends this tab's start: it waits for a leader and probes.
+  const probes = sent.filter((message) => message.t === 'hello').length;
+  link.awaitLeader();
+  expect(sent.filter((message) => message.t === 'hello').length).toBe(
+    probes + 1,
+  );
+  // The fresh leader answers the probe and binds; the queued call reaches it.
+  deliver?.({ data: { t: 'announce', epoch: 0, clientId: 'fresh', ...ID } });
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'fresh',
+    epoch: 0,
+  });
+  const request = sent.findLast((message) => message.t === 'req');
+  expect(request).toMatchObject({ t: 'req', epoch: 0, method: 'query' });
+  deliver?.({
+    data: {
+      t: 'res',
+      epoch: 0,
+      to: 'f',
+      reqId: request?.t === 'req' ? request.reqId : -1,
+      ok: true,
+      value: 'from-fresh',
+    },
+  });
+  expect(await call).toBe('from-fresh');
+  link.close();
+});

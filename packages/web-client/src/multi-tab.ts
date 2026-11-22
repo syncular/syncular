@@ -478,6 +478,8 @@ export class FollowerLink<E = SyncWorkerEvent> {
   #epoch = -1;
   /** Highest epoch ever seen (survives a leader gap for monotonic promotion). */
   #maxEpochSeen = -1;
+  /** The epoch of the leader that released the lock to this tab (`unbind`). */
+  #departedEpoch = -1;
   #leaderClientId = '';
   #nextReqId = 1;
   readonly #inFlight = new Map<number, QueuedCall>();
@@ -706,6 +708,11 @@ export class FollowerLink<E = SyncWorkerEvent> {
   #handle(message: MultiTabMessage<E>): void {
     if (this.#closed) return;
     if (message.t === 'announce') {
+      // This tab holds the lock while its core starts. An announce at or below
+      // the departed leader's epoch was posted before that leader's tab
+      // closed. Epochs are per tab, so the guard ends with the start:
+      // `awaitLeader` probes, and any leader then binds.
+      if (this.#startingCore && message.epoch <= this.#departedEpoch) return;
       if (message.epoch > this.#maxEpochSeen) {
         this.#maxEpochSeen = message.epoch;
       }
@@ -813,6 +820,7 @@ export class FollowerLink<E = SyncWorkerEvent> {
         true,
       ),
     );
+    this.#departedEpoch = this.#epoch;
     this.#epoch = -1;
     this.#leaderClientId = '';
     this.#startingCore = true;

@@ -6466,6 +6466,16 @@ changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
 covers 0.101.0, and protocol 11 starts with 0.102.0.
 
+**Browser leader promotion.** A follower tab that wins the leader lock starts
+its own core and announces above every epoch it has seen. Epochs are per tab:
+a tab that finds the lock free leads at epoch 0. While its own core starts, a
+promoting follower MUST ignore announces at or below the departed leader's
+epoch, because that leader posted them before its tab closed. The start ends
+when the follower runs its own core and runs the calls it queued there, when
+the start fails or the lock is lost and it waits for a leader again, or when it
+accepts an announce. A permanent floor would hide a legitimate leader whose tab
+saw fewer announces.
+
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
 SAHs. This lock belongs to the worker, so a replacement document waits until
