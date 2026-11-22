@@ -4757,6 +4757,26 @@ names a table or column outside the ceiling, or when the statement performs
 any action other than `SELECT`, a read, or a deterministic core function. The
 declared set is fixed at creation; a read MUST NOT redefine or extend it.
 
+**Host-created Tauri clients.** When the Rust host sends `create` through
+`app.syncular().command()`, the plugin records the host as the client's
+creator; the schema, database and authority declarations are the host's, and
+the ceiling check applies to them as to a webview's. A webview reaches that
+client with the `attach` command, which carries its events channel, moves
+event delivery to it and answers `{ state }` with the security lifecycle. The
+plugin emits `{ type: "securityLifecycle", state }` after every successful
+`activateSecurity` and `beginSecurityPreflight`, so an attached bridge
+reports the host's lifecycle while the native gate decides every read.
+Commands, queries, snapshots and authority reads from any webview then run as
+on a webview-created client, and the security gate applies unchanged. The host owns the lifecycle: the plugin MUST refuse a webview
+`create`, `recreateWithSchema`, `shutdown`, `activateSecurity` or
+`beginSecurityPreflight` with `client.host_owned` (details
+`{ method, webview }`) before the command reaches the client. A webview that
+closes, reloads or sends `shutdown` leaves the client and the host's ownership
+in place, and the next webview attaches to the same client. Only a successful
+host `shutdown` ends host ownership; a webview `create` then opens a
+webview-created client. `attach` before any `create` or on a webview-created
+client fails with `sync.invalid_request`.
+
 `authorityRead(requests)` runs one or more declared queries in one SQLite read
 transaction. Each request is `{ query, params }`. The result is
 `{ revision, results }`, where `revision` is the `localRevision` of that
@@ -9837,6 +9857,10 @@ client was created without `pendingCommitReplacement`; non-retryable],
 `client.storage_busy` [§7.5 — a local write hit SQLite `SQLITE_BUSY` or
 `SQLITE_LOCKED`, including extended codes; retryable],
 `client.web_locks_unavailable` [§7.1 — a browser Worker handle without an injected leader lock found no Web Locks; non-retryable],
+`client.host_owned` [§5.11: a Tauri webview sent `create`,
+`recreateWithSchema`, `shutdown`, `activateSecurity` or
+`beginSecurityPreflight` for a client the Rust host created; details
+`{ method, webview }`; non-retryable],
 `client.query_failed` [§7.6 — the diagnostics code for any other failed
 owned snapshot read; never raised as an error],
 `client.worker_restart_required` [a browser worker module

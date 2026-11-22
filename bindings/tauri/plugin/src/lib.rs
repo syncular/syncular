@@ -20,7 +20,8 @@
 //!   read-only SQL); routed through the same `query` command.
 //! - `syncular_query_snapshot(sql, params, coverage)` — atomic reactive reads
 //!   on an independent read-only SQLite connection for file-backed clients.
-//! - the `events` IPC channel the creating webview passes in `create` — exact
+//! - the `events` IPC channel the webview passes in `create` (or in `attach`,
+//!   for a client the Rust host created) — exact
 //!   revisioned `change` batches plus ephemeral
 //!   `presence` and `scopes-changed` (§8.7); command/realtime sync intents stay inside the event-driven
 //!   owner loop.
@@ -263,8 +264,9 @@ struct SyncularState {
     /// that webview receives the client's events.
     events: Arc<Mutex<Option<Channel<Value>>>>,
     host_events: Arc<Mutex<Vec<Sender<Value>>>>,
-    /// The label of the webview whose `create` succeeded last. The app has one
-    /// client, so every other command from another webview is refused.
+    /// Who created the client: `None` before the first `create` and after the
+    /// host disposed its own client, `Some(None)` for the Rust host, otherwise
+    /// the label of the webview whose `create` succeeded last.
     owner: Mutex<Option<Option<String>>>,
 }
 
@@ -378,16 +380,34 @@ impl Drop for SecurityReadGuard<'_> {
 }
 
 impl SyncularState {
-    /// `Err` is the structured reply for a webview that does not own the
-    /// client. Before the first `create` nobody owns it, and the router
-    /// answers with its own no-client error.
-    fn require_owner(&self, label: &str) -> Result<(), Value> {
+    /// `Err` is the structured reply for a webview `method` the client
+    /// refuses. Before the first `create` nobody owns it, and the router
+    /// answers with its own no-client error. A host-created client serves
+    /// every webview and keeps its lifecycle with the host; a webview-created
+    /// client serves its creator, and another webview's `create` takes it over.
+    fn require_owner(&self, label: &str, method: &str) -> Result<(), Value> {
         let owner = self
             .owner
             .lock()
             .map_err(|_| client_error("syncular owner poisoned"))?;
         match owner.as_ref() {
-            Some(owner) if owner.as_deref() != Some(label) => Err(json!({ "error": {
+            Some(None)
+                if matches!(
+                    method,
+                    "create"
+                        | "recreateWithSchema"
+                        | "shutdown"
+                        | "activateSecurity"
+                        | "beginSecurityPreflight"
+                ) =>
+            {
+                Err(json!({ "error": {
+                    "code": "client.host_owned",
+                    "message": "the native host created this client and owns its lifecycle",
+                    "details": { "method": method, "webview": label }
+                } }))
+            }
+            Some(Some(owner)) if owner != label && method != "create" => Err(json!({ "error": {
                 "code": "sync.client_owned_by_another_webview",
                 "message": "the native client belongs to another webview"
             } })),
@@ -1115,13 +1135,11 @@ async fn syncular_command<R: Runtime>(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    if method != "create" {
-        if let Err(reply) = app
-            .state::<Arc<SyncularState>>()
-            .require_owner(webview.label())
-        {
-            return Ok(reply);
-        }
+    if let Err(reply) = app
+        .state::<Arc<SyncularState>>()
+        .require_owner(webview.label(), &method)
+    {
+        return Ok(reply);
     }
     let label = webview.label().to_owned();
     // §7.6: the generic command entry delegates both owned snapshot reads to
@@ -1164,7 +1182,7 @@ async fn syncular_command<R: Runtime>(
         .await;
     }
     let state = app.state::<Arc<SyncularState>>();
-    let owner = if method == "create" {
+    let owner = if method == "create" || method == "attach" {
         let channel = command
             .get_mut("params")
             .and_then(Value::as_object_mut)
@@ -1177,13 +1195,33 @@ async fn syncular_command<R: Runtime>(
             Some(Ok(id)) => Some((label, id.channel_on(webview))),
             _ => {
                 return Ok(invalid_request(
-                    "sync.invalid_request: create requires an events channel",
+                    "sync.invalid_request: create and attach require an events channel",
                 ))
             }
         }
     } else {
         None
     };
+    // A webview reaches a host-created client by moving its events onto
+    // its own channel; the client and its lifecycle stay with the host.
+    if method == "attach" {
+        let slot = state
+            .owner
+            .lock()
+            .map_err(|_| "syncular owner poisoned".to_owned())?;
+        if !matches!(*slot, Some(None)) {
+            return Ok(invalid_request(
+                "sync.invalid_request: attach requires a client the native host created",
+            ));
+        }
+        *state
+            .events
+            .lock()
+            .map_err(|_| "syncular event channel poisoned".to_owned())? =
+            owner.map(|(_, channel)| channel);
+        // The reply carries the lifecycle the attached bridge starts from.
+        return state.command(json!({ "method": "securityLifecycle", "params": {} }), None);
+    }
     state.command(command, owner)
 }
 
@@ -1239,8 +1277,9 @@ impl SyncularState {
                 .pointer("/params/securityPreflight")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-        // Installed before the create runs, so its first events reach the channel.
-        let previous_events = if method == "create" {
+        // Installed before a webview create runs, so its first events reach the
+        // channel. A host create keeps the attached webview's channel.
+        let previous_events = if method == "create" && webview.is_some() {
             Some(std::mem::replace(
                 &mut *self
                     .events
@@ -1273,6 +1312,16 @@ impl SyncularState {
                 .lock()
                 .map_err(|_| "syncular owner poisoned".to_owned())? =
                 Some(webview.map(|(label, _)| label));
+        }
+        // The host disposing its own client frees the slot for a webview create.
+        if succeeded && method == "shutdown" {
+            let mut owner = self
+                .owner
+                .lock()
+                .map_err(|_| "syncular owner poisoned".to_owned())?;
+            if *owner == Some(None) {
+                *owner = None;
+            }
         }
         if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
             let next = match database.filter(|path| path.as_str() != ":memory:") {
@@ -1309,7 +1358,7 @@ async fn syncular_query<R: Runtime>(
     params: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<Arc<SyncularState>>();
-    if let Err(reply) = state.require_owner(webview.label()) {
+    if let Err(reply) = state.require_owner(webview.label(), "query") {
         return Ok(reply);
     }
     let _read_guard = match state.security_gate.enter_read() {
@@ -1340,7 +1389,7 @@ async fn syncular_query_snapshot<R: Runtime>(
     owner: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<Arc<SyncularState>>();
-    if let Err(reply) = state.require_owner(webview.label()) {
+    if let Err(reply) = state.require_owner(webview.label(), "querySnapshot") {
         return Ok(reply);
     }
     let _read_guard = match state.security_gate.enter_read() {
@@ -2426,6 +2475,306 @@ mod tests {
                 .get("error")
                 .is_none()
         );
+    }
+
+    /// The mock app, a host handle and the one-table schema the host-owned
+    /// tests share.
+    fn host_owned_app() -> (tauri::App<tauri::test::MockRuntime>, Value) {
+        let app = tauri::test::mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let schema = json!({ "version": 1, "tables": [{
+            "name": "todo", "primaryKey": "id",
+            "columns": [{ "name": "id", "type": "string", "nullable": false }],
+            "scopes": []
+        }] });
+        (app, schema)
+    }
+
+    fn count_from(app: &tauri::App<tauri::test::MockRuntime>, label: &str) -> Value {
+        tauri::async_runtime::block_on(syncular_query(
+            app.handle().clone(),
+            webview(app.handle(), label),
+            "SELECT count(*) AS n FROM todo".to_owned(),
+            None,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_host_created_client_refuses_webview_creates_and_serves_webview_queries_and_commands() {
+        let (app, schema) = host_owned_app();
+        let host = app.syncular();
+        let from =
+            |label: &str, command: Value| run_command_from(app.handle(), label, command).unwrap();
+        let created = host.command(&json!({ "method": "create", "params": { "schema": schema } }));
+        assert!(created.get("error").is_none(), "{created}");
+
+        let refused = from(
+            "main",
+            json!({ "method": "create", "params": { "schema": schema } }),
+        );
+        assert_eq!(
+            refused,
+            json!({ "error": {
+                "code": "client.host_owned",
+                "message": "the native host created this client and owns its lifecycle",
+                "details": { "method": "create", "webview": "main" }
+            } })
+        );
+
+        let attached = from(
+            "main",
+            json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } }),
+        );
+        assert_eq!(attached, json!({ "result": { "state": "active" } }));
+        let mutated = from(
+            "main",
+            json!({ "method": "mutate", "params": { "mutations": [{
+                "op": "upsert", "table": "todo", "values": { "id": "t1" }
+            }] } }),
+        );
+        assert!(mutated.get("error").is_none(), "{mutated}");
+        assert_eq!(count_from(&app, "main")["result"]["rows"][0]["n"], 1);
+        let snapshot = from(
+            "main",
+            json!({ "method": "querySnapshot", "params": { "sql": "SELECT id FROM todo" } }),
+        );
+        assert_eq!(snapshot["result"]["rows"][0]["id"], "t1", "{snapshot}");
+        // The host reads the row the webview wrote: one client serves both.
+        let read = host.command(&json!({ "method": "query", "params": {
+            "sql": "SELECT count(*) AS n FROM todo"
+        } }));
+        assert_eq!(read["result"]["rows"][0]["n"], 1);
+    }
+
+    #[test]
+    fn attach_requires_a_host_created_client() {
+        let (app, schema) = host_owned_app();
+        let attach = json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } });
+        let refusal = invalid_request(
+            "sync.invalid_request: attach requires a client the native host created",
+        );
+        assert_eq!(run_command(app.handle(), attach.clone()).unwrap(), refusal);
+        let created = run_command(
+            app.handle(),
+            json!({ "method": "create", "params": { "schema": schema } }),
+        )
+        .unwrap();
+        assert!(created.get("error").is_none(), "{created}");
+        assert_eq!(run_command(app.handle(), attach).unwrap(), refusal);
+    }
+
+    #[test]
+    fn a_host_created_client_keeps_its_lifecycle_with_the_host() {
+        let (app, schema) = host_owned_app();
+        let host = app.syncular();
+        let from =
+            |label: &str, command: Value| run_command_from(app.handle(), label, command).unwrap();
+        let refused_code = |label: &str, method: &str, params: Value| {
+            let reply = from(label, json!({ "method": method, "params": params }));
+            assert_eq!(
+                reply["error"]["code"], "client.host_owned",
+                "{method}: {reply}"
+            );
+            assert_eq!(reply["error"]["details"]["method"], method);
+        };
+        let created = host.command(&json!({ "method": "create", "params": {
+            "schema": schema, "securityPreflight": true
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        // The attached bridge starts from the host's lifecycle and follows the
+        // lifecycle events the host's transitions emit.
+        assert_eq!(
+            from(
+                "main",
+                json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } })
+            ),
+            json!({ "result": { "state": "preflight" } })
+        );
+        let events = host.subscribe();
+        // Events follow the reply, so wait for the next lifecycle event.
+        let lifecycle = || {
+            events
+                .iter()
+                .find(|event| event["type"] == "securityLifecycle")
+                .map(|event| event["state"].clone())
+        };
+
+        // The security gate applies to webview reads unchanged, and only the
+        // host leaves preflight.
+        assert_eq!(
+            count_from(&app, "main")["error"]["code"],
+            syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE
+        );
+        refused_code("main", "activateSecurity", json!({}));
+        assert_eq!(
+            host.command(&json!({ "method": "securityLifecycle", "params": {} }))["result"]
+                ["state"],
+            "preflight"
+        );
+        assert!(host
+            .command(&json!({ "method": "activateSecurity", "params": {} }))
+            .get("error")
+            .is_none());
+        assert_eq!(lifecycle(), Some(json!("active")));
+        assert_eq!(count_from(&app, "main")["result"]["rows"][0]["n"], 0);
+        refused_code("main", "beginSecurityPreflight", json!({}));
+        assert!(host
+            .command(&json!({ "method": "beginSecurityPreflight", "params": {} }))
+            .get("error")
+            .is_none());
+        assert_eq!(lifecycle(), Some(json!("preflight")));
+        assert_eq!(
+            from(
+                "main",
+                json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } })
+            ),
+            json!({ "result": { "state": "preflight" } })
+        );
+        assert!(host
+            .command(&json!({ "method": "activateSecurity", "params": {} }))
+            .get("error")
+            .is_none());
+        assert_eq!(lifecycle(), Some(json!("active")));
+
+        // A webview cannot dispose, close or recreate the host's client; a
+        // refused shutdown leaves the slot with the host.
+        refused_code("main", "shutdown", json!({}));
+        refused_code("main", "recreateWithSchema", json!({ "schema": schema }));
+        refused_code("main", "create", json!({ "schema": schema }));
+        assert_eq!(count_from(&app, "main")["result"]["rows"][0]["n"], 0);
+
+        // A reloaded or new webview attaches to the same client and reads it.
+        assert!(host
+            .command(&json!({ "method": "mutate", "params": { "mutations": [{
+                "op": "upsert", "table": "todo", "values": { "id": "t1" }
+            }] } }))
+            .get("error")
+            .is_none());
+        for label in ["main", "second"] {
+            assert!(from(
+                label,
+                json!({ "method": "attach", "params": { "events": "__CHANNEL__:2" } })
+            )
+            .get("error")
+            .is_none());
+            assert_eq!(count_from(&app, label)["result"]["rows"][0]["n"], 1);
+        }
+
+        // The host disposes and recreates its client; it stays host-owned.
+        assert!(host
+            .command(&json!({ "method": "shutdown", "params": {} }))
+            .get("error")
+            .is_none());
+        let recreated =
+            host.command(&json!({ "method": "create", "params": { "schema": schema } }));
+        assert!(recreated.get("error").is_none(), "{recreated}");
+        assert_eq!(count_from(&app, "second")["result"]["rows"][0]["n"], 0);
+        refused_code("second", "create", json!({ "schema": schema }));
+
+        // After the host disposes its client, a webview create takes the slot
+        // and the webview-created rules apply again.
+        assert!(host
+            .command(&json!({ "method": "shutdown", "params": {} }))
+            .get("error")
+            .is_none());
+        let taken = from(
+            "main",
+            json!({ "method": "create", "params": { "schema": schema } }),
+        );
+        assert!(taken.get("error").is_none(), "{taken}");
+        assert_eq!(count_from(&app, "main")["result"]["rows"][0]["n"], 0);
+        assert_eq!(
+            count_from(&app, "second")["error"]["code"],
+            "sync.client_owned_by_another_webview"
+        );
+    }
+
+    #[test]
+    fn a_host_authority_read_runs_the_host_declarations() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        let path =
+            std::env::temp_dir().join(format!("syncular-host-authority-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                db_path: Some(path.to_string_lossy().into_owned()),
+                authority_columns: [(
+                    "authority".into(),
+                    vec!["id".into(), "actor_id".into(), "role".into()],
+                )]
+                .into(),
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let host = app.syncular();
+        let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "role", "type": "string", "nullable": false}
+        ]}]});
+        let query = |name: &str| {
+            json!({
+                "name": name,
+                "sql": "SELECT role FROM authority WHERE actor_id = ?",
+                "bind": ["actorId"],
+                "params": [{"name": "actorId", "type": "string", "nullable": false}],
+                "coverage": [{"table": "authority", "variable": "actor_id", "units": ["actorId"]}],
+                "reads": {"authority": ["actor_id", "role"]},
+                "resultColumns": [{"name": "role", "type": "string", "nullable": false}]
+            })
+        };
+        let create = |name: &str| json!({"method": "create", "params": {"schema": schema, "securityPreflight": true, "transportGate": "closed", "authorityReads": [query(name)]}});
+        let read = |name: &str| {
+            json!({"method": "authorityRead", "params": {"requests": [
+                {"query": name, "params": {"actorId": "a"}}
+            ]}})
+        };
+        let created = host.command(&create("roleOf"));
+        assert!(created.get("error").is_none(), "{created}");
+        // A webview cannot replace the host's declarations with its own.
+        assert_eq!(
+            run_command(app.handle(), create("webviewRole")).unwrap()["error"]["code"],
+            "client.host_owned"
+        );
+        let conn = rusqlite::Connection::open(&path).expect("fixture db");
+        conn.execute_batch("INSERT INTO _syncular_base_authority(id,actor_id,role,_syncular_version)VALUES('one','a','accepted',7); INSERT INTO authority SELECT * FROM _syncular_base_authority;").expect("fixture base");
+        let echo =
+            json!([{"table": "authority", "status": "active", "scopes": {"actor_id": ["a"]}}]);
+        conn.execute(
+            "INSERT INTO _syncular_units(id,scopes,explicit,cursor,echo)VALUES('a',?1,1,NULL,?2)",
+            rusqlite::params![json!({"actor_id": "a"}).to_string(), echo.to_string()],
+        )
+        .expect("fixture unit");
+
+        let hosted = host.command(&read("roleOf"));
+        assert_eq!(
+            hosted["result"]["results"][0]["rows"],
+            json!([{"role": "accepted"}]),
+            "{hosted}"
+        );
+        assert_eq!(
+            host.command(&read("webviewRole"))["error"]["code"],
+            "client.authority_query_unknown"
+        );
+        // An attached webview reads through the same host declarations.
+        assert!(run_command(
+            app.handle(),
+            json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } })
+        )
+        .unwrap()
+        .get("error")
+        .is_none());
+        let attached = run_command(app.handle(), read("roleOf")).unwrap();
+        assert_eq!(attached["result"]["results"], hosted["result"]["results"]);
+        drop(conn);
+        drop(app);
+        let _ = std::fs::remove_file(path);
     }
 
     /// The owner-thread mailbox loop end-to-end, without any Tauri window: post

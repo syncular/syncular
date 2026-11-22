@@ -403,7 +403,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     }
     heldHosts.add(host);
     try {
-      await this.#reply(create);
+      // `attach` answers with the host's lifecycle `{ state }`.
+      const opened = await this.#reply(create);
+      if (typeof opened === 'object' && opened !== null && 'state' in opened)
+        this.__dispatchEvent({
+          type: 'securityLifecycle',
+          state: opened.state,
+        });
     } catch (error) {
       heldHosts.delete(host);
       this.#release();
@@ -606,6 +612,10 @@ export abstract class NativeBridgeClient implements PromiseMethods<
         break;
       case 'scopes-changed':
         fanOut(this.#scopesChangedListeners);
+        break;
+      case 'securityLifecycle':
+        if (event.state === 'active' || event.state === 'preflight')
+          this.#securityLifecycle = event.state;
         break;
       case 'diagnostics': {
         const snapshot = event.snapshot as ClientDiagnosticsSnapshot | null;

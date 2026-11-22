@@ -166,6 +166,13 @@ impl SyncularCore {
             if value.pointer("/effects/sync/kind").and_then(Value::as_str) == Some("interactive") {
                 self.interactive_sync = true;
             }
+            // An attached webview's bridge follows the lifecycle the host sets.
+            if method == "activateSecurity" || method == "beginSecurityPreflight" {
+                self.push(json!({
+                    "type": "securityLifecycle",
+                    "state": if method == "activateSecurity" { "active" } else { "preflight" },
+                }));
+            }
         }
         self.drain_realtime();
         self.drain_core_outputs();

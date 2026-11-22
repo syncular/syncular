@@ -1,4 +1,5 @@
 import {
+  attachTauriSyncClient as attachRemoteTauriSyncClient,
   createTauriSyncClient as createRemoteTauriSyncClient,
   TauriSyncClient as RemoteTauriSyncClient,
   type LocalAuthorityState,
@@ -50,4 +51,13 @@ export function createTauriSyncClient(
     new TauriSyncClient(...args),
 ): Promise<TauriSyncClient> {
   return createRemoteTauriSyncClient(config, createClient);
+}
+
+export function attachTauriSyncClient(
+  config?: Pick<TauriSyncClientConfig, 'tauri'>,
+): Promise<TauriSyncClient> {
+  return attachRemoteTauriSyncClient(
+    config ?? {},
+    (...args) => new TauriSyncClient(...args),
+  );
 }

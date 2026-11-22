@@ -20,6 +20,7 @@ import { createSyncProfiler } from '@syncular/client/dev';
 import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
+  attachTauriSyncClient,
   createTauriSyncClient,
   type TauriApi,
   TauriSyncError,
@@ -280,6 +281,54 @@ describe('createTauriSyncClient', () => {
     emit({ type: 'presence', scopeKey: 'room:2' });
     emit({ type: 'scopes-changed' });
     expect(seen).toEqual(['room:1', 'scopes-changed']);
+  });
+
+  test('attach carries the event channel to a host-created client and leaves its lifecycle to the host', async () => {
+    const { tauri, calls, emit } = makeTauri((cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'attach') return { result: { state: 'preflight' } };
+      if (method === 'shutdown')
+        return {
+          error: {
+            code: 'client.host_owned',
+            message:
+              'the native host created this client and owns its lifecycle',
+            details: { method: 'shutdown', webview: 'main' },
+          },
+        };
+      return defaultResponder(cmd, args);
+    });
+    const client = await attachTauriSyncClient({ tauri });
+    const attach = calls[0]?.args.command as {
+      method: string;
+      params: { events?: { toJSON(): string } };
+    };
+    expect(attach.method).toBe('attach');
+    expect(attach.params.events?.toJSON()).toBe('__CHANNEL__:1');
+    // The bridge starts from the host's lifecycle and follows its events.
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(
+      client.query('SELECT id, done FROM tasks'),
+    ).rejects.toMatchObject({ code: 'client.security_preflight_required' });
+    emit({ type: 'securityLifecycle', state: 'active' });
+    expect(await client.securityLifecycle()).toBe('active');
+    expect(await client.query('SELECT id, done FROM tasks')).toEqual([
+      { id: 't1', done: 0 },
+    ]);
+    emit({ type: 'securityLifecycle', state: 'preflight' });
+    expect(await client.securityLifecycle()).toBe('preflight');
+    emit({ type: 'securityLifecycle', state: 'active' });
+    // The index entry attaches the bridge with the local-authority lifecycle.
+    expect(typeof client.attachLocalAuthority).toBe('function');
+    const seen: string[] = [];
+    client.onPresence((scopeKey) => seen.push(scopeKey));
+    emit({ type: 'presence', scopeKey: 'room:1' });
+    expect(seen).toEqual(['room:1']);
+    await expect(client.close()).rejects.toMatchObject({
+      code: 'client.host_owned',
+    });
+    emit({ type: 'presence', scopeKey: 'room:2' });
+    expect(seen).toEqual(['room:1']);
   });
 
   test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {

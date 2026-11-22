@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'Tauri clients the Rust host creates',
+    body: "A client the Rust host creates through app.syncular().command() keeps the host's schema, database and authority declarations. Webviews reach it with attachTauriSyncClient() and run commands, queries and authority reads on it; the plugin refuses a webview create, shutdown, activateSecurity or beginSecurityPreflight with client.host_owned until the host shuts the client down.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/#a-client-the-rust-host-creates',
+        label: 'A client the Rust host creates',
+      },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Push a verified prefix of the outbox',
     body: 'The transport gate takes a fourth state, `{ through: clientCommitId }`: rounds pull and push the pending commits up to that commit with the blobs they reference, and hold the rest. The gate returns to `pull` once the commit is acknowledged, its delivery is uncertain, or a commit of the prefix is rejected or replaced.',
     links: [

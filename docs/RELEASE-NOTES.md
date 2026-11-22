@@ -29,6 +29,23 @@ that hold an entry for every variable. The count stays exact.
 
 [Server storage reference](https://syncular.dev/server-storage-reference/)
 
+### Tauri clients the Rust host creates
+
+When Rust host code sends `create` through `app.syncular().command()`, the
+plugin records the host as the client's creator. The schema, database and
+authority declarations are the host's, so native code can rely on what an
+`authorityRead` reads; a configured `authority_columns` ceiling still
+applies. A webview reaches the client with `attachTauriSyncClient()` from
+`@syncular/tauri` and runs commands, queries, snapshots and authority reads on
+it under the unchanged security gate. The host owns the lifecycle: the plugin
+refuses a webview `create`, `recreateWithSchema`, `shutdown`,
+`activateSecurity` or `beginSecurityPreflight` with `client.host_owned`
+(details `{ method, webview }`). A webview that closes or reloads leaves the
+client open; after the host shuts it down, a webview `create` succeeds again.
+A client a webview created behaves as before.
+
+[A client the Rust host creates](https://syncular.dev/platform-tauri-specifics/#a-client-the-rust-host-creates)
+
 ### Upgrading
 
 - The forwarded `setTransportGate` takes the new state, so
@@ -39,6 +56,11 @@ that hold an entry for every variable. The count stays exact.
   `TransportGate` is `Clone` without `Copy`. Handle the result; the three
   string states never fail. A split-round host that set `Closed` again only to
   release the socket calls `disconnect_realtime`.
+- Tauri: a webview `create` after a host `create` used to replace the host's
+  client; it now fails with `client.host_owned`. Webview commands on a
+  host-created client used to fail with
+  `sync.client_owned_by_another_webview`; they now run. Switch such webviews to
+  `attachTauriSyncClient()`.
 
 ## 0.102.0 release notes
 

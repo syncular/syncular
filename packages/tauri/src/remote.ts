@@ -234,7 +234,9 @@ export class TauriSyncClient extends NativeBridgeClient {
  * Construct the bridge and issue the native `create` (opening/attaching the
  * file DB on the Rust side per the plugin config). Returns a ready
  * `TauriSyncClient` that satisfies `SyncClientLike` — pass it straight to the
- * React `<SyncProvider client={…}>`.
+ * React `<SyncProvider client={…}>`. The plugin refuses the create with
+ * `client.host_owned` while the Rust host owns the client; use
+ * {@link attachTauriSyncClient} then.
  */
 export function createTauriSyncClient(
   config: TauriSyncClientConfig,
@@ -266,8 +268,58 @@ export async function createTauriSyncClient(
       ? { authorityReads: config.authorityReads.declarations }
       : {}),
   };
-  const tauri = await resolveTauri(config.tauri);
-  // The create carries the event channel, so no early change batch is missed.
+  return openTauriSyncClient(
+    config.tauri,
+    'create',
+    params,
+    config.securityPreflight === true ? 'preflight' : 'active',
+    createClient,
+  );
+}
+
+/**
+ * Attach this webview to the client the Rust host created through
+ * `app.syncular().command()`. Commands, queries, snapshots and events work as
+ * on a created client. The host owns the lifecycle: the plugin refuses this
+ * webview's `activateSecurity`, `beginSecurityPreflight` and `close()` with
+ * `client.host_owned` (`close()` still releases this bridge), and its security
+ * gate decides every read.
+ */
+export function attachTauriSyncClient(
+  config?: Pick<TauriSyncClientConfig, 'tauri'>,
+): Promise<TauriSyncClient>;
+/** @internal Explicit bridge extension used by the index entry. */
+export function attachTauriSyncClient<Client extends TauriSyncClient>(
+  config: Pick<TauriSyncClientConfig, 'tauri'>,
+  createClient: (
+    ...args: ConstructorParameters<typeof TauriSyncClient>
+  ) => Client,
+): Promise<Client>;
+export function attachTauriSyncClient(
+  config: Pick<TauriSyncClientConfig, 'tauri'> = {},
+  createClient = (...args: ConstructorParameters<typeof TauriSyncClient>) =>
+    new TauriSyncClient(...args),
+): Promise<TauriSyncClient> {
+  return openTauriSyncClient(
+    config.tauri,
+    'attach',
+    {},
+    'preflight',
+    createClient,
+  );
+}
+
+async function openTauriSyncClient<Client extends TauriSyncClient>(
+  injected: TauriApi | undefined,
+  method: 'create' | 'attach',
+  params: Record<string, unknown>,
+  securityLifecycle: SecurityLifecycle,
+  createClient: (
+    ...args: ConstructorParameters<typeof TauriSyncClient>
+  ) => Client,
+): Promise<Client> {
+  const tauri = await resolveTauri(injected);
+  // The call carries the event channel, so no early change batch is missed.
   // Releasing the bridge drops its reference, which ends dispatch.
   let client: TauriSyncClient | undefined;
   const events = tauri.channel<SyncularEvent>((event) =>
@@ -278,13 +330,13 @@ export async function createTauriSyncClient(
     () => {
       client = undefined;
     },
-    config.securityPreflight === true ? 'preflight' : 'active',
+    securityLifecycle,
   );
   client = opened;
   await opened.__open(
     () =>
       tauri.invoke<NativeReply>(`${PLUGIN}syncular_command`, {
-        command: { method: 'create', params: { ...params, events } },
+        command: { method, params: { ...params, events } },
       }),
     tauri,
   );

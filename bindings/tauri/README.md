@@ -66,7 +66,14 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
   reports a server `scopes` notice (SPEC.md §8.7); `TauriSyncClient` surfaces
   it through `onScopesChanged`. A `create` from another
   webview takes the client over; every other command from a webview that does
-  not own it is refused with `sync.client_owned_by_another_webview`. Table/scope/window/status/conflict/rejection facts stay in the
+  not own it is refused with `sync.client_owned_by_another_webview`. A
+  client the Rust host created with `app.syncular().command()` serves every
+  webview: `attachTauriSyncClient()` sends `attach` with the webview's events
+  channel and answers with the security lifecycle, which the plugin's
+  `securityLifecycle` events keep current; the host keeps the lifecycle (a webview `create`,
+  `recreateWithSchema`, `shutdown`, `activateSecurity` or
+  `beginSecurityPreflight` is refused with `client.host_owned` until the host
+  shuts the client down). Table/scope/window/status/conflict/rejection facts stay in the
   one committed batch instead of being re-inferred by the bridge. Bytes ride
   as `{ "$bytes": "<hex>" }` everywhere, the driver-protocol convention.
 

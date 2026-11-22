@@ -92,6 +92,40 @@ including its pending writes and security state. Close the first client and
 await `close()` before creating another. A page reload starts without a client,
 so its `create` takes over the core.
 
+### A client the Rust host creates
+
+When Rust host code sends `create` through `app.syncular().command()`, the
+plugin records the host as the client's creator. The schema, the database and
+the authority declarations are the ones the host passed, so native code can
+rely on what an `authorityRead` reads. The `authority_columns` ceiling still
+applies to them when it is configured.
+
+A webview reaches that client with `attachTauriSyncClient()`. The bridge sends
+`attach` with its events channel, and the plugin delivers the client's events
+to the webview that attached last. Commands, queries, snapshots and authority
+reads from any webview then run as on a webview-created client, and the
+security gate refuses ordinary reads during preflight as before. `attach`
+answers with the client's security lifecycle, and the plugin emits a
+`securityLifecycle` event after each `activateSecurity` and
+`beginSecurityPreflight`, so the bridge's `securityLifecycle()` reads
+`preflight` until the host activates and `active` after it.
+
+```ts title="src/session.ts"
+import { attachTauriSyncClient } from '@syncular/tauri';
+
+const client = await attachTauriSyncClient();
+```
+
+The host owns the client's lifecycle. The plugin refuses a webview `create`,
+`recreateWithSchema`, `shutdown` (which `close()` sends), `activateSecurity`
+and `beginSecurityPreflight` with `client.host_owned` and the details
+`{ method, webview }`; the command never reaches the client. `close()` still
+releases the webview's bridge. A webview that closes or reloads leaves the
+client open and host-owned, and the next webview attaches to the same client.
+After the host sends `shutdown`, a webview `create` opens a webview-created
+client under the rules above. `attach` before any `create`, or on a client a
+webview created, fails with `sync.invalid_request`.
+
 The Rust core originates the table, scope, window, status, and conflict domains.
 The bridge forwards them without counter diffing or a global-invalidation
 fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe SQLite integers use
@@ -193,6 +227,10 @@ undeclared query fails with `client.authority_query_unknown`, and a missing,
 extra or mistyped parameter with `sync.invalid_request` and the details
 `{ query, param }`. Ordinary `query`, `querySnapshot`, and writes still fail
 with `client.security_preflight_required`.
+
+On a client the Rust host created, the declarations come from the host's
+`create`, and the ceiling check runs on them in the same way; see
+[A client the Rust host creates](#a-client-the-rust-host-creates).
 
 `authorityRead` runs every request in one SQLite read transaction and returns
 `revision: bigint` and one result per request:
