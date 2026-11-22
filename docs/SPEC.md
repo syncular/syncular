@@ -6464,7 +6464,8 @@ constant. Protocol 3 covered Syncular 0.59.0 to 0.91.0 although that surface
 changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0,
 protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
-covers 0.101.0, and protocol 11 starts with 0.102.0.
+covers 0.101.0, protocol 11 covers 0.102.0, protocol 12 covers 0.103.0 and
+0.103.1, and protocol 13 starts with 0.103.2.
 
 **Browser leader promotion.** A follower tab that wins the leader lock starts
 its own core and announces above every epoch it has seen. Epochs are per tab:
