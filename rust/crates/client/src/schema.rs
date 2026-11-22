@@ -659,6 +659,20 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_schema_that_still_carries_fts_indexes() {
+        let mut schema = schema_with_fts(
+            json!({ "name": "body", "type": "string", "nullable": false }),
+            "unicode61",
+        );
+        schema["tables"][0]["ftsIndexes"] = json!([]);
+        let error = parse_schema_json(&schema).expect_err("ftsIndexes is refused");
+        assert!(
+            error.starts_with("client.schema_invalid:") && error.contains("ftsIndexes"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn refuses_a_mixed_or_fts_less_built_in_projection() {
         let body = json!({ "name": "body", "type": "string", "nullable": false });
         let mut mixed = schema_with_fts(body.clone(), "unicode61");

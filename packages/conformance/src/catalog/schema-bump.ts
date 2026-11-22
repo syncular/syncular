@@ -269,7 +269,243 @@ function restrictsSent(a: ClientHandle, from: number): unknown[] {
     );
 }
 
+/** §7.4.3 0.102.0 upgrade: `tasks` declares an index and an FTS projection;
+ * `docs` declares neither. Generations from 0.101.0 included both, so only
+ * `tasks` carries a new generation. */
+const UPGRADE: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      ...(FIXTURE_SCHEMA.tables[0] as DriverTable),
+      generation: 'tasks-2',
+      indexes: [{ name: 'tasks_by_title', columns: ['title'], unique: false }],
+      localProjections: [
+        {
+          name: 'tasks_fts',
+          generation: 'tasks_fts-1',
+          columns: [{ name: 'title', declaredType: 'string', source: 'title' }],
+          fts: { tokenize: 'unicode61', columns: ['title'] },
+        },
+      ],
+    },
+    { ...(FIXTURE_SCHEMA.tables[1] as DriverTable), generation: 'docs-1' },
+  ],
+};
+const DOCS_UNIT = { org_id: 'o1' } as const;
+
+/**
+ * A live replica with a queued write, rewritten into the layout 0.101.0 left:
+ * the contentful FTS table and its trigger, no `localIndexes` record, an
+ * outbox without the send-attempt column, and the 0.101.0 generations.
+ */
+async function replicaOf0101(
+  ctx: ScenarioContext,
+): Promise<{ a: ClientHandle; tasks: unknown; docs: unknown }> {
+  await seedTasks(ctx, [task('t1', 'p1', 'alpha needle')]);
+  await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
+  const a = await ctx.newClient({
+    actorId: 'actor-a',
+    clientId: 'client-a',
+    schema: UPGRADE,
+    allowed: { project_id: ['p1'], org_id: ['o1'] },
+  });
+  await a.api.subscribeMany([U1, DOCS_UNIT]);
+  await syncIdle(a);
+  await a.api.mutate([
+    { op: 'upsert', table: 'tasks', values: task('t3', 'p1', 'gamma needle') },
+  ]);
+  const tasks = await unitProgress(a, U1);
+  const docs = await unitProgress(a, DOCS_UNIT);
+  check(
+    a.api.executeStorageSql !== undefined && a.api.querySnapshot !== undefined,
+    'storage fault seam',
+  );
+  const triggers = await a.api.querySnapshot(
+    "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '_syncular_project_tasks_fts*'",
+  );
+  for (const sql of [
+    ...triggers.rows.map((row) => `DROP TRIGGER "${String(row.name)}"`),
+    'DROP TABLE tasks_fts',
+    'DROP TABLE _syncular_projection_tasks_fts',
+    'DROP TABLE _syncular_fts_tasks_fts',
+    "DELETE FROM _syncular_local_projections WHERE name='tasks_fts'",
+    "CREATE VIRTUAL TABLE tasks_fts USING fts5(_syncular_source_id UNINDEXED, title, tokenize='unicode61')",
+    'CREATE TABLE _syncular_fts_tasks_fts(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)',
+    'INSERT INTO tasks_fts(_syncular_source_id,title) SELECT id,title FROM tasks',
+    'INSERT INTO _syncular_fts_tasks_fts(id,source_id) SELECT rowid,_syncular_source_id FROM tasks_fts',
+    'CREATE TRIGGER tasks_fts_ai AFTER INSERT ON tasks BEGIN INSERT INTO tasks_fts(_syncular_source_id,title) VALUES (new.id,new.title); END',
+    "DELETE FROM _syncular_meta WHERE key='localIndexes'",
+    `UPDATE _syncular_meta SET value='{"docs":"docs-1","tasks":"tasks-1"}' WHERE key='localTableGenerations'`,
+    'ALTER TABLE _syncular_outbox DROP COLUMN attempted',
+  ])
+    await a.api.executeStorageSql(sql);
+  checkEqual(
+    (
+      await a.api.querySnapshot(
+        "SELECT (SELECT count(*) FROM pragma_table_info('_syncular_outbox') WHERE name='attempted') AS attempted, (SELECT instr(sql, 'content=') FROM sqlite_master WHERE name='tasks_fts') AS external",
+      )
+    ).rows,
+    [{ attempted: 0, external: 0 }],
+    'the replica is in the 0.101.0 layout',
+  );
+  return { a, tasks, docs };
+}
+
+/** The upgraded replica's FTS answers, declared index, attempt markers and
+ * stored generations. */
+async function upgradedState(a: ClientHandle): Promise<unknown> {
+  const read = async (sql: string) => (await a.api.querySnapshot!(sql)).rows;
+  return {
+    search: await read(
+      "SELECT _syncular_source_id AS id FROM tasks_fts WHERE tasks_fts MATCH 'needle' ORDER BY id",
+    ),
+    externalContent: await read(
+      "SELECT instr(sql, 'content=''_syncular_projection_tasks_fts''') > 0 AS yes FROM sqlite_master WHERE name='tasks_fts'",
+    ),
+    oldTrigger: await read(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name='tasks_fts_ai'",
+    ),
+    index: await read(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='tasks_by_title'",
+    ),
+    attempted: await read('SELECT attempted AS a FROM _syncular_outbox'),
+    generations: JSON.parse(
+      String(
+        (
+          await read(
+            "SELECT value FROM _syncular_meta WHERE key='localTableGenerations'",
+          )
+        )[0]?.value,
+      ),
+    ),
+  };
+}
+
+const UPGRADED = {
+  search: [{ id: 't1' }, { id: 't3' }],
+  externalContent: [{ yes: 1 }],
+  oldTrigger: [],
+  index: [{ name: 'tasks_by_title' }],
+  attempted: [{ a: 1 }],
+  generations: { docs: 'docs-1', tasks: 'tasks-2' },
+};
+
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    // 0.102.0 Upgrading: the first open at an unchanged schema version resets
+    // no table; it rebuilds FTS in place, creates the declared index and
+    // stores the new generations. A later bump resets only what it changes.
+    name: 'schema-bump/a-0.101.0-replica-upgrades-in-place-at-the-same-version',
+    specRefs: ['§7.4.1', '§7.4.3'],
+    requires: ['storage-fault'],
+    server: { schema: UPGRADE },
+    async run(ctx) {
+      const { a, tasks, docs } = await replicaOf0101(ctx);
+      await ctx.recreateClient(a, UPGRADE);
+      checkEqual(
+        [await unitProgress(a, U1), await unitProgress(a, DOCS_UNIT)],
+        [tasks, docs],
+        'the same-version open keeps every unit',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't3'],
+        'the same-version open keeps the table and the queued write',
+      );
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['d1'],
+        'the same-version open keeps the table without an index',
+      );
+      checkEqual(
+        await upgradedState(a),
+        UPGRADED,
+        'FTS, the declared index, the attempt marker and the generations are current',
+      );
+      // Version 2 changes only the generation of `docs`.
+      const v2: DriverSchema = {
+        version: 2,
+        tables: [
+          UPGRADE.tables[0] as DriverTable,
+          { ...(UPGRADE.tables[1] as DriverTable), generation: 'docs-2' },
+        ],
+      };
+      await ctx.server.restart(v2);
+      await ctx.recreateClient(a, v2);
+      checkEqual(
+        await unitProgress(a, U1),
+        tasks,
+        'the bump keeps the unchanged table and its unit',
+      );
+      checkEqual(
+        (await a.api.unitState(unitId(DOCS_UNIT)))?.cursor,
+        -1,
+        'the bump resets the changed table only',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort(),
+        ['t1', 't3'],
+        'the kept table keeps its rows',
+      );
+      checkEqual(
+        await a.api.readRows('docs'),
+        [],
+        'the changed table is recreated',
+      );
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['d1'],
+        'the changed table bootstraps again',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the queued write drained',
+      );
+    },
+  },
+  {
+    // 0.102.0 Upgrading: a bump that ships with the upgrade compares against
+    // the 0.101.0 generations, so exactly the table with an index or FTS
+    // resets, bootstraps again and replays the outbox.
+    name: 'schema-bump/a-bump-shipped-with-0.102.0-resets-the-index-and-fts-tables',
+    specRefs: ['§7.4.3'],
+    requires: ['storage-fault'],
+    server: { schema: UPGRADE },
+    async run(ctx) {
+      const { a, docs } = await replicaOf0101(ctx);
+      const v2 = { ...UPGRADE, version: 2 };
+      await ctx.server.restart(v2);
+      await ctx.recreateClient(a, v2);
+      checkEqual(
+        (await a.api.unitState(unitId(U1)))?.cursor,
+        -1,
+        'the table with an index and FTS resets',
+      );
+      checkEqual(
+        await unitProgress(a, DOCS_UNIT),
+        docs,
+        'the table with neither keeps its unit',
+      );
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['d1'],
+        'the table with neither keeps its rows',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t3'],
+        'the reset table holds the replayed write',
+      );
+      await syncIdle(a);
+      checkEqual(
+        await upgradedState(a),
+        { ...UPGRADED, attempted: [] },
+        'the reset table bootstraps again under the current layout',
+      );
+    },
+  },
   {
     // §7.4.3 declared indexes: an index-only change reconciles in place and
     // resets no table and no unit.

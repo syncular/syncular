@@ -5,8 +5,10 @@
  * and FTS5 projection statements name no table.
  */
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import {
   buildIr,
+  generate,
   type IrDocument,
   type MigrationInput,
   parseManifest,
@@ -128,4 +130,25 @@ describe('table generations', () => {
       build("UPDATE catalog SET title = 'x' WHERE shelf_id = 's1'"),
     ).toThrow(TypegenError);
   });
+});
+
+test('0.102.0 changed the 0.101.0 generation of exactly the tables with an index or FTS', () => {
+  // The golden fixtures' generations as typegen 0.101.0 emitted them.
+  const released: Record<string, string> = {
+    tasks: '243810361624f6ed9d828938a22f4429',
+    docs: '71fd58d27b5d1b5388ce8888473f8e1d',
+    doc_revisions: 'd9a19878f3172c1072258fe4dd071a37',
+    patients: '14985731ce0d72ecf985becf53831183',
+  };
+  const tables = ['basic', 'sealed'].flatMap(
+    (fixture) => generate(join(import.meta.dir, 'fixtures', fixture)).ir.tables,
+  );
+  expect(tables.map((table) => table.name).sort()).toEqual(
+    Object.keys(released).sort(),
+  );
+  for (const table of tables)
+    expect([table.name, table.generation !== released[table.name]]).toEqual([
+      table.name,
+      table.indexes.length > 0 || (table.localProjections?.length ?? 0) > 0,
+    ]);
 });

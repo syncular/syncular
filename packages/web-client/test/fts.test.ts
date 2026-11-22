@@ -627,6 +627,13 @@ describe('built-in FTS5 projections', () => {
     expect(search(db, 'identity')).toEqual(['c1']);
   });
 
+  test('a schema that still carries ftsIndexes is refused', () => {
+    const legacy = { ...SCHEMA.tables[0]!, ftsIndexes: [] };
+    expect(() => compile({ version: 1, tables: [legacy] })).toThrow(
+      'declares ftsIndexes; regenerate the schema',
+    );
+  });
+
   test('compile fails loudly for unsafe or unsupported definitions', () => {
     const table = SCHEMA.tables[0];
     if (table === undefined) throw new Error('fixture table missing');
