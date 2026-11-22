@@ -1,6 +1,6 @@
 import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
-import { OUTBOX_IMAGES } from './outbox';
+import { OUTBOX_IMAGES, OUTBOX_TABLE } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
 import { localStateCorrupt } from './errors';
 import type { ClientDatabase } from './database';
@@ -190,11 +190,15 @@ function retainedRows(
   db: ClientDatabase,
   scope?: OverlayScope,
   acknowledged?: boolean,
+  pending = false,
 ) {
   // A scope joins through the (tbl, id) index; a scan per applied commit
-  // would make a drained batch quadratic.
+  // would make a drained batch quadratic. `pending` appends the before-images
+  // of pending rows in the scope's tables, in outbox order, with `r` NULL;
+  // the columns line up with the table's fixed order, pinned by
+  // unique-pull.test.ts "retained-row columns keep the order".
   return db.query(
-    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=json_extract(k.value,'$[0]') AND r.id=json_extract(k.value,'$[1]') UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=json_extract(k.value,'$[0]')))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=k.value->>0 AND r.id=k.value->>1 UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=k.value->>0))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`}${pending ? ` UNION ALL SELECT NULL,NULL,op_index,tbl,row_id,seq,NULL,NULL,values_json,sync_version,NULL,9e18 FROM ${OUTBOX_IMAGES} JOIN ${OUTBOX_TABLE} USING(client_commit_id)WHERE tbl IN(SELECT value->>0 FROM json_each(?1) WHERE json_array_length(value)=1)` : ''} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }
@@ -204,8 +208,18 @@ export function restoreFailedBases(
   schema: CompiledClientSchema,
   scope?: OverlayScope,
 ): void {
+  // §7.2: an accepted row can take the unique key of a pending row, so every
+  // pending row of a table in scope leaves the visible table first and returns
+  // at its earliest before-image after the retained bases; the replay then
+  // re-admits it or keeps it invisible while its key is taken.
+  const rows = retainedRows(db, scope, undefined, true);
+  for (const row of rows) {
+    const table = schema.tables.get(row.tbl as string);
+    if (table && row.r === null)
+      deleteLocalRow(db, table, row.id as string, false);
+  }
   const seen = new Set<string>();
-  for (const row of retainedRows(db, scope)) {
+  for (const row of rows) {
     const key = JSON.stringify([row.tbl, row.id]);
     if (seen.has(key)) continue;
     seen.add(key);

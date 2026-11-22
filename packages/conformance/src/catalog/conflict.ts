@@ -34,7 +34,7 @@ async function bootstrapped(
   return handle;
 }
 
-const UNIQUE_SCHEMA = {
+export const UNIQUE_SCHEMA = {
   ...FIXTURE_SCHEMA,
   tables: FIXTURE_SCHEMA.tables.map((table) =>
     table.name === 'tasks'
@@ -311,6 +311,106 @@ export const conflictScenarios: readonly Scenario[] = [
       }
     },
   },
+
+  // §7.2 peer reconciliation while the loser is still in the outbox: a pull
+  // gate holds it, in both orders around a sealed commit.
+  ...(['ordinary-first', 'seal-first'] as const).map(
+    (order): Scenario => ({
+      name: `conflict/pending-distinct-id-unique-insert-pull-${order}`,
+      specRefs: ['§7.2', '§8.8'],
+      requires: ['scope-authorization'],
+      server: { schema: UNIQUE_SCHEMA },
+      async run(ctx) {
+        const a = await ctx.newClient({
+          actorId: 'actor-a',
+          clientId: `pending-unique-a-${order}`,
+          schema: UNIQUE_SCHEMA,
+          allowed: P1,
+          retainFailedCommits: true,
+          transportGate: 'pull',
+        });
+        const b = await ctx.newClient({
+          actorId: 'actor-b',
+          clientId: `pending-unique-b-${order}`,
+          schema: UNIQUE_SCHEMA,
+          allowed: P1,
+        });
+        for (const handle of [a, b]) {
+          await handle.api.subscribe(U1);
+          await syncIdle(handle);
+        }
+        const add = (id: string, title: string) =>
+          a.api.mutate([
+            { table: 'tasks', op: 'upsert', values: task(id, 'p1', title) },
+          ]);
+        const ids =
+          order === 'ordinary-first'
+            ? [await add('loser', 'taken'), await add('seal', 'sealed')]
+            : [await add('seal', 'sealed'), await add('loser', 'taken')];
+        const loser = ids[order === 'ordinary-first' ? 0 : 1]!;
+        await b.api.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: task('winner', 'p1', 'taken'),
+          },
+        ]);
+        await syncIdle(b);
+        const ownIds = async () =>
+          (await a.api.readRows('tasks')).map((row) => row.rowId).sort();
+        const serverIds = async () =>
+          (await ctx.server.readRows('tasks')).map((row) => row.rowId).sort();
+
+        await syncIdle(a);
+        checkEqual(
+          await ownIds(),
+          ['seal', 'winner'],
+          'the pull lands the winner; the pending loser stays invisible',
+        );
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          ids,
+          'both commits stay pending in order',
+        );
+        checkEqual(await serverIds(), ['winner'], 'a pull sends no write');
+
+        await a.api.setTransportGate({ through: ids[0]! });
+        await syncIdle(a);
+        checkEqual(
+          await serverIds(),
+          order === 'ordinary-first' ? ['winner'] : ['seal', 'winner'],
+          'a bounded push delivers its prefix and nothing after it',
+        );
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          [ids[1]!],
+          'the tail stays pending',
+        );
+        checkEqual(
+          await a.api.transportGate(),
+          'pull',
+          'the gate returns to pull',
+        );
+
+        await a.api.setTransportGate('open');
+        await syncIdle(a);
+        checkEqual(await a.api.pendingCommitIds(), [], 'nothing stays pending');
+        checkEqual(
+          (await a.api.commitOutcomes()).find(
+            (row) => row.clientCommitId === loser,
+          )?.status,
+          'rejected',
+          'the server settles the loser',
+        );
+        checkEqual(await serverIds(), ['seal', 'winner'], 'the winner stays');
+        checkEqual(
+          await ownIds(),
+          ['seal', 'winner'],
+          'the settled loser stays outside physical rows',
+        );
+      },
+    }),
+  ),
 
   {
     name: 'conflict/version-conflict-resolution-paths',

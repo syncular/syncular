@@ -1,5 +1,25 @@
 # Syncular release notes
 
+## 0.103.2 release notes
+
+### A pull lands a unique-key winner over a pending insert
+
+A pending insert held in the outbox, for example under the `pull` transport
+gate, could hold the secondary unique key of a row another client had
+committed. The pull that delivered that row in a `COMMIT` or a later range
+image failed the round with `UNIQUE constraint failed` in the TypeScript
+client. The client now lands the server row, keeps the pending commit in the
+outbox in its order, and keeps its row out of physical reads until the key is
+free or the push settles the commit (SPEC §7.2). A pull with no pending row on
+the table runs the same statements as before. With P pending rows on a table
+that has a unique index, every transaction that writes server rows into it
+restores and replays those P rows; an image import in that state commits chunks
+of at most 1,024 rows (SPEC §5.3), so the restore costs P deletes and P upserts
+per chunk, because any chunk can bring a winner. The Rust client already
+behaved this way; conformance now covers both.
+
+[Unique-index collisions](https://syncular.dev/reference-outbox-outcomes/#unique-index-collisions)
+
 ## 0.103.1 release notes
 
 ### A memory path opens an in-memory Rust client

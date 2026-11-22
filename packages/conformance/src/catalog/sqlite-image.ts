@@ -14,6 +14,7 @@ import { check, checkEqual } from '../checks';
 import { doc, FIXTURE_SCHEMA, task } from '../fixture';
 import { rawPull, responseSection } from '../raw';
 import type { Scenario } from '../scenario';
+import { UNIQUE_SCHEMA } from './conflict';
 import {
   expectConverged,
   seedRows,
@@ -46,6 +47,61 @@ async function seedEligibleTable(ctx: Parameters<Scenario['run']>[0]) {
 }
 
 export const sqliteImageScenarios: readonly Scenario[] = [
+  {
+    // §7.2: one row per range image. The bootstrap clear removes the pending
+    // loser, its replay re-admits it, and a later range carries the winner of
+    // its unique key: the winner lands and the loser stays pending, invisible.
+    name: 'sqlite-image/later-range-takes-a-pending-unique-key',
+    specRefs: ['§5.3', '§7.2', '§8.8'],
+    requires: ['sqlite-image'],
+    server: {
+      schema: UNIQUE_SCHEMA,
+      limits: { inlineSegmentMaxBytes: 0, maxImageSegmentBytes: 1 },
+    },
+    async run(ctx) {
+      await seedTasks(ctx, [
+        task('a-other', 'p1', 'other'),
+        task('z-winner', 'p1', 'taken'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'image-unique-a',
+        schema: UNIQUE_SCHEMA,
+        allowed: P1,
+        retainFailedCommits: true,
+        transportGate: 'pull',
+        limits: { limitSnapshotRows: 1, accept: WITH_SQLITE },
+      });
+      const loser = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('mine', 'p1', 'taken') },
+      ]);
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      check(a.directDownloads.length >= 2, 'the rows arrive as range images');
+      const localIds = async () =>
+        (await a.api.readRows('tasks')).map((row) => row.rowId).sort();
+      checkEqual(
+        await localIds(),
+        ['a-other', 'z-winner'],
+        'the winner lands and the pending loser stays invisible',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [loser],
+        'the loser stays pending',
+      );
+      await a.api.setTransportGate('open');
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.commitOutcomes()).find(
+          (row) => row.clientCommitId === loser,
+        )?.status,
+        'rejected',
+        'the server settles the loser',
+      );
+      checkEqual(await localIds(), ['a-other', 'z-winner'], 'the winner stays');
+    },
+  },
   {
     // B.10(a): an image bootstrap is byte-for-byte equivalent (values AND
     // versions) to a rows bootstrap, completes in a single pull despite

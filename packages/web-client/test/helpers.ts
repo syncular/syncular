@@ -351,6 +351,7 @@ export interface MakeClientOptions {
   readonly securityPreflight?: boolean;
   readonly authorityReads?: SyncClientConfig['authorityReads'];
   readonly retainFailedCommits?: boolean;
+  readonly outboxControl?: SyncClientConfig['outboxControl'];
   readonly blobs?: BlobTransport;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
   readonly realtime?: RealtimeConnector;
@@ -416,6 +417,9 @@ export async function makeClient(
       ? { authorityReads: options.authorityReads }
       : {}),
     ...(options.blobs !== undefined ? { blobs: options.blobs } : {}),
+    ...(options.outboxControl !== undefined
+      ? { outboxControl: options.outboxControl }
+      : {}),
     ...(options.previousVersionContext !== undefined
       ? { previousVersionContext: options.previousVersionContext }
       : {}),

@@ -118,7 +118,7 @@ export function listOutbox(
     .query(
       scope === undefined
         ? `SELECT * FROM ${OUTBOX_TABLE} ORDER BY seq ASC`
-        : `SELECT * FROM ${OUTBOX_TABLE} WHERE client_commit_id IN(SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE (tbl,row_id) IN(SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?1)) UNION SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE tbl IN(SELECT json_extract(value,'$[0]') FROM json_each(?1) WHERE json_array_length(value)=1)) ORDER BY seq`,
+        : `SELECT * FROM ${OUTBOX_TABLE} WHERE client_commit_id IN(SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE (tbl,row_id) IN(SELECT value->>0,value->>1 FROM json_each(?1)) UNION SELECT client_commit_id FROM ${OUTBOX_IMAGES} WHERE tbl IN(SELECT value->>0 FROM json_each(?1) WHERE json_array_length(value)=1)) ORDER BY seq`,
       scope && [JSON.stringify(scope)],
     )
     .map(decodeOutboxRow);

@@ -226,6 +226,8 @@ When a sparse conflict loses its server base, its operation and conflict evidenc
 
 A failed insert can collide with a different server primary key through a secondary unique index. The intended row stays in the journal while physical reads show the server winner. `retainedRows[].uniqueConflicts` lists the matching `index`, `columns`, competing `rowId`, and authorized `serverRow` and `serverVersion`. The same-ID `serverRow` stays null when that primary key has no server base. NULL values follow SQLite's unique-index semantics and do not collide.
 
+A pending insert collides the same way before its push, for example under the `pull` transport gate. A pull, a bootstrap page or a range image that brings the server row holding its unique key lands that row; the pending commit stays in the outbox, in order, and its row stays out of physical reads until the key is free or the push settles the commit (SPEC §7.2).
+
 - Keep mine: patch the competing `rowId` using its `serverVersion`, then link the replacement through `superseded`.
 - Edit: insert the intended ID with a free unique key.
 - Take server: `resolved_keep_server` discards the intent.
