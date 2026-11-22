@@ -609,9 +609,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
       return Promise.reject(
         new ClientSyncError(
           NOT_LEADER_CODE,
-          'this tab is not the leader — another tab owns the syncular ' +
-            'core for this origin (this handle opted out of follower ' +
-            'proxying with multiTab: false)',
+          'another tab leads and multiTab: false refuses follower proxying',
         ),
       );
     }

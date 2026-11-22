@@ -593,6 +593,9 @@ export type SecurityLifecycle = 'preflight' | 'active';
 export type TransportGate = 'closed' | 'pull' | 'open';
 
 /** Stable client-local error while protected operations are preflight-gated. */
+/** Shared by the direct client and the native bridge. */
+export const PREFLIGHT_KEYRING_CONFLICT =
+  'securityPreflight and encryption are mutually exclusive';
 export const SECURITY_PREFLIGHT_REQUIRED_CODE =
   'client.security_preflight_required';
 
@@ -1169,9 +1172,7 @@ export class SyncClient {
       }
     }
     if (config.securityPreflight === true && config.encryption !== undefined) {
-      throw invalidRequest(
-        'securityPreflight and encryption are mutually exclusive',
-      );
+      throw invalidRequest(PREFLIGHT_KEYRING_CONFLICT);
     }
     this.#retainFailedCommits = config.retainFailedCommits === true;
     this.#db = config.database;

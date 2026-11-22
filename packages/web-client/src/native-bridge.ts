@@ -27,6 +27,7 @@ import {
   type PromiseMethods,
   type QueryReadSpec,
   type QuerySnapshot,
+  PREFLIGHT_KEYRING_CONFLICT,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SecurityLifecycle,
   type SnapshotRead,
@@ -38,6 +39,7 @@ import {
   type WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import { BYTES_ENVELOPE_INVALID } from './schema';
 import type { PresenceErrorCode, UnitScopes } from '@syncular/core';
 export { unitId, type UnitScopes } from '@syncular/core';
 import {
@@ -271,10 +273,7 @@ export function nativeCreateParams(
   ErrorType: typeof NativeSyncError,
 ): Record<string, unknown> {
   if (config.securityPreflight === true && config.encryption !== undefined) {
-    throw new ErrorType(
-      'sync.invalid_request',
-      'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
-    );
+    throw new ErrorType('sync.invalid_request', PREFLIGHT_KEYRING_CONFLICT);
   }
   return {
     schema: config.schema,
@@ -399,7 +398,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
       this.#release();
       throw new this.#Error(
         'client.native_client_exists',
-        'this page already holds the native client; close it before creating another',
+        'close the native client before creating another',
       );
     }
     heldHosts.add(host);
@@ -467,7 +466,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
   #throwSecurityPreflight(): never {
     throw new this.#Error(
       SECURITY_PREFLIGHT_REQUIRED_CODE,
-      'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+      'call activateSecurity before accessing protected data',
     );
   }
 
@@ -480,10 +479,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     if (typeof value === 'object' && value !== null && '$bytes' in value) {
       // §7.1: a malformed envelope is refused, never padded into other bytes.
       if (!isBytesEnvelope(value))
-        throw new this.#Error(
-          'sync.invalid_request',
-          'a $bytes envelope requires exactly one $bytes key holding an even-length hexadecimal string',
-        );
+        throw new this.#Error('sync.invalid_request', BYTES_ENVELOPE_INVALID);
       return hexToBytes(value.$bytes);
     }
     if (
@@ -672,7 +668,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<
     if (this.#securityLifecycle === 'active') {
       throw new this.#Error(
         'sync.invalid_request',
-        'activateSecurity requires the client to be in security preflight',
+        'activateSecurity requires security preflight',
       );
     }
     await this.#preflightBarrier;

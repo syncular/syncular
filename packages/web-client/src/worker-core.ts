@@ -359,7 +359,7 @@ export function startSyncWorkerCore(
     if (client === undefined) {
       throw new ClientSyncError(
         WORKER_FAILED_CODE,
-        'the worker received a call before init completed',
+        'the worker was called before init completed',
       );
     }
     return client;
@@ -376,12 +376,12 @@ export function startSyncWorkerCore(
     if (config.localAuthority === true && local === undefined)
       throw new ClientSyncError(
         LOCAL_AUTHORITY_UNCONFIGURED_CODE,
-        'this worker does not support a local authority',
+        'this worker has no local authority',
       );
     if (config.authorityReads !== undefined && !overrides.createAuthorityReads)
       throw new ClientSyncError(
         'client.authority_read_forbidden',
-        'authorityReads requires startSyncWorker({ createAuthorityReads })',
+        'authorityReads needs startSyncWorker({ createAuthorityReads })',
       );
     if (client !== undefined) {
       throw new ClientSyncError(

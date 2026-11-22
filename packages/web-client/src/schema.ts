@@ -1029,12 +1029,13 @@ export function rowValueToJson(value: RowValue): JsonRowValue {
   return value;
 }
 
+/** Shared by the row codec and the native bridge. */
+export const BYTES_ENVELOPE_INVALID =
+  'a $bytes envelope holds one $bytes key of even-length hex';
+
 export function jsonToRowValue(value: JsonRowValue): RowValue {
   if (typeof value === 'object' && value !== null) {
-    if (!isBytesEnvelope(value))
-      throw invalidRequest(
-        'an object value must be one $bytes key holding an even-length hexadecimal string',
-      );
+    if (!isBytesEnvelope(value)) throw invalidRequest(BYTES_ENVELOPE_INVALID);
     return hexToBytes(value.$bytes);
   }
   return value;
