@@ -8,7 +8,7 @@ import {
   type SyncClientConfig,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement';
+import { defineOutboxControl } from '@syncular/client/outbox-control';
 import {
   decodeFenceRequest,
   decodeMessage,
@@ -91,9 +91,7 @@ function setup() {
       database: db,
       schema,
       clientId: 'replacing',
-      ...(replaces
-        ? { pendingCommitReplacement: definePendingCommitReplacement() }
-        : {}),
+      ...(replaces ? { outboxControl: defineOutboxControl() } : {}),
       transport: async (bytes) => {
         if (faults.dropRequest) throw new Error('request lost');
         const fence = decodeFenceRequest(bytes);
@@ -424,9 +422,14 @@ test('a client without the entry reads a replaced outcome and refuses the call',
     reader.replacePendingCommit(replacement, [note('n1', 'third')]),
   ).toThrow(
     expect.objectContaining({
-      code: 'client.pending_commit_replacement_unconfigured',
+      code: 'client.outbox_control_unconfigured',
     }),
   );
+  // §8.8: `through` lives in the same entry.
+  expect(() => reader.setTransportGate({ through: replacement })).toThrow(
+    expect.objectContaining({ code: 'client.outbox_control_unconfigured' }),
+  );
+  expect(reader.transportGate()).toBe('closed');
   await reader.close();
 });
 

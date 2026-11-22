@@ -104,21 +104,21 @@ An app that may still replace sealed commits creates the client with
 commit. Settle the decisions, then call `setTransportGate('open')`.
 
 ```ts
-import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement';
+import { defineOutboxControl } from '@syncular/client/outbox-control';
 
 const client = new SyncClient({
   // ...
   transportGate: 'pull',
-  pendingCommitReplacement: definePendingCommitReplacement(),
+  outboxControl: defineOutboxControl(),
 });
 const next = await client.replacePendingCommit(sealedId, operations);
 client.setTransportGate('open');
 ```
 
 The TypeScript implementation is opt-in, so ordinary bundles do not ship it. A
-worker needs `startSyncWorker({ createPendingCommitReplacement })`, and a
+worker needs `startSyncWorker({ createOutboxControl })`, and a
 client without the entry fails the call with
-`client.pending_commit_replacement_unconfigured`. The Rust core includes it, so
+`client.outbox_control_unconfigured`. The Rust core includes it, so
 the Rust command router and the Tauri and React Native bridges need no opt-in.
 A server that predates
 0.102.0 refuses the fence request, and the replacement fails without changing

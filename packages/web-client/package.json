@@ -98,12 +98,12 @@
         "default": "./dist/projection.js"
       }
     },
-    "./pending-commit-replacement": {
-      "bun": "./src/pending-commit-replacement.ts",
-      "browser": "./dist/pending-commit-replacement.js",
+    "./outbox-control": {
+      "bun": "./src/outbox-control.ts",
+      "browser": "./dist/outbox-control.js",
       "import": {
-        "types": "./dist/pending-commit-replacement.d.ts",
-        "default": "./dist/pending-commit-replacement.js"
+        "types": "./dist/outbox-control.d.ts",
+        "default": "./dist/outbox-control.js"
       }
     },
     "./native-bridge": {

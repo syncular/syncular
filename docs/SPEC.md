@@ -6815,11 +6815,11 @@ keeps its contract for callers that need the proof before they write.
 `replacePendingCommit(clientCommitId, operations)` replaces the operations of
 a pending outbox commit and returns the replacement's client commit id. The
 TypeScript implementation is opt-in: creation takes
-`pendingCommitReplacement: definePendingCommitReplacement()` from
-`@syncular/client/pending-commit-replacement`, and a worker takes
-`startSyncWorker({ createPendingCommitReplacement })`. Ordinary client and
+`outboxControl: defineOutboxControl()` from
+`@syncular/client/outbox-control`, and a worker takes
+`startSyncWorker({ createOutboxControl })`. Ordinary client and
 worker graphs MUST exclude it. Without it the call fails with
-`client.pending_commit_replacement_unconfigured`. Native hosts contain it
+`client.outbox_control_unconfigured`. Native hosts contain it
 unconditionally.
 `operations` is validated as `mutate` validates it. The call applies to a
 commit in the send queue; a retained failed commit uses `replaceCommitOutcome`
@@ -9309,7 +9309,10 @@ gate.
   `clientCommitId` that is not pending fails with `sync.outcome_not_found`
   (`details.clientCommitId`) and leaves the gate as it was. A pending
   replacement decision (§7.2.2) and the request caps (§6.1) bound the prefix as
-  they bound an `open` push. A local write raises no push intent.
+  they bound an `open` push. A local write raises no push intent. The
+  TypeScript implementation lives in the opt-in outbox control (§7.2.3); a
+  client without it refuses the state with
+  `client.outbox_control_unconfigured`. Native hosts contain it.
 - `closed`: new sync rounds, realtime connects, presence sends and uncached
   blob downloads fail with client-local `sync.offline` before invoking
   transport, and automatic hosts consume no sync or retry intent. Cached blob
@@ -9848,8 +9851,9 @@ of each operation of a commit `replacePendingCommit` replaced; non-retryable,
 never on the wire], `client.commit_settled` [§7.2.3: the fence found the
 commit's stored result, so it can no longer be replaced; details
 `{ clientCommitId, status }`; non-retryable],
-`client.pending_commit_replacement_unconfigured` [§7.2.3: the TypeScript
-client was created without `pendingCommitReplacement`; non-retryable],
+`client.outbox_control_unconfigured` [§7.2.3, §8.8: the TypeScript
+client was created without `outboxControl`, so `replacePendingCommit` and
+`setTransportGate({ through })` are unavailable; non-retryable],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],

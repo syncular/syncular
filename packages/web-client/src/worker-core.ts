@@ -16,7 +16,7 @@
 import { definedObject } from '@syncular/core';
 import type { compileLocalProjections } from './projection';
 import type { defineAuthorityReads } from './authority';
-import type { definePendingCommitReplacement } from './pending-commit-replacement';
+import type { defineOutboxControl } from './outbox-control';
 import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
@@ -72,7 +72,7 @@ export interface SyncWorkerOverrides {
   readonly createAuthorityReads?: typeof defineAuthorityReads;
   readonly createProjections?: typeof compileLocalProjections;
   /** §7.2.3: enables `replacePendingCommit` in this worker. */
-  readonly createPendingCommitReplacement?: typeof definePendingCommitReplacement;
+  readonly createOutboxControl?: typeof defineOutboxControl;
   /** Database factory indirection: tests inject bun:sqlite here. */
   readonly openDatabase?: (
     config: WorkerInitConfig,
@@ -454,7 +454,7 @@ export function startSyncWorkerCore(
         realtimeHeartbeatMs: config.realtimeHeartbeatMs,
         encryption: config.encryption,
         createProjections: overrides.createProjections,
-        pendingCommitReplacement: overrides.createPendingCommitReplacement?.(),
+        outboxControl: overrides.createOutboxControl?.(),
         authorityReads:
           config.authorityReads &&
           overrides.createAuthorityReads!(config.authorityReads),

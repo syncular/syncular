@@ -7,7 +7,7 @@
 
 import { compileLocalProjections } from '@syncular/client/projections';
 import { defineAuthorityReads } from '@syncular/client/authority';
-import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement';
+import { defineOutboxControl } from '@syncular/client/outbox-control';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -443,7 +443,7 @@ async function constructClient(
     database: db,
     schema: toClientSchema(schema),
     createProjections: compileLocalProjections,
-    pendingCommitReplacement: definePendingCommitReplacement(),
+    outboxControl: defineOutboxControl(),
     clientId: options.clientId,
     ...(options.authorityReads !== undefined
       ? { authorityReads: defineAuthorityReads(options.authorityReads) }

@@ -10,7 +10,8 @@ blobs they reference; later commits stay held. The gate falls back to `pull`
 by itself when `clientCommitId` is acknowledged, when a request carrying the
 prefix gets no response, and when a prefix commit leaves the outbox other than
 by its acknowledgement, a `replacePendingCommit` included. A commit that is not
-pending is refused with `sync.outcome_not_found`. Rust:
+pending is refused with `sync.outcome_not_found`. In TypeScript the state ships
+in the opt-in outbox control, next to `replacePendingCommit`. Rust:
 `TransportGate::Through(id)`; the native command takes
 `setTransportGate { state: { through } }`. Creation still takes `closed`,
 `pull` or `open` (SPEC §8.8).
@@ -48,6 +49,13 @@ A client a webview created behaves as before.
 
 ### Upgrading
 
+- The opt-in replacement entry is now the outbox control: replace
+  `import { definePendingCommitReplacement } from '@syncular/client/pending-commit-replacement'`
+  and `pendingCommitReplacement: definePendingCommitReplacement()` with
+  `import { defineOutboxControl } from '@syncular/client/outbox-control'` and
+  `outboxControl: defineOutboxControl()`; a worker takes
+  `startSyncWorker({ createOutboxControl })`. The unconfigured code is now
+  `client.outbox_control_unconfigured`. Native hosts change nothing.
 - The forwarded `setTransportGate` takes the new state, so
   `MULTI_TAB_PROTOCOL_VERSION` moves from 11 to 12. A tab still running an
   older build reports `leader-incompatible` and must reload. The replica

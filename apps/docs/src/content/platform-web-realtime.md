@@ -255,7 +255,12 @@ bridge accept `closed`, `pull` or `open` as `transportGate` at construction
   pending commits up to and including `clientCommitId`, in outbox order, with
   the staged blobs they reference. Commits queued after it stay held. Use it
   to release a prefix of the outbox you have verified, for example sealed
-  edits whose signer evidence the app has checked. Setting it
+  edits whose signer evidence the app has checked. The state needs the opt-in
+  outbox control: create the client with `outboxControl: defineOutboxControl()`
+  from `@syncular/client/outbox-control` (a worker takes
+  `startSyncWorker({ createOutboxControl })`); without it the call fails with
+  `client.outbox_control_unconfigured`. Rust, Tauri and FFI hosts include it.
+  Setting it
   for a commit that is not pending fails with `sync.outcome_not_found` and
   `details.clientCommitId`, and leaves the gate as it was.
 - `closed`: new network work fails with `sync.offline`, and automatic retry
