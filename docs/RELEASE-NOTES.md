@@ -17,6 +17,17 @@ does not change.
 
 [Multi-tab](https://syncular.dev/platform-web-specifics/#multi-tab)
 
+### An image import replays only a table with its own intent
+
+A pending local commit anywhere in the outbox put every SQLite image import
+into replay mode: chunks of at most 1,024 rows, each read into JavaScript and
+checked row by row (SPEC §5.3). An import now replays only a table that holds a
+pending operation or a retained row of its own, as SPEC §7.2 requires. A commit
+that spans tables counts for each table it touches. An image of another table
+imports in bulk, and the pending rows stay visible and pending.
+
+[Bootstrap concepts](https://syncular.dev/concepts-bootstrap/)
+
 ## 0.103.2 release notes
 
 ### A pull lands a unique-key winner over a pending insert

@@ -1,7 +1,6 @@
 import { hasUniqueIndex } from './schema';
 import {
   chainsOn,
-  countOutbox,
   listOutbox,
   OUTBOX_IMAGES,
   OUTBOX_TABLE,
@@ -381,6 +380,20 @@ export function retainsRows(
   );
 }
 
+/**
+ * §7.2: an import replays only a table with intent of its own, a pending
+ * operation or a retained row. A pending row of another table never replays
+ * from this table's import, so it cannot put the import into replay mode.
+ */
+function holdsIntent(db: ClientDatabase, table: CompiledClientTable): boolean {
+  return (
+    db.query(
+      `SELECT 1 FROM ${OUTBOX_IMAGES} WHERE tbl=?1 UNION ALL SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=?1 LIMIT 1`,
+      [table.name],
+    ).length > 0
+  );
+}
+
 function scopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
@@ -669,7 +682,7 @@ export async function applySqliteSegment(
       let written = started;
       let chunk = 0;
       const first = applied === 0;
-      const replay = countOutbox(db) || retainsRows(db, table);
+      const replay = holdsIntent(db, table);
       const rows = replay
         ? db.query(`SELECT * FROM ${source} WHERE ${where}`, params)
         : [];
@@ -836,7 +849,7 @@ export function* applyRowsSegment(
       const scope: OverlayScope = [
         ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
         // The clear's rows matter only to a replay (§7.8), as in an image chunk.
-        ...(clearThisBlock && (countOutbox(db) || retainsRows(db, table))
+        ...(clearThisBlock && holdsIntent(db, table)
           ? bootstrapScope(db, table, options.effective, options.owners())
           : []),
         ...rows.map((row) =>
