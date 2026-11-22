@@ -12,7 +12,7 @@
   "tables": [
     {
       "name": "patients",
-      "generation": "14985731ce0d72ecf985becf53831183",
+      "generation": "3918d89c7bb69eb078980ee9ef23f2af",
       "primaryKey": "id",
       "columns": [
         {

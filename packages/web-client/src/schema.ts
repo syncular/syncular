@@ -4,9 +4,11 @@ import { WINDOWS_TABLE } from './window';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { OUTCOMES_TABLE } from './outcomes';
 import {
+  getMeta,
   META_TABLE,
   pruneUnknownUnits,
   resetUnits,
+  setMeta,
   UNITS_TABLE,
 } from './state';
 import { ensureFailedOverlaySchema, RETAINED_ROWS } from './failed-overlay';
@@ -36,13 +38,6 @@ export interface ClientIndexSpec {
   readonly unique: boolean;
 }
 
-/** One client-local contentful FTS5 projection. */
-export interface ClientFtsIndexSpec {
-  readonly name: string;
-  readonly columns: readonly string[];
-  readonly tokenize: string;
-}
-
 export interface ClientTableSchema {
   readonly name: string;
   /** §7.4.3 table generation from `typegen`: a schema bump keeps the table
@@ -57,8 +52,6 @@ export interface ClientTableSchema {
   /** Local secondary indexes; absent in the generated schema when a table
    * declares none (typegen omits the key for index-free tables). */
   readonly indexes?: readonly ClientIndexSpec[];
-  /** Local FTS5 search projections; omitted when a table declares none. */
-  readonly ftsIndexes?: readonly ClientFtsIndexSpec[];
   readonly localProjections?: readonly ClientLocalProjectionSpec[];
 }
 
@@ -92,8 +85,6 @@ export interface CompiledClientTable {
   /** Local secondary indexes to create on the mirror table (declaration
    * order); empty when the table declares none. */
   readonly indexes: readonly ClientIndexSpec[];
-  /** Client-local FTS5 projections, in declaration order. */
-  readonly ftsIndexes: readonly ClientFtsIndexSpec[];
   /** §5.11: true when any column is `encrypted`. Drives the encrypt/decrypt
    * seam (skipped entirely when false) and the local-plaintext DDL. */
   readonly hasEncryptedColumns: boolean;
@@ -106,14 +97,6 @@ export interface CompiledClientSchema {
 }
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
-export const ALLOWED_FTS_TOKENIZERS = new Set([
-  'unicode61',
-  'unicode61 remove_diacritics 0',
-  'unicode61 remove_diacritics 1',
-  'unicode61 remove_diacritics 2',
-  'porter unicode61',
-  'trigram',
-]);
 
 function invalidSchema(message: string): never {
   throw new Error(message);
@@ -138,6 +121,10 @@ export function compileClientSchema(
   const schemaObjectNames = new Set<string>();
   for (const table of schema.tables) {
     const tableLabel = `table ${table.name}`;
+    // 0.102: built-in FTS is a projection; a schema from an older typegen
+    // would silently lose search.
+    if ('ftsIndexes' in table)
+      invalidSchema(`${tableLabel} declares ftsIndexes; regenerate the schema`);
     if (schemaObjectNames.has(table.name)) {
       invalidSchema(
         `table ${JSON.stringify(table.name)} conflicts with another schema object`,
@@ -222,34 +209,16 @@ export function compileClientSchema(
     });
     for (const alias of ambiguous) columnIndexByCamel.delete(alias);
     const indexes = table.indexes ?? [];
-    const ftsIndexes = table.ftsIndexes ?? [];
-    for (const index of [...indexes, ...ftsIndexes]) {
-      const fts = 'tokenize' in index;
-      const label = `${tableLabel}: ${fts ? 'FTS projection' : 'index'} ${JSON.stringify(index.name)}`;
+    for (const index of indexes) {
+      const label = `${tableLabel}: index ${JSON.stringify(index.name)}`;
       if (schemaObjectNames.has(index.name))
         invalidSchema(`${label} conflicts with another schema object`);
       schemaObjectNames.add(index.name);
-      if (fts && (!index.columns.length || index.columns.length > 32))
-        invalidSchema(`${label} needs between 1 and 32 columns`);
-      const seen = new Set<string>();
-      for (const name of index.columns) {
-        if (fts && seen.has(name))
-          invalidSchema(`${label} repeats column ${JSON.stringify(name)}`);
-        seen.add(name);
-        const column = table.columns[columnIndex.get(name) ?? -1];
-        if (!column)
+      for (const name of index.columns)
+        if (!columnIndex.has(name))
           invalidSchema(
             `${label} names unknown column ${JSON.stringify(name)}`,
           );
-        if (fts && localColumnType(column) !== 'string')
-          invalidSchema(
-            `${label} column ${JSON.stringify(name)} must have string type`,
-          );
-      }
-      if (fts && !ALLOWED_FTS_TOKENIZERS.has(index.tokenize))
-        invalidSchema(
-          `${label} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
-        );
     }
     tables.set(table.name, {
       name: table.name,
@@ -262,7 +231,6 @@ export function compileClientSchema(
       scopeColumnByVariable,
       scopePrefixByVariable,
       indexes,
-      ftsIndexes,
       hasEncryptedColumns: table.columns.some((c) => c.encrypted === true),
     });
   }
@@ -281,7 +249,7 @@ export function compileClientSchema(
 function projectionsUnavailable(): ClientSyncError {
   return new ClientSyncError(
     'client.schema_invalid',
-    'projection implementation required',
+    'local projections, FTS search included, need createProjections from @syncular/client/projections',
     false,
     { reason: 'projections_unavailable' },
   );
@@ -453,199 +421,69 @@ function createSyncedTable(
     db.exec(
       `CREATE INDEX IF NOT EXISTS ${quoteIdent(`_syncular_sealed_${table.name}`)} ON ${quoteIdent(table.name)}(${quoteIdent(SEALED_KEY_COLUMN)}) WHERE ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
     );
-  // Local secondary indexes (CREATE INDEX subset). Created here so both the
-  // initial ensureLocalSchema and the §7.4.3 drop-and-recreate reset path
-  // materialize them. IF NOT EXISTS keeps it idempotent; the DROP TABLE in the
-  // reset path already removed any stale index alongside its table.
-  for (const index of table.indexes) {
-    const unique = index.unique ? 'UNIQUE ' : '';
-    const cols = index.columns.map((c) => quoteIdent(c)).join(', ');
-    db.exec(
-      `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)}(${cols})`,
-    );
-  }
-}
-
-const FTS_SOURCE_ID_COLUMN = '"_syncular_source_id"';
-
-export function createFtsStorage(
-  db: ClientDatabase,
-  name: string,
-  columns: string,
-  tokenize: string,
-  options = '',
-): void {
-  const projection = quoteIdent(name);
-  const tokenizer = tokenize.replaceAll("'", "''");
-  db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS ${projection} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED,${columns},tokenize='${tokenizer}'${options})`,
-  );
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdent(`_syncular_fts_${name}`)}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
-  );
 }
 
 /**
- * Create (or migrate) one contentful FTS5 projection for a table plus its
- * synchronizing triggers. Every open drops and recreates the full trigger set
- * (`_bi`, `_ai`, `_ad`, `_au`, and, when the table has a unique index, `_bu`),
- * so existing databases pick up newly added guards. The BEFORE INSERT (`_bi`)
- * and BEFORE UPDATE (`_bu`) guards remove projection rows for entries displaced
- * by `INSERT OR REPLACE` / `UPDATE OR REPLACE` through the primary key or a
- * secondary unique index — cases where SQLite does not reliably fire the AFTER
- * DELETE trigger for the displaced row.
- *
- * Limitation: because a BEFORE trigger runs before SQLite resolves the
- * conflict, an `OR IGNORE` write whose row is dropped still executes these
- * displacement DELETEs, transiently removing the surviving row's projection
- * entry. The same holds for an upsert whose `DO UPDATE ... WHERE` skips the
- * row, so Syncular's mirror writes never offer a row that will not replace
- * (§5.3); see the guard-block comment below for the full rationale. An open
- * rebuilds a projection whose mapping holds a different row count than its
- * source table.
+ * §7.4.3 declared indexes: reconcile every table's declared indexes in place.
+ * The `localIndexes` record names the indexes Syncular created; only those
+ * may be dropped as stale. A replica without the record drops none and
+ * records the declared ones.
  */
-function createFtsProjection(
-  db: ClientDatabase,
-  table: CompiledClientTable,
-  index: ClientFtsIndexSpec,
-): void {
-  const projection = quoteIdent(index.name);
-  const sourceTable = quoteIdent(table.name);
-  const primaryKey = quoteIdent(table.primaryKey);
-  const existed = tableExists(db, index.name);
-  const indexedColumns = index.columns.map(quoteIdent);
-  const mapping = quoteIdent(`_syncular_fts_${index.name}`);
-  const mapped = tableExists(db, `_syncular_fts_${index.name}`);
-  createFtsStorage(db, index.name, indexedColumns.join(', '), index.tokenize);
-  const sourceId = `CAST(${primaryKey} AS TEXT)`;
-  const newSourceId = `CAST(new.${primaryKey} AS TEXT)`;
-  const oldSourceId = `CAST(old.${primaryKey} AS TEXT)`;
-  const projectionColumns = [FTS_SOURCE_ID_COLUMN, ...indexedColumns].join(
-    ', ',
-  );
-  const newValues = [
-    newSourceId,
-    ...index.columns.map((column) => `new.${quoteIdent(column)}`),
-  ].join(', ');
-  const deleteDisplaced = (select: string) =>
-    `DELETE FROM ${projection} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select}));DELETE FROM ${mapping} WHERE source_id IN (${select})`;
-  const deleteFor = (value: string) => deleteDisplaced(`SELECT ${value}`);
-  const insertNew = `INSERT INTO ${mapping}(source_id)VALUES(${newSourceId});INSERT INTO ${projection}(rowid,${projectionColumns})VALUES((SELECT id FROM ${mapping} WHERE source_id=${newSourceId}),${newValues})`;
-
-  // A clean insert cannot already have a projection row because the source
-  // primary key is unique. Keep clean inserts linear by moving replacement
-  // cleanup behind indexed source-table existence checks. SQLite does not
-  // reliably invoke DELETE triggers for rows displaced by REPLACE, and a
-  // REPLACE can displace rows through TWO paths: the primary key AND any
-  // secondary UNIQUE index (a different-PK row whose unique key matches the
-  // incoming row). The BEFORE INSERT guard covers both for `INSERT OR REPLACE`;
-  // the mirroring BEFORE UPDATE guard covers `UPDATE OR REPLACE` that pushes a
-  // different-PK row out through a unique index (the AFTER UPDATE trigger only
-  // knows the updated row's own old/new ids, so it would leave that displaced
-  // row's projection entry behind as a ghost hit). Primary-key displacement by
-  // `UPDATE OR REPLACE` needs no BEFORE guard: the new pk equals the displaced
-  // row's pk, so the AFTER UPDATE delete of the new source id already clears it.
-  //
-  // Known limitation: a BEFORE trigger fires before SQLite resolves the
-  // conflict, and SQLite exposes no signal for the eventual resolution. So an
-  // `INSERT OR IGNORE` / `UPDATE OR IGNORE` whose row is dropped on conflict,
-  // and an upsert whose `DO UPDATE ... WHERE` skips the row, still run these
-  // displacement DELETEs, removing the SURVIVING row's projection entry (a
-  // false negative until that row is next rewritten). Moving cleanup to AFTER
-  // triggers would dodge the no-op but reintroduce the REPLACE-doesn't-fire-
-  // DELETE gap and a full-projection scan per write, so the guards stay
-  // BEFORE. Syncular's own mirror writes use an unconditional
-  // `INSERT … ON CONFLICT (pk) DO UPDATE` (apply.ts); the image copy filters
-  // held rows at the same or a newer version out of its SELECT instead of a
-  // `DO UPDATE ... WHERE`. Only hand-written `OR IGNORE` against a mirror
-  // table is exposed.
-  for (const suffix of ['bi', 'ai', 'ad', 'au', 'bu']) {
-    db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
-  }
-  const replacementExists = `EXISTS (SELECT 1 FROM ${sourceTable} WHERE ${primaryKey} = new.${primaryKey})`;
-  // Per secondary UNIQUE index: the different-PK rows about to be displaced
-  // via that unique key. `=` makes NULL unique values match nothing, which is
-  // exactly SQLite's unique-index semantics (NULLs never conflict).
-  const uniqueIndexes = table.indexes.filter((spec) => spec.unique);
-  const displacedByUnique = uniqueIndexes.map((spec) => {
-    const match = spec.columns
-      .map((column) => `${quoteIdent(column)} = new.${quoteIdent(column)}`)
-      .join(' AND ');
-    return `SELECT ${sourceId} FROM ${sourceTable} WHERE ${match} AND ${primaryKey} !=new.${primaryKey}`;
-  });
-  const insertGuardCondition = [
-    replacementExists,
-    ...displacedByUnique.map((select) => `EXISTS (${select})`),
-  ].join(' OR ');
-  const insertGuardBody = [
-    deleteFor(newSourceId),
-    ...displacedByUnique.map(deleteDisplaced),
-  ].join('; ');
-
-  const createTrigger = (
-    suffix: string,
-    timing: string,
-    body: string,
-    when = '',
-  ) =>
-    db.exec(
-      `CREATE TRIGGER ${quoteIdent(`${index.name}_${suffix}`)} ${timing} ON ${sourceTable}${when ? ` WHEN ${when}` : ''} BEGIN ${body};END`,
-    );
-  createTrigger('bi', 'BEFORE INSERT', insertGuardBody, insertGuardCondition);
-  createTrigger('ai', 'AFTER INSERT', insertNew);
-  createTrigger('ad', 'AFTER DELETE', deleteFor(oldSourceId));
-  createTrigger(
-    'au',
-    'AFTER UPDATE',
-    `${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; ${insertNew}`,
-  );
-  // BEFORE UPDATE guard for `UPDATE OR REPLACE`: clear the projection of any
-  // different-PK row about to be displaced through a secondary unique index by
-  // the new values. Only meaningful when the table has a unique index; with
-  // none, no update can displace a foreign row, so the trigger is omitted.
-  if (displacedByUnique.length > 0) {
-    const updateGuardCondition = displacedByUnique
-      .map((select) => `EXISTS (${select})`)
-      .join(' OR ');
-    const updateGuardBody = displacedByUnique.map(deleteDisplaced).join('; ');
-    createTrigger('bu', 'BEFORE UPDATE', updateGuardBody, updateGuardCondition);
-  }
-
-  // Every source row has exactly one mapping row, so a count mismatch marks a
-  // projection an earlier release damaged; the open rebuilds it.
-  const stale =
-    !existed ||
-    (mapped &&
-      Number(
-        db.query(
-          `SELECT (SELECT count(*) FROM ${mapping})=(SELECT count(*) FROM ${sourceTable}) AS whole`,
-        )[0]?.whole,
-      ) !== 1);
-  if (stale) {
-    db.exec(`DELETE FROM ${projection}`);
-    db.exec(
-      `INSERT INTO ${projection}(${projectionColumns})SELECT ${sourceId},${indexedColumns.join(', ')} FROM ${sourceTable}`,
-    );
-  }
-  if (!mapped || stale) {
-    db.exec(`DELETE FROM ${mapping}`);
-    db.exec(
-      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${FTS_SOURCE_ID_COLUMN} FROM ${projection}`,
-    );
-  }
-}
-
-function createLocalProjections(
+function reconcileLocalIndexes(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
-  for (const table of schema.tables.values())
-    for (const index of table.ftsIndexes) createFtsProjection(db, table, index);
-  schema.projections?.open(db);
+  const held = getMeta(db, 'localIndexes');
+  let created: Record<string, string[]>;
+  try {
+    created = JSON.parse(held ?? '{}');
+  } catch {
+    throw localStateCorrupt('localIndexes record is invalid');
+  }
+  if (
+    typeof created !== 'object' ||
+    created === null ||
+    !Object.values(created).every(
+      (names) =>
+        Array.isArray(names) && names.every((name) => typeof name === 'string'),
+    )
+  )
+    throw localStateCorrupt('localIndexes record is invalid');
+  const tables = [...schema.tables.values()];
+  const declared = new Set(
+    tables.flatMap((table) => table.indexes.map((index) => index.name)),
+  );
+  for (const name of Object.values(created).flat())
+    if (!declared.has(name))
+      db.exec(`DROP INDEX IF EXISTS ${quoteIdent(name)}`);
+  const record: Record<string, string[]> = {};
+  for (const table of tables) {
+    for (const index of table.indexes) {
+      const current = db.query(
+        `SELECT l."unique" AS u,l.partial AS p,(SELECT json_group_array(name) FROM (SELECT name FROM pragma_index_info(l.name) ORDER BY seqno)) AS c FROM pragma_index_list(?) AS l WHERE l.name=?`,
+        [table.name, index.name],
+      )[0];
+      if (
+        current &&
+        Number(current.u) === Number(index.unique) &&
+        Number(current.p) === 0 &&
+        current.c === JSON.stringify(index.columns)
+      )
+        continue;
+      db.exec(`DROP INDEX IF EXISTS ${quoteIdent(index.name)}`);
+      db.exec(
+        `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdent(index.name)} ON ${quoteIdent(table.name)}(${index.columns.map(quoteIdent).join(', ')})`,
+      );
+    }
+    if (table.indexes.length)
+      record[table.name] = table.indexes.map((index) => index.name).sort();
+  }
+  if (JSON.stringify(record) !== held)
+    setMeta(db, 'localIndexes', JSON.stringify(record));
 }
 
 /**
- * Create only the application-owned synced tables, indexes, and FTS
+ * Create only the application-owned synced tables, indexes, and local
  * projections. Callers opening an existing database must compare the
  * persisted schema version before invoking this: a new index may reference a
  * column that does not exist until the schema-bump reset recreates the table.
@@ -684,14 +522,15 @@ export function ensureLocalSyncedSchema(
       }
       createSyncedTable(db, table);
     }
-    createLocalProjections(db, schema);
+    reconcileLocalIndexes(db, schema);
+    schema.projections?.open(db);
   });
 }
 
 /**
  * Create the protected Syncular bookkeeping tables without touching the
  * application schema. This makes the persisted schema-version marker
- * readable before any new application index or FTS projection is applied.
+ * readable before any new application index or projection is applied.
  */
 export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
   db.transaction(() => {
@@ -829,9 +668,9 @@ const RESERVED_TABLE_PREFIX = '_syncular_';
  * `sqlite_master`, since a bump may add/remove tables) with its acknowledged
  * retained rows, recreate the synced tables from the NEW schema, and reset
  * every unit to a fresh bootstrap. A bump first prunes incompatible units and
- * keeps each table whose generation is unchanged, with its rows and indexes
- * (its FTS projections are rebuilt from the kept rows), and each unit that
- * covers only kept tables. Bookkeeping
+ * keeps each table whose generation is unchanged, with its rows, and each
+ * unit that covers only kept tables. Declared indexes are then reconciled in
+ * place on every table. Bookkeeping
  * tables (`_syncular_*`: outbox, meta, units, blob cache) are preserved; RFC
  * 0005's container lives in its own database file. Returns the tables whose
  * rows changed. Caller owns the surrounding transaction.
@@ -857,7 +696,6 @@ export function resetLocalReplica(
   )) {
     const name = String(row.name);
     if (projectionNames?.has(name)) continue;
-    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(`_syncular_fts_${name}`)}`);
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
   for (const row of db.query(
@@ -868,7 +706,8 @@ export function resetLocalReplica(
       db.exec(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
   for (const table of schema.tables.values()) createSyncedTable(db, table);
-  createLocalProjections(db, schema);
+  reconcileLocalIndexes(db, schema);
+  schema.projections?.open(db);
   resetUnits(db, kept.units, kept.restricts);
   return [...schema.tables.keys()].filter((name) => !kept.tables.has(name));
 }

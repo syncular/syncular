@@ -98,11 +98,18 @@ export const windowScenarios: readonly Scenario[] = [
             table.name === 'tasks'
               ? {
                   ...table,
-                  ftsIndexes: [
+                  localProjections: [
                     {
                       name: 'tasks_fts',
-                      columns: ['title'],
-                      tokenize: 'unicode61',
+                      generation: 'tasks_fts-1',
+                      columns: [
+                        {
+                          name: 'title',
+                          declaredType: 'string',
+                          source: 'title',
+                        },
+                      ],
+                      fts: { tokenize: 'unicode61', columns: ['title'] },
                     },
                   ],
                 }

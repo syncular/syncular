@@ -36,11 +36,18 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [
+      localProjections: [
         {
           name: 'catalogue_codes_fts',
-          columns: ['code', 'title'],
-          tokenize: 'unicode61 remove_diacritics 2',
+          generation: 'catalogue_codes_fts_generation',
+          columns: [
+            { name: 'code', declaredType: 'string', source: 'code' },
+            { name: 'title', declaredType: 'string', source: 'title' },
+          ],
+          fts: {
+            tokenize: 'unicode61 remove_diacritics 2',
+            columns: ['code', 'title'],
+          },
         },
       ],
       extensions: {},
@@ -51,8 +58,8 @@ const IR: IrDocument = {
 };
 
 describe('FTS5 typegen surface', () => {
-  test('neutral IR and all generated client languages carry ftsIndexes', () => {
-    expect(serializeIr(IR)).toContain('"ftsIndexes"');
+  test('neutral IR and all generated client languages carry the built-in projection', () => {
+    expect(serializeIr(IR)).toContain('"source": "code"');
     const outputs = [
       emitModule(IR, 'hash'),
       emitSwiftModule(IR, 'hash', 'CatalogueSchema'),
@@ -60,7 +67,7 @@ describe('FTS5 typegen surface', () => {
       emitDartModule(IR, 'hash'),
     ];
     for (const output of outputs) {
-      expect(output).toContain('ftsIndexes');
+      expect(output).toContain('localProjections');
       expect(output).toContain('catalogue_codes_fts');
       expect(output).toContain('unicode61 remove_diacritics 2');
     }

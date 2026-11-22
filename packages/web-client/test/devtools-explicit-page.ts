@@ -1,5 +1,6 @@
 import { SyncClient } from '../src/client';
 import { registerDevtools } from '../src/devtools';
+import { compileLocalProjections } from '../src/projection';
 import { openWasmDatabase } from '../src/wasm-database';
 import { OPFS_SCHEMA } from './opfs-bootstrap-fixture';
 
@@ -24,6 +25,7 @@ window.directRegistryProbe = async () => {
       throw new Error('fixture transport is not used');
     },
     devtools: registerDevtools,
+    createProjections: compileLocalProjections,
   });
   let observed: {
     readonly registryPresent: boolean;

@@ -19,8 +19,13 @@ export const OPFS_SCHEMA: ClientSchema = {
           unique: true,
         },
       ],
-      ftsIndexes: [
-        { name: 'catalogue_fts', columns: ['title'], tokenize: 'unicode61' },
+      localProjections: [
+        {
+          name: 'catalogue_fts',
+          generation: '1',
+          columns: [{ name: 'title', declaredType: 'string', source: 'title' }],
+          fts: { tokenize: 'unicode61', columns: ['title'] },
+        },
       ],
     },
   ],

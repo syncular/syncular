@@ -61,7 +61,7 @@ use crate::previous_version::{
 mod projection;
 pub use projection::ProjectionInput;
 
-use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
+use crate::schema::{parse_schema_json, ClientSchema, TableSchema};
 use crate::transport::{BlobDownload, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, column_value_to_json, decode_row_bytes, encode_sparse_row_json, full_row_values,
@@ -4362,7 +4362,7 @@ impl SyncClient {
                 }
                 Some(_) => {
                     self.detach_projections(None)?;
-                    self.open_projections()?;
+                    self.create_synced_tables()?;
                 }
             }
             // §7.4.2: recreation IS the boot for the in-memory core, so reload the
@@ -4603,8 +4603,8 @@ impl SyncClient {
                 .transpose()
                 .map_err(|_| "sync.local_corrupt: invalid persisted scope schema".to_owned())?;
         }
-        // Kept tables keep both halves, their FTS projections with the FTS5
-        // shadow tables and id mapping, and their row-level bookkeeping.
+        // Kept tables keep both halves and their row-level bookkeeping; the
+        // projections of kept tables keep their storage.
         let mut kept_objects = BTreeSet::new();
         for table in self
             .schema
@@ -4614,12 +4614,6 @@ impl SyncClient {
         {
             kept_objects.insert(table.name.clone());
             kept_objects.insert(format!("_syncular_base_{}", table.name));
-            for index in &table.fts_indexes {
-                kept_objects.insert(index.name.clone());
-                for shadow in ["data", "idx", "content", "docsize", "config"] {
-                    kept_objects.insert(format!("{}_{shadow}", index.name));
-                }
-            }
         }
         kept_objects.extend(self.detach_projections(Some(&kept))?);
         let kept_json = serde_json::to_string(&kept).expect("table names serialize");
@@ -5038,136 +5032,109 @@ impl SyncClient {
                         )
                         .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 }
-                // Local secondary indexes (CREATE INDEX subset). Created on
-                // both halves so mirror reads hit an index on either. Runs on
-                // both the initial create and the §7.4.3 reset recreate path.
-                for index in &table.indexes {
-                    let unique = if index.unique { "UNIQUE " } else { "" };
-                    let index_name = quote_ident(&format!("{index_prefix}{}", index.name));
-                    let cols_sql = index
-                        .columns
-                        .iter()
-                        .map(|c| quote_ident(c))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let index_sql = format!(
-                        "CREATE {unique}INDEX IF NOT EXISTS {index_name} ON {full} ({cols_sql})"
-                    );
-                    self.conn
-                        .execute(&index_sql, [])
-                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            }
+        }
+        // §7.4.3 declared indexes: reconciled in place on both halves (the
+        // base half's names carry the `_syncular_base_` prefix) at every open
+        // and at the end of every reset. `localIndexes` records the declared
+        // names Syncular created; only those are ever dropped.
+        let recorded: BTreeMap<String, BTreeSet<String>> = match self.get_meta("localIndexes")? {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|_| "sync.local_corrupt: invalid persisted local indexes".to_owned())?,
+            // A replica without the record: every declared index that exists
+            // counts as created by Syncular, so nothing is stale.
+            None => BTreeMap::new(),
+        };
+        let declared: BTreeMap<String, BTreeSet<String>> = self
+            .schema
+            .tables
+            .iter()
+            .filter(|table| !table.indexes.is_empty())
+            .map(|table| {
+                let names = table.indexes.iter().map(|index| index.name.clone());
+                (table.name.clone(), names.collect())
+            })
+            .collect();
+        for (table, names) in &recorded {
+            for name in names.iter().filter(|name| {
+                !declared
+                    .get(table)
+                    .is_some_and(|declared| declared.contains(*name))
+            }) {
+                self.stored(self.conn.execute_batch(&format!(
+                    "DROP INDEX IF EXISTS {}; DROP INDEX IF EXISTS {}",
+                    quote_ident(name),
+                    quote_ident(&format!("_syncular_base_{name}"))
+                )))?;
+            }
+        }
+        for table in &self.schema.tables {
+            for index in &table.indexes {
+                for (owner, name) in [
+                    (
+                        format!("_syncular_base_{}", table.name),
+                        format!("_syncular_base_{}", index.name),
+                    ),
+                    (table.name.clone(), index.name.clone()),
+                ] {
+                    let current: Option<(String, bool, bool)> = self.stored(
+                        self.conn
+                            .query_row(
+                                "SELECT m.tbl_name, l.\"unique\", l.partial FROM sqlite_master AS m JOIN pragma_index_list(m.tbl_name) AS l ON l.name = m.name WHERE m.type = 'index' AND m.name = ?1",
+                                [&name],
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                            )
+                            .optional(),
+                    )?;
+                    if let Some((current_owner, unique, partial)) = current {
+                        let mut stmt = self
+                            .stored(self.conn.prepare(
+                                "SELECT name FROM pragma_index_info(?1) ORDER BY seqno",
+                            ))?;
+                        let columns = self.stored(
+                            self.stored(
+                                stmt.query_map([&name], |row| row.get::<_, Option<String>>(0)),
+                            )?
+                            .collect::<Result<Vec<_>, _>>(),
+                        )?;
+                        if current_owner == owner
+                            && unique == index.unique
+                            && !partial
+                            && columns
+                                .iter()
+                                .map(Option::as_deref)
+                                .eq(index.columns.iter().map(|column| Some(column.as_str())))
+                        {
+                            continue;
+                        }
+                        self.stored(
+                            self.conn
+                                .execute(&format!("DROP INDEX {}", quote_ident(&name)), []),
+                        )?;
+                    }
+                    self.stored(self.conn.execute(
+                        &format!(
+                            "CREATE {}INDEX {} ON {} ({})",
+                            if index.unique { "UNIQUE " } else { "" },
+                            quote_ident(&name),
+                            quote_ident(&owner),
+                            index
+                                .columns
+                                .iter()
+                                .map(|column| quote_ident(column))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        [],
+                    ))?;
                 }
             }
         }
-        // FTS exists only on the visible half. It is a local search
-        // projection, never a synced/base table or a wire-schema member.
-        for table in &self.schema.tables {
-            for index in &table.fts_indexes {
-                self.create_fts_projection(table, index)?;
-            }
-        }
+        self.set_meta(
+            "localIndexes",
+            &serde_json::to_string(&declared).expect("index names serialize"),
+        )?;
         self.open_projections()
-    }
-
-    fn fts_projection_exists(&self, index: &FtsIndexSchema) -> Result<bool, String> {
-        let count: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                rusqlite::params![index.name],
-                |row| row.get(0),
-            )
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        Ok(count > 0)
-    }
-
-    fn drop_fts_triggers(&self, index: &FtsIndexSchema) -> Result<(), String> {
-        for suffix in ["ai", "ad", "au"] {
-            self.conn
-                .execute(
-                    &format!(
-                        "DROP TRIGGER IF EXISTS {}",
-                        quote_ident(&format!("{}_{suffix}", index.name))
-                    ),
-                    [],
-                )
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        }
-        Ok(())
-    }
-
-    fn create_fts_triggers(
-        &self,
-        table: &TableSchema,
-        index: &FtsIndexSchema,
-    ) -> Result<(), String> {
-        let fts = quote_ident(&index.name);
-        let source = visible_table(&table.name);
-        let source_id = quote_ident(FTS_SOURCE_ID_COLUMN);
-        let pk = quote_ident(&table.primary_key);
-        let projection_columns = std::iter::once(source_id.clone())
-            .chain(index.columns.iter().map(|column| quote_ident(column)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let new_values = std::iter::once(format!("CAST(new.{pk} AS TEXT)"))
-            .chain(
-                index
-                    .columns
-                    .iter()
-                    .map(|column| format!("new.{}", quote_ident(column))),
-            )
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
-        let delete_new = format!("DELETE FROM {fts} WHERE rowid = (SELECT id FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)); DELETE FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)");
-        let delete_old = format!("DELETE FROM {fts} WHERE rowid = (SELECT id FROM {mapping} WHERE source_id = CAST(old.{pk} AS TEXT)); DELETE FROM {mapping} WHERE source_id = CAST(old.{pk} AS TEXT)");
-        let insert_new = format!("INSERT INTO {mapping}(source_id) VALUES (CAST(new.{pk} AS TEXT)); INSERT INTO {fts} (rowid, {projection_columns}) VALUES ((SELECT id FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)), {new_values})");
-        let bi = quote_ident(&format!("{}_bi", index.name));
-        let ai = quote_ident(&format!("{}_ai", index.name));
-        let ad = quote_ident(&format!("{}_ad", index.name));
-        let au = quote_ident(&format!("{}_au", index.name));
-        let replacement_exists = format!("EXISTS (SELECT 1 FROM {source} WHERE {pk} = new.{pk})");
-        let sql = format!(
-            "DROP TRIGGER IF EXISTS {bi};
-             DROP TRIGGER IF EXISTS {ai};
-             DROP TRIGGER IF EXISTS {ad};
-             DROP TRIGGER IF EXISTS {au};
-             CREATE TRIGGER {bi} BEFORE INSERT ON {source} WHEN {replacement_exists} BEGIN {delete_new}; END;
-             CREATE TRIGGER {ai} AFTER INSERT ON {source} BEGIN {insert_new}; END;
-             CREATE TRIGGER {ad} AFTER DELETE ON {source} BEGIN {delete_old}; END;
-             CREATE TRIGGER {au} AFTER UPDATE ON {source} BEGIN {delete_old}; {delete_new}; {insert_new}; END;",
-        );
-        self.conn
-            .execute_batch(&sql)
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
-    }
-
-    fn rebuild_fts_projection(
-        &self,
-        table: &TableSchema,
-        index: &FtsIndexSchema,
-    ) -> Result<(), String> {
-        let fts = quote_ident(&index.name);
-        let source_id = quote_ident(FTS_SOURCE_ID_COLUMN);
-        let pk = quote_ident(&table.primary_key);
-        let indexed_columns = index
-            .columns
-            .iter()
-            .map(|column| quote_ident(column))
-            .collect::<Vec<_>>();
-        let projection_columns = std::iter::once(source_id.clone())
-            .chain(indexed_columns.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
-        let sql = format!(
-            "DELETE FROM {fts}; DELETE FROM {mapping}; INSERT INTO {fts} ({projection_columns}) SELECT CAST({pk} AS TEXT), {columns} FROM {source}; INSERT INTO {mapping}(id, source_id) SELECT rowid, {source_id} FROM {fts};",
-            columns = indexed_columns.join(", "),
-            source = visible_table(&table.name),
-        );
-        self.conn
-            .execute_batch(&sql)
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn create_fts_storage(
@@ -5188,71 +5155,6 @@ impl SyncClient {
             .map_err(|error| format!("cannot create local FTS5 projection {name:?}: {error}"))?;
         let mapping = quote_ident(&format!("_syncular_fts_{name}"));
         self.stored(self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")))
-    }
-
-    fn create_fts_projection(
-        &self,
-        table: &TableSchema,
-        index: &FtsIndexSchema,
-    ) -> Result<(), String> {
-        self.begin_observation("syncular_fts_schema")?;
-        let result = (|| {
-            let existed = self.fts_projection_exists(index)?;
-            let columns = index
-                .columns
-                .iter()
-                .map(|column| quote_ident(column))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
-            let mapped: bool = self
-                .conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                    [format!("_syncular_fts_{}", index.name)],
-                    |row| row.get(0),
-                )
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            self.create_fts_storage(&index.name, &columns, &index.tokenize, "")?;
-            if !mapped && existed {
-                self.conn
-                    .execute_batch(&format!(
-                        "INSERT INTO {mapping}(id, source_id) SELECT rowid, {} FROM {}",
-                        quote_ident(FTS_SOURCE_ID_COLUMN),
-                        quote_ident(&index.name)
-                    ))
-                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            }
-            self.create_fts_triggers(table, index)?;
-            // Every visible row has exactly one mapping row, so a count
-            // mismatch marks a projection an earlier release damaged; the
-            // open rebuilds it.
-            let stale: bool = !existed
-                || self
-                    .conn
-                    .query_row(
-                        &format!(
-                            "SELECT (SELECT count(*) FROM {mapping}) != (SELECT count(*) FROM {})",
-                            visible_table(&table.name)
-                        ),
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-            if stale {
-                self.rebuild_fts_projection(table, index)?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.rollback_observation("syncular_fts_schema");
-            return Err(error);
-        }
-        if let Err(error) = self.conn.execute_batch("RELEASE syncular_fts_schema") {
-            self.rollback_observation("syncular_fts_schema");
-            return Err(error.to_string());
-        }
-        Ok(())
     }
 
     // -- persistence write-through --------------------------------------------
@@ -14099,12 +14001,32 @@ impl SyncClient {
             .cloned()
             .collect();
         let names: BTreeSet<_> = tables.iter().map(|table| table.name.as_str()).collect();
+        // A built-in projection is refilled from the rebuilt rows once
+        // instead of per row by its source triggers.
+        let built_in: Vec<_> = tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .local_projections
+                    .iter()
+                    .filter(|spec| spec.built_in())
+                    .map(move |spec| (spec, table))
+            })
+            .collect();
         self.begin_observation("syncular_overlay")?;
         let rebuilt = (|| {
-            for table in &tables {
-                for index in &table.fts_indexes {
-                    self.drop_fts_triggers(index)?;
+            for (spec, _) in &built_in {
+                for suffix in ["bi", "bu", "ai", "ad", "au"] {
+                    self.stored(self.conn.execute(
+                        &format!(
+                            "DROP TRIGGER IF EXISTS {}",
+                            quote_ident(&format!("_syncular_project_{}_{suffix}", spec.name))
+                        ),
+                        [],
+                    ))?;
                 }
+            }
+            for table in &tables {
                 let visible = visible_table(&table.name);
                 let base = base_table(&table.name);
                 self.conn
@@ -14114,11 +14036,9 @@ impl SyncClient {
                     .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
             self.replay_overlay(&names, None)?;
-            for table in &tables {
-                for index in &table.fts_indexes {
-                    self.rebuild_fts_projection(table, index)?;
-                    self.create_fts_triggers(table, index)?;
-                }
+            for (spec, table) in &built_in {
+                self.fill_built_in(spec, table)?;
+                self.create_projection_triggers(spec, table)?;
             }
             self.conn
                 .execute_batch("RELEASE syncular_overlay")

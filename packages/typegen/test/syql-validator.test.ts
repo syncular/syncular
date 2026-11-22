@@ -38,7 +38,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
     {
@@ -57,7 +56,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
     {
@@ -77,8 +75,13 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [
-        { name: 'todos_fts', columns: ['title'], tokenize: 'unicode61' },
+      localProjections: [
+        {
+          name: 'todos_fts',
+          generation: 'todos_fts_generation',
+          columns: [{ name: 'title', declaredType: 'string', source: 'title' }],
+          fts: { tokenize: 'unicode61', columns: ['title'] },
+        },
       ],
       extensions: {},
     },
@@ -96,7 +99,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
     {
@@ -113,7 +115,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
     {
@@ -135,7 +136,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
   ],

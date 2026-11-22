@@ -29,8 +29,8 @@ import { TypegenError } from './errors';
 import type {
   IrColumn,
   IrColumnType,
-  IrFtsIndex,
   IrIndex,
+  IrLocalProjection,
   IrReference,
 } from './ir';
 
@@ -82,8 +82,9 @@ export interface ParsedTable {
   readonly references: ParsedReference[];
   /** Local secondary indexes, in declaration order (CREATE INDEX subset). */
   readonly indexes: IrIndex[];
-  /** Client-local contentful FTS5 projections. */
-  readonly ftsIndexes: IrFtsIndex[];
+  /** Built-in FTS5 projections declared by `CREATE VIRTUAL TABLE … USING
+   * fts5`, in declaration order. */
+  readonly localProjections: Omit<IrLocalProjection, 'generation'>[];
 }
 
 interface Token {
@@ -101,7 +102,10 @@ const DATA_MUTATION_GUIDANCE =
 const tableIdentifierSources = new WeakMap<ParsedTable, string>();
 const columnIdentifierSources = new WeakMap<IrColumn, string>();
 const indexIdentifierSources = new WeakMap<IrIndex, string>();
-const ftsIndexIdentifierSources = new WeakMap<IrFtsIndex, string>();
+const projectionIdentifierSources = new WeakMap<
+  Omit<IrLocalProjection, 'generation'>,
+  string
+>();
 
 /** Objects created while replaying the locked, immutable history prefix.
  * Rules adopted while that prefix was already deployed (nullable-only ADD
@@ -175,12 +179,12 @@ export function validateFinalSchemaIdentifiers(
         index,
       );
     }
-    for (const ftsIndex of table.ftsIndexes) {
+    for (const projection of table.localProjections) {
       validateIdentifier(
-        ftsIndexIdentifierSources.get(ftsIndex) ?? tableSource,
+        projectionIdentifierSources.get(projection) ?? tableSource,
         `table ${table.name}: FTS virtual table`,
-        ftsIndex.name,
-        ftsIndex,
+        projection.name,
+        projection,
       );
     }
   }
@@ -580,7 +584,7 @@ function parseCreateVirtualTable(
   for (const table of tables.values()) {
     if (
       table.indexes.some((index) => index.name === name) ||
-      table.ftsIndexes.some((index) => index.name === name)
+      table.localProjections.some((index) => index.name === name)
     ) {
       cursor.fail(
         `FTS virtual table ${name} is created twice or conflicts with an index`,
@@ -679,10 +683,19 @@ function parseCreateVirtualTable(
       );
     }
   }
-  const ftsIndex = { name, columns, tokenize };
-  table.ftsIndexes.push(ftsIndex);
-  ftsIndexIdentifierSources.set(ftsIndex, source);
-  if (options.lockedHistory === true) lockedHistoryObjects.add(ftsIndex);
+  // A built-in projection: each column is named after its source column.
+  const projection = {
+    name,
+    columns: columns.map((column) => ({
+      name: column,
+      declaredType: 'string' as const,
+      source: column,
+    })),
+    fts: { tokenize, columns },
+  };
+  table.localProjections.push(projection);
+  projectionIdentifierSources.set(projection, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(projection);
 }
 
 /**
@@ -708,7 +721,7 @@ function addReference(
   for (const candidate of tables.values()) {
     if (
       candidate.indexes.some((index) => index.name === name) ||
-      candidate.ftsIndexes.some((index) => index.name === name)
+      candidate.localProjections.some((index) => index.name === name)
     ) {
       throw new TypegenError(
         source,
@@ -751,7 +764,7 @@ function parseCreateTable(
   for (const table of tables.values()) {
     if (
       table.indexes.some((index) => index.name === name) ||
-      table.ftsIndexes.some((index) => index.name === name)
+      table.localProjections.some((index) => index.name === name)
     ) {
       cursor.fail(`table ${name} conflicts with an index or FTS virtual table`);
     }
@@ -847,7 +860,7 @@ function parseCreateTable(
     columns: finalColumns,
     references: [],
     indexes: [],
-    ftsIndexes: [],
+    localProjections: [],
   };
   tables.set(name, table);
   tableIdentifierSources.set(table, source);
@@ -888,7 +901,7 @@ function parseCreateIndex(
   for (const table of tables.values()) {
     if (
       table.indexes.some((i) => i.name === name) ||
-      table.ftsIndexes.some((i) => i.name === name)
+      table.localProjections.some((i) => i.name === name)
     ) {
       cursor.fail(
         `index ${name} is created twice or conflicts with an FTS virtual table`,
@@ -1076,7 +1089,7 @@ function parseDropIndex(
     return;
   }
   for (const table of tables.values()) {
-    if (table.ftsIndexes.some((candidate) => candidate.name === name)) {
+    if (table.localProjections.some((candidate) => candidate.name === name)) {
       // `DROP INDEX IF EXISTS <fts>` matches SQLite: an FTS5 virtual table is
       // no regular index, so IF EXISTS resolves to a tolerant no-op (this also
       // keeps a locked migration carrying the statement replayable).
@@ -1115,7 +1128,7 @@ function parseDrop(
  * accumulate in declaration order — the §2.4 row-codec positional order.
  * Returns every table a statement names (an identifier or string literal
  * equal to a table name, case-insensitive), the input to the §7.4.3 table
- * generation.
+ * generation. Index and FTS5 projection statements name no table.
  */
 export function applyMigrationSql(
   tables: Map<string, ParsedTable>,
@@ -1141,6 +1154,15 @@ export function applyMigrationSql(
         `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, ALTER TABLE … ALTER COLUMN … DROP NOT NULL, DROP INDEX, and DROP TABLE)`,
       );
     }
+    // §7.4.3: a statement that only declares or drops an index or an FTS5
+    // projection names no table, so it leaves every table generation alone.
+    const second = tokens[1]?.text.toUpperCase();
+    if (
+      (word === 'CREATE' &&
+        (second === 'INDEX' || second === 'UNIQUE' || second === 'VIRTUAL')) ||
+      (word === 'DROP' && second === 'INDEX')
+    )
+      continue;
     const names = new Set(
       [...tables.keys(), ...droppedTables].map((name) => name.toLowerCase()),
     );

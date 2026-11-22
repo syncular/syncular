@@ -314,12 +314,14 @@ may be removed with `DROP INDEX name` or conditionally with `IF EXISTS`.
 Generation removes it from the head IR; a later `CREATE INDEX` may reuse the
 name with a different uniqueness or column definition. On a server schema
 bump, Syncular rebuilds the declared secondary indexes for its owned
-relational projection tables before advancing the version marker. Client
-mirrors already wipe and re-bootstrap application tables on every schema
-version change. Portability validation applies to the final head schema: an
-already-locked historical index with a non-portable name may therefore be
-dropped and replaced in a forward migration, while a non-portable name that
-remains in the head still fails generation.
+relational projection tables before advancing the version marker. Clients
+reconcile declared indexes in place at open (SPEC §7.4.3), so an index change
+resets no table: `CREATE INDEX`, `DROP INDEX` and `CREATE VIRTUAL TABLE … USING
+fts5` statements name no table for the table generation, and the generation
+hashes no index list. Portability validation applies to the final head
+schema: an already-locked historical index with a non-portable name may
+therefore be dropped and replaced in a forward migration, while a
+non-portable name that remains in the head still fails generation.
 
 **Table retirement** (`DROP TABLE`). A table created earlier in migration
 history and dropped before the head version is absent from the IR and must be
@@ -334,10 +336,14 @@ policy—`DROP TABLE` is schema retirement, not a compliance erasure API.
 **Local FTS5 projections** (`CREATE VIRTUAL TABLE … USING fts5`). The authored
 `content = table` option declares which already-created synced table owns the
 projection; it is not passed through as SQLite external-content mode. Typegen
-attaches `{ name, columns, tokenize }` to that table's `ftsIndexes` array and
-emits it in TypeScript, Swift, Kotlin, and Dart schema values. The TypeScript
-and Rust clients create a contentful FTS table with a private stable source-ID
-column and deterministic maintenance triggers. FTS is local-only: it is not a
+turns the declaration into a built-in entry of that table's `localProjections`
+array: the same name, one `{ name, declaredType: "string", source }` column per
+indexed column named after its source column, and `fts: { tokenize, columns }`.
+The entry carries its own projection generation and rides in the TypeScript,
+Swift, Kotlin, and Dart schema values. The TypeScript and Rust clients store it
+in the external-content form of app-filled FTS5 (SPEC "Built-in FTS5
+projections") and fill it from the source row in the statement that writes the
+row. FTS is local-only: it is not a
 wire/server table, cannot be subscribed or mutated, and maps back to its owner
 for named-query invalidation. Columns must precede options, be distinct
 declared strings, and number 1–32. Encrypted declared-string columns are

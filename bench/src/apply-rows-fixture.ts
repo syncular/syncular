@@ -593,7 +593,13 @@ export async function runPlan(
           table: `t${String(t).padStart(2, '0')}`,
         })),
         ...(q < live
-          ? { coverage: [{ base: { variable: 'plan_id' }, units: values }] }
+          ? {
+              coverage: Array.from({ length: tables }, (_, t) => ({
+                table: `t${String(t).padStart(2, '0')}`,
+                base: { variable: 'plan_id' },
+                units: values,
+              })),
+            }
           : {}),
         claimCoverage: false,
       }),

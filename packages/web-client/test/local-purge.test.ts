@@ -37,11 +37,15 @@ const SCHEMA: ClientSchema = {
       ],
       primaryKey: 'id',
       scopes: ['practice:{practice_id}'],
-      ftsIndexes: [
+      localProjections: [
         {
           name: 'patient_notes_fts',
-          columns: ['title'],
-          tokenize: 'unicode61 remove_diacritics 2',
+          generation: '1',
+          columns: [{ name: 'title', declaredType: 'string', source: 'title' }],
+          fts: {
+            tokenize: 'unicode61 remove_diacritics 2',
+            columns: ['title'],
+          },
         },
       ],
     },

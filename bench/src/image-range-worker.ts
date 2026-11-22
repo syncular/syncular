@@ -7,6 +7,7 @@
  */
 import { decodeMessage } from '../../packages/core/src/index';
 import { SyncClient } from '../../packages/web-client/src/client';
+import { compileLocalProjections } from '../../packages/web-client/src/projection';
 import {
   httpSegmentDownloader,
   httpSyncTransport,
@@ -38,11 +39,26 @@ scope.onmessage = async (event: MessageEvent) => {
         ...(unitScopes === undefined ? {} : { scopes: unitScopes }),
         ...(fts && table.name === 'codes'
           ? {
-              ftsIndexes: [
+              localProjections: [
                 {
                   name: 'codes_search',
-                  columns: ['title', 'description'],
-                  tokenize: 'unicode61',
+                  generation: '1',
+                  columns: [
+                    {
+                      name: 'title',
+                      declaredType: 'string' as const,
+                      source: 'title',
+                    },
+                    {
+                      name: 'description',
+                      declaredType: 'string' as const,
+                      source: 'description',
+                    },
+                  ],
+                  fts: {
+                    tokenize: 'unicode61',
+                    columns: ['title', 'description'],
+                  },
                 },
               ],
             }
@@ -92,6 +108,7 @@ scope.onmessage = async (event: MessageEvent) => {
     const client = new SyncClient({
       database,
       schema,
+      createProjections: compileLocalProjections,
       transport: async (request, signal) => {
         const at = performance.now();
         const response = await http(request, signal);

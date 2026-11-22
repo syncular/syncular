@@ -40,7 +40,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
     {
@@ -56,7 +55,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
   ],
@@ -343,7 +341,6 @@ describe('reactive metadata is proof-based', () => {
           ],
           references: [],
           indexes: [],
-          ftsIndexes: [],
           extensions: {},
         },
       ],

@@ -17,6 +17,20 @@
 export const changelog = [
   {
     date: '2026-11-22',
+    title: 'Index changes without a table reset',
+    body: 'Declared indexes and FTS projections left the table generation. The client creates and drops the indexes it declared in place at open, so adding or dropping an index resets no table. The first open of 0.102.0 resets each table with an index or an FTS projection once.',
+    links: [{ href: '/concepts-schema-upgrades/', label: 'Schema upgrades' }],
+  },
+  {
+    date: '2026-11-22',
+    title: 'FTS search is a built-in local projection',
+    body: "Built-in FTS uses the same external-content storage as app-filled projections, filled by the owner table's triggers. TypeScript apps with FTS pass `createProjections` from `@syncular/client/projections`.",
+    links: [
+      { href: '/tooling-local-search/', label: 'Local full-text search' },
+    ],
+  },
+  {
+    date: '2026-11-22',
     title: 'Replace a commit before it is pushed',
     body: "`replacePendingCommit` swaps a pending commit's operations in place and journals the original as `replaced`. A commit that may have reached the server is fenced first, so the server either never applies the original or returns its stored result.",
     links: [
@@ -29,7 +43,7 @@ export const changelog = [
   {
     date: '2026-11-21',
     title: 'Authority queries over the accepted base',
-    body: "Declare preflight evidence as `authority query` in SYQL and read it with `authorityRead`: joins and aggregates over the last state the server accepted, in one read transaction, with per-table coverage that tells a complete negative from missing data. A native host authorizes each declared statement against its column ceiling. Coverage now proves an entry from any unit whose scopes are a subset of it.",
+    body: 'Declare preflight evidence as `authority query` in SYQL and read it with `authorityRead`: joins and aggregates over the last state the server accepted, in one read transaction, with per-table coverage that tells a complete negative from missing data. A native host authorizes each declared statement against its column ceiling. Coverage now proves an entry from any unit whose scopes are a subset of it.',
     links: [
       {
         href: '/platform-tauri-specifics/#authority-evidence-before-activation',

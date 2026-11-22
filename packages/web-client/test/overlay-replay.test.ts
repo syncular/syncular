@@ -10,6 +10,7 @@ import {
   type SqlValue,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { compileLocalProjections } from '@syncular/client/projections';
 import {
   ensureFailedOverlaySchema,
   failedOverlayCommits,
@@ -54,8 +55,15 @@ for (const failure of [
           .filter((table) => table.name === 'tasks')
           .map((table) => ({
             ...table,
-            ftsIndexes: [
-              { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+            localProjections: [
+              {
+                name: 'tasks_fts',
+                generation: '1',
+                columns: [
+                  { name: 'title', declaredType: 'string', source: 'title' },
+                ],
+                fts: { tokenize: 'unicode61', columns: ['title'] },
+              },
             ],
           })),
       };
@@ -73,6 +81,7 @@ for (const failure of [
       };
       const config = {
         schema,
+        createProjections: compileLocalProjections,
         clientId: 'replay',
         leaderLock,
         transport: async (): Promise<Uint8Array> => {

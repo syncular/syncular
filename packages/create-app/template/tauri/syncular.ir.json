@@ -12,7 +12,7 @@
   "tables": [
     {
       "name": "todos",
-      "generation": "4cd28b2c0fa7767068582d8d81d16214",
+      "generation": "b154a435d5180bec2d6fc28d12ea4c58",
       "primaryKey": "id",
       "columns": [
         {

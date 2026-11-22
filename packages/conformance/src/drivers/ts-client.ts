@@ -106,7 +106,6 @@ function toClientSchema(schema: DriverSchema): ClientSchema {
       columns: table.columns,
       primaryKey: table.primaryKey,
       ...(table.indexes ? { indexes: table.indexes } : {}),
-      ...(table.ftsIndexes ? { ftsIndexes: table.ftsIndexes } : {}),
       ...(table.localProjections
         ? { localProjections: table.localProjections }
         : {}),

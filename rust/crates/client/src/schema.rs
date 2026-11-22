@@ -26,14 +26,15 @@ pub struct TableIr {
     /// (typegen omits the key), so default to empty on deserialize.
     #[serde(default)]
     pub indexes: Vec<IndexIr>,
-    /// Client-local FTS5 projections; absent for tables without local search.
-    #[serde(default, rename = "ftsIndexes")]
-    pub fts_indexes: Vec<FtsIndexIr>,
     #[serde(default)]
     pub local_projections: Vec<LocalProjection>,
     /// §7.4.3 table generation (typegen); absent for hand-written schemas.
     #[serde(default)]
     pub generation: Option<String>,
+    /// Built-in FTS left this key in 0.102; its presence is refused so an
+    /// old generated schema never silently loses search.
+    #[serde(default)]
+    pub fts_indexes: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,14 +64,6 @@ pub struct IndexIr {
     pub unique: bool,
 }
 
-/// One client-local contentful FTS5 projection.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FtsIndexIr {
-    pub name: String,
-    pub columns: Vec<String>,
-    pub tokenize: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalProjection {
@@ -87,6 +80,17 @@ pub struct LocalProjection {
 pub struct ProjectionColumn {
     pub name: String,
     pub declared_type: ProjectionType,
+    /// The source-table column a built-in projection copies (SPEC "Built-in
+    /// FTS5 projections"); absent on every column of an app-filled one.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+impl LocalProjection {
+    /// Every column names a source; the loader refuses a mix.
+    pub fn built_in(&self) -> bool {
+        self.columns.iter().any(|column| column.source.is_some())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -134,13 +138,6 @@ pub struct IndexSchema {
     pub unique: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct FtsIndexSchema {
-    pub name: String,
-    pub columns: Vec<String>,
-    pub tokenize: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScopePatternIr {
     pub pattern: String,
@@ -183,8 +180,6 @@ pub struct TableSchema {
     pub scope_variables: Vec<ScopeVariable>,
     /// Local secondary indexes, in declaration order (empty when none).
     pub indexes: Vec<IndexSchema>,
-    /// Client-local FTS5 projections, in declaration order.
-    pub fts_indexes: Vec<FtsIndexSchema>,
     pub local_projections: Vec<LocalProjection>,
     /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
     pub encrypted_columns: Vec<EncryptedColumn>,
@@ -279,6 +274,12 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
     let mut tables = Vec::with_capacity(ir.tables.len());
     let mut schema_object_names = BTreeSet::new();
     for table in &ir.tables {
+        if table.fts_indexes.is_some() {
+            return Err(format!(
+                "client.schema_invalid: table {:?} declares ftsIndexes; regenerate the schema",
+                table.name
+            ));
+        }
         if !schema_object_names.insert(table.name.clone()) {
             return Err(format!("duplicate table or schema object {:?}", table.name));
         }
@@ -393,57 +394,6 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                 unique: index.unique,
             });
         }
-        let mut fts_indexes = Vec::with_capacity(table.fts_indexes.len());
-        for index in &table.fts_indexes {
-            if !schema_object_names.insert(index.name.clone()) {
-                return Err(format!(
-                    "table {:?}: FTS projection {:?} conflicts with another schema object",
-                    table.name, index.name
-                ));
-            }
-            if index.columns.is_empty() || index.columns.len() > 32 {
-                return Err(format!(
-                    "table {:?}: FTS projection {:?} needs between 1 and 32 columns",
-                    table.name, index.name
-                ));
-            }
-            let mut seen_columns = BTreeSet::new();
-            for column_name in &index.columns {
-                if !seen_columns.insert(column_name) {
-                    return Err(format!(
-                        "table {:?}: FTS projection {:?} repeats column {:?}",
-                        table.name, index.name, column_name
-                    ));
-                }
-                let Some((_column_index, column)) = columns
-                    .iter()
-                    .enumerate()
-                    .find(|(_, candidate)| &candidate.name == column_name)
-                else {
-                    return Err(format!(
-                        "table {:?}: FTS projection {:?} names unknown column {:?}",
-                        table.name, index.name, column_name
-                    ));
-                };
-                if !matches!(column.ty, ColumnType::String) {
-                    return Err(format!(
-                        "table {:?}: FTS projection {:?} column {:?} must have string type",
-                        table.name, index.name, column_name
-                    ));
-                }
-            }
-            if !fts_tokenizer(&index.tokenize) {
-                return Err(format!(
-                    "table {:?}: FTS projection {:?} tokenizer {:?} is not allowlisted",
-                    table.name, index.name, index.tokenize
-                ));
-            }
-            fts_indexes.push(FtsIndexSchema {
-                name: index.name.clone(),
-                columns: index.columns.clone(),
-                tokenize: index.tokenize.clone(),
-            });
-        }
         if table.generation.as_deref() == Some("") {
             return Err(format!(
                 "table {:?}: generation must be a non-empty string (§7.4.3)",
@@ -459,7 +409,6 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
             pk_index,
             scope_variables,
             indexes,
-            fts_indexes,
             local_projections: table.local_projections.clone(),
             encrypted_columns,
             server_owned_columns,
@@ -502,6 +451,22 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                             })
                         })
                 })
+            {
+                return Err(invalid());
+            }
+            // A built-in projection copies string columns of its own table
+            // and has no pending work for a dependency to invalidate.
+            if spec.built_in()
+                && (spec.fts.is_none()
+                    || !spec.dependencies.is_empty()
+                    || !spec.columns.iter().all(|column| {
+                        column.declared_type == ProjectionType::String
+                            && column.source.as_ref().is_some_and(|name| {
+                                source.columns.iter().any(|col| {
+                                    col.name == *name && matches!(col.ty, ColumnType::String)
+                                })
+                            })
+                    }))
             {
                 return Err(invalid());
             }
@@ -600,10 +565,11 @@ mod tests {
                     column
                 ],
                 "scopes": [{ "pattern": "org:{org_id}" }],
-                "ftsIndexes": [{
+                "localProjections": [{
                     "name": "docs_fts",
-                    "columns": ["body"],
-                    "tokenize": tokenize
+                    "generation": "1",
+                    "columns": [{ "name": "body", "declaredType": "string", "source": "body" }],
+                    "fts": { "tokenize": tokenize, "columns": ["body"] }
                 }]
             }]
         })
@@ -661,7 +627,7 @@ mod tests {
             "unicode61 remove_diacritics 2",
         ))
         .expect("valid FTS schema");
-        assert_eq!(schema.tables[0].fts_indexes[0].name, "docs_fts");
+        assert!(schema.tables[0].local_projections[0].built_in());
     }
 
     #[test]
@@ -681,7 +647,7 @@ mod tests {
         );
         assert!(parse_schema_json(&non_string)
             .expect_err("non-string FTS must fail")
-            .contains("must have string type"));
+            .starts_with("client.schema_invalid:"));
 
         let tokenizer = schema_with_fts(
             json!({ "name": "body", "type": "string", "nullable": false }),
@@ -689,6 +655,30 @@ mod tests {
         );
         assert!(parse_schema_json(&tokenizer)
             .expect_err("custom tokenizer must fail")
-            .contains("not allowlisted"));
+            .starts_with("client.schema_invalid:"));
+    }
+
+    #[test]
+    fn refuses_a_mixed_or_fts_less_built_in_projection() {
+        let body = json!({ "name": "body", "type": "string", "nullable": false });
+        let mut mixed = schema_with_fts(body.clone(), "unicode61");
+        mixed["tables"][0]["localProjections"][0]["columns"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "name": "note", "declaredType": "string" }));
+        let mut without_fts = schema_with_fts(body.clone(), "unicode61");
+        without_fts["tables"][0]["localProjections"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("fts");
+        let mut unknown_source = schema_with_fts(body, "unicode61");
+        unknown_source["tables"][0]["localProjections"][0]["columns"][0]["source"] =
+            json!("missing");
+        for schema in [mixed, without_fts, unknown_source] {
+            assert_eq!(
+                parse_schema_json(&schema).expect_err("invalid built-in projection"),
+                "client.schema_invalid: invalid local projection declaration"
+            );
+        }
     }
 }

@@ -58,14 +58,21 @@ function requireSnapshotRead(client: ClientInstance) {
   return client.snapshotRead.bind(client);
 }
 
-const FTS_SCHEMA = {
+const FTS_SCHEMA: DriverSchema = {
   ...FIXTURE_SCHEMA,
   tables: FIXTURE_SCHEMA.tables.map((table) =>
     table.name === 'tasks'
       ? {
           ...table,
-          ftsIndexes: [
-            { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+          localProjections: [
+            {
+              name: 'tasks_fts',
+              generation: 'tasks_fts-1',
+              columns: [
+                { name: 'title', declaredType: 'string', source: 'title' },
+              ],
+              fts: { tokenize: 'unicode61', columns: ['title'] },
+            },
           ],
         }
       : table,

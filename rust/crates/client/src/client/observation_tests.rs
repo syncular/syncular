@@ -4699,7 +4699,7 @@ fn clean_commit_mirroring_matches_full_replay_with_fts_and_unique_indexes() {
             {"name":"title", "type":"string", "nullable":false}
         ], "scopes": [{"pattern":"project:{project_id}"}],
         "indexes": [{"name":"unique_title", "columns":["title"], "unique":true}],
-        "ftsIndexes": [{"name":"tasks_fts", "columns":["title"], "tokenize":"unicode61"}]
+        "localProjections": [{"name":"tasks_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]
     }] });
     let mut incremental =
         SyncClient::new("mirror".to_owned(), &schema, ClientLimits::default()).unwrap();
@@ -5003,7 +5003,7 @@ fn pending_row_reconciliation_matches_full_fifo_replay() {
                 {"name":"title", "type":"string", "nullable":false}],
             "scopes": [{"pattern":"project:{project_id}"}],
             "indexes": [{"name":format!("{name}_title"), "columns":["title"], "unique":unique || name == "notes"}],
-            "ftsIndexes": [{"name":format!("{name}_fts"), "columns":["title"], "tokenize":"unicode61"}]
+            "localProjections": [{"name":format!("{name}_fts"), "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]
         })))});
         let mut incremental =
             SyncClient::new("pending".into(), &schema, ClientLimits::default()).unwrap();
@@ -5223,7 +5223,7 @@ fn measure_scoped_overlay(unchanged_rows: i64, rounds: i64) -> Vec<u128> {
             {"name":"project_id","type":"string","nullable":false},
             {"name":"title","type":"string","nullable":false}],
             "scopes":[{"pattern":"project:{project_id}"}],
-            "ftsIndexes":[{"name":"catalogue_fts","columns":["title"],"tokenize":"unicode61"}] }
+            "localProjections":[{"name":"catalogue_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}] }
     ] });
     let mut client =
         SyncClient::new("overlay-scope".into(), &schema, ClientLimits::default()).unwrap();
@@ -5893,7 +5893,7 @@ fn appended_overlay_matches_full_fifo_replay_with_constraints_and_fts() {
             {"name":"title", "type":"string", "nullable":false}],
         "scopes": [{"pattern":"project:{project_id}"}],
         "indexes": [{"name":"unique_title", "columns":["title"], "unique":true}],
-        "ftsIndexes": [{"name":"tasks_fts", "columns":["title"], "tokenize":"unicode61"}]}]});
+        "localProjections": [{"name":"tasks_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]}]});
     let mut incremental =
         SyncClient::new("append".to_owned(), &schema, ClientLimits::default()).unwrap();
     let mut reference =
@@ -6427,7 +6427,7 @@ fn replay_schema(fts: bool) -> Value {
         {"name":"project_id","type":"string","nullable":false},
         {"name":"title","type":"string","nullable":false},
         {"name":"done","type":"boolean","nullable":false}
-    ],"scopes":[{"pattern":"project:{project_id}"}], "ftsIndexes": if fts { json!([{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]) } else { json!([]) }}]})
+    ],"scopes":[{"pattern":"project:{project_id}"}], "localProjections": if fts { json!([{"name":"tasks_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]) } else { json!([]) }}]})
 }
 
 #[test]
@@ -8847,7 +8847,7 @@ fn import_chunks_with_unique_constraints_match_full_pending_replay() {
                 {"name":"title","type":"string","nullable":false}],
             "scopes":[{"pattern":"project:{project_id}"}],
             "indexes":[{"name":format!("{name}_unique_title"),"columns":["title"],"unique":true}],
-            "ftsIndexes":[{"name":format!("{name}_fts"),"columns":["title"],"tokenize":"unicode61"}]
+            "localProjections":[{"name":format!("{name}_fts"), "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]
         })))});
         let mut actual =
             SyncClient::new("actual".into(), &schema, ClientLimits::default()).unwrap();
@@ -9132,7 +9132,7 @@ fn unique_import_fixture(rows: usize) -> (SyncClient, Connection, TableSchema) {
     let schema = json!({"version":1,"tables": (["tasks", "notes"].map(|name| json!({
         "name":name,"primaryKey":"id","columns":[{"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false},{"name":"title","type":"string","nullable":false}],
         "scopes":[{"pattern":"project:{project_id}"}],"indexes":[{"name":format!("{name}_title"),"columns":["title"],"unique":true}],
-        "ftsIndexes":[{"name":format!("{name}_fts"),"columns":["title"],"tokenize":"unicode61"}]
+        "localProjections":[{"name":format!("{name}_fts"), "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]
     })))});
     let mut client =
         SyncClient::new("unique-import".into(), &schema, ClientLimits::default()).unwrap();
@@ -10699,10 +10699,14 @@ fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
                 { "name": "title", "type": "string", "nullable": false }
             ],
             "scopes": [{ "pattern": "release:{release_id}" }],
-            "ftsIndexes": [{
+            "localProjections": [{
                 "name": "catalogue_codes_fts",
-                "columns": ["code", "title"],
-                "tokenize": "unicode61 remove_diacritics 2"
+                "generation": "1",
+                "columns": [
+                    { "name": "code", "declaredType": "string", "source": "code" },
+                    { "name": "title", "declaredType": "string", "source": "title" }
+                ],
+                "fts": { "tokenize": "unicode61 remove_diacritics 2", "columns": ["code", "title"] }
             }]
         }]
     });
@@ -10711,7 +10715,7 @@ fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
     let insert_trigger: String = client
         .conn
         .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_ai'",
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_ai'",
             [],
             |row| row.get(0),
         )
@@ -10719,7 +10723,7 @@ fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
     let replace_guard: String = client
         .conn
         .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_bi'",
             [],
             |row| row.get(0),
         )
@@ -10808,11 +10812,7 @@ fn a_reapplied_image_keeps_every_row_findable_and_an_open_repairs_a_damaged_proj
                 { "name": "title", "type": "string", "nullable": false }
             ],
             "scopes": [{ "pattern": "release:{release_id}" }],
-            "ftsIndexes": [{
-                "name": "catalogue_codes_fts",
-                "columns": ["title"],
-                "tokenize": "unicode61 remove_diacritics 2"
-            }]
+            "localProjections": [{"name":"catalogue_codes_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61 remove_diacritics 2", "columns":["title"]}}]
         }]
     });
     let mut client = SyncClient::new("fts-image".to_owned(), &schema, ClientLimits::default())
@@ -10891,11 +10891,7 @@ fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
                 { "name": "title", "type": "string", "nullable": false }
             ],
             "scopes": [{ "pattern": "practice:{practice_id}" }],
-            "ftsIndexes": [{
-                "name": "patient_notes_fts",
-                "columns": ["title"],
-                "tokenize": "unicode61 remove_diacritics 2"
-            }]
+            "localProjections": [{"name":"patient_notes_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61 remove_diacritics 2", "columns":["title"]}}]
         }]
     });
     let mut client = SyncClient::new(
@@ -11679,7 +11675,7 @@ fn acknowledged_edit_reconciles_only_its_rows_of_a_large_table() {
     let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
         {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false},{"name":"title","type":"string","nullable":false}],
         "scopes":[{"pattern":"project:{project_id}"}],
-        "ftsIndexes":[{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]}]});
+        "localProjections":[{"name":"tasks_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]}]});
     let mut client = SyncClient::new("large-ack".into(), &schema, ClientLimits::default()).unwrap();
     client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
     client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO _syncular_base_tasks SELECT printf('t%05d',x),'p1','title '||x,1 FROM n").unwrap();
@@ -11819,7 +11815,7 @@ fn keyed_push_result_reconciliation_matches_a_full_rebuild() {
     };
     let schema = json!({"version":1,"tables":[
         table("tasks", json!({"indexes":[{"name":"unique_title","columns":["title"],"unique":true}],
-            "ftsIndexes":[{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]})),
+            "localProjections":[{"name":"tasks_fts", "generation":"1", "columns":[{"name":"title", "declaredType":"string", "source":"title"}], "fts":{"tokenize":"unicode61", "columns":["title"]}}]})),
         table("notes", json!({}))]});
     let [mut keyed, mut reference] = ["keyed", "reference"].map(|_| {
         let mut client =

@@ -25,6 +25,8 @@ struct ProjectionSql {
     fields: String,
     identity_id: &'static str,
     fts: bool,
+    /// A built-in projection's source columns, read from the source alias `s`.
+    sources: String,
 }
 
 impl ProjectionSql {
@@ -55,9 +57,36 @@ impl ProjectionSql {
             } else {
                 r#""_syncular_source_id""#
             },
+            sources: spec
+                .columns
+                .iter()
+                .filter_map(|column| column.source.as_ref())
+                .map(|column| format!("s.{}", quote_ident(column)))
+                .collect::<Vec<_>>()
+                .join(","),
             relation,
             pk,
         }
+    }
+
+    /// A built-in projection copies the selected source rows into the
+    /// mapping, the content table and the FTS index.
+    fn fill(&self, condition: &str) -> [String; 3] {
+        [
+            format!(
+                "INSERT INTO {}(source_id) {}",
+                self.identity,
+                self.ids(condition)
+            ),
+            format!(
+                "INSERT INTO {content}(rowid,{fields}) SELECT m.id,m.source_id,{sources} FROM {from} JOIN {identity} AS m ON m.source_id={source_id} WHERE {condition}",
+                content = self.content, fields = self.fields, sources = self.sources, from = self.from, identity = self.identity, source_id = self.source_id,
+            ),
+            format!(
+                "INSERT INTO {relation}(rowid,{fields}) SELECT rowid,{fields} FROM {content} WHERE rowid IN (SELECT id FROM {identity} WHERE source_id IN ({ids}))",
+                relation = self.relation, fields = self.fields, content = self.content, identity = self.identity, ids = self.ids(condition),
+            ),
+        ]
     }
 
     fn ids(&self, condition: &str) -> String {
@@ -220,6 +249,30 @@ impl SyncClient {
                 .collect::<Vec<_>>()
                 .join(", ");
             if let Some(fts) = &spec.fts {
+                // Releases before 0.102 kept built-in FTS in a contentful table
+                // under the projection name, filled by triggers named after it.
+                // The first open of an unregistered built-in projection drops
+                // them once; the count comparison below rebuilds from the
+                // source rows.
+                if spec.built_in()
+                    && !self.stored(self.conn.query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {REGISTRY} WHERE name=?1)"),
+                        [name],
+                        |row| row.get::<_, bool>(0),
+                    ))?
+                {
+                    let mut statements = vec![
+                        format!("DROP TABLE IF EXISTS {}", sql.relation),
+                        format!("DROP TABLE IF EXISTS {}", sql.identity),
+                    ];
+                    for suffix in ["bi", "ai", "ad", "au", "bu"] {
+                        statements.push(format!(
+                            "DROP TRIGGER IF EXISTS {}",
+                            quote_ident(&format!("{name}_{suffix}"))
+                        ));
+                    }
+                    self.stored(self.conn.execute_batch(&statements.join(";")))?;
+                }
                 self.stored(self.conn.execute(&format!("CREATE TABLE IF NOT EXISTS {}(rowid INTEGER PRIMARY KEY,{FTS_SOURCE_ID_COLUMN} TEXT NOT NULL,{fields})", sql.content), []))?;
                 let fields = spec
                     .columns
@@ -240,11 +293,22 @@ impl SyncClient {
                     &fts.tokenize,
                     &format!(",content='_syncular_projection_{name}'"),
                 )?;
-                let count = format!("(SELECT count(*) FROM {})", sql.content);
+                // A built-in projection holds one entry per source row; an
+                // app-filled one indexes exactly its content rows.
+                let count = format!(
+                    "(SELECT count(*) FROM {})",
+                    if spec.built_in() {
+                        &sql.from
+                    } else {
+                        &sql.content
+                    }
+                );
                 let damaged: bool = self.stored(self.conn.query_row(&format!(
-                    "SELECT {count}!=(SELECT count(*) FROM {}) OR {count}!=(SELECT count(*) FROM {})", sql.identity, quote_ident(&format!("{name}_docsize"))
+                    "SELECT {count}!=(SELECT count(*) FROM {}) OR {count}!=(SELECT count(*) FROM {}) OR {count}!=(SELECT count(*) FROM {})", sql.identity, quote_ident(&format!("{name}_docsize")), sql.content
                 ), [], |row| row.get(0)))?;
-                if damaged {
+                if damaged && spec.built_in() {
+                    self.fill_built_in(spec, source)?;
+                } else if damaged {
                     self.stored(self.conn.execute_batch(&format!("DELETE FROM {mapping};
                          INSERT INTO {mapping}(id,source_id) SELECT rowid,{FTS_SOURCE_ID_COLUMN} FROM {content};
                          INSERT INTO {fts}({fts}) VALUES ('rebuild')", mapping=sql.identity, content=sql.content, fts=sql.relation)))?;
@@ -257,61 +321,173 @@ impl SyncClient {
                 &format!("INSERT INTO {REGISTRY}(name,generation,fts,epoch) VALUES (?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET generation=excluded.generation,fts=excluded.fts"),
                 rusqlite::params![name, spec.generation, sql.fts, epoch],
             ))?;
-            self.stored(self.conn.execute_batch(&sql.pending(&format!(
-                "NOT EXISTS(SELECT 1 FROM {identity} WHERE {identity_id}={source_id}) AND NOT EXISTS(SELECT 1 FROM {PENDING} WHERE name={name} AND source_id={source_id})",
-                identity=sql.identity, identity_id=sql.identity_id, source_id=sql.source_id, name=sql.name,
-            )).join(";")))?;
-
-            let mut dependencies = BTreeMap::new();
-            dependencies.insert(source.name.as_str(), Vec::new());
-            for dep in &spec.dependencies {
-                dependencies.entry(&dep.table).or_default().push(dep);
+            if !spec.built_in() {
+                self.stored(self.conn.execute_batch(&sql.pending(&format!(
+                    "NOT EXISTS(SELECT 1 FROM {identity} WHERE {identity_id}={source_id}) AND NOT EXISTS(SELECT 1 FROM {PENDING} WHERE name={name} AND source_id={source_id})",
+                    identity=sql.identity, identity_id=sql.identity_id, source_id=sql.source_id, name=sql.name,
+                )).join(";")))?;
             }
-            for (index, (table, columns)) in dependencies.into_iter().enumerate() {
-                for (event, sides) in [
-                    ("INSERT", &["new"][..]),
-                    ("UPDATE", &["old", "new"][..]),
-                    ("DELETE", &["old"][..]),
-                ] {
-                    let mut conditions: Vec<_> = columns
+            self.create_projection_triggers(spec, source)?;
+        }
+        Ok(())
+    }
+
+    /// Rebuilds a built-in projection from its source rows.
+    pub(super) fn fill_built_in(
+        &self,
+        spec: &LocalProjection,
+        source: &TableSchema,
+    ) -> Result<(), String> {
+        let sql = ProjectionSql::new(spec, source);
+        let mut statements = vec![
+            format!(
+                "INSERT INTO {fts}({fts}) VALUES ('delete-all')",
+                fts = sql.relation
+            ),
+            format!("DELETE FROM {}", sql.content),
+            format!("DELETE FROM {}", sql.identity),
+        ];
+        statements.extend(sql.fill("1"));
+        self.stored(self.conn.execute_batch(&statements.join(";")))
+    }
+
+    pub(super) fn create_projection_triggers(
+        &self,
+        spec: &LocalProjection,
+        source: &TableSchema,
+    ) -> Result<(), String> {
+        let name = &spec.name;
+        let sql = ProjectionSql::new(spec, source);
+        if spec.built_in() {
+            // The source triggers fill the projection from the source row in
+            // the statement that writes it. A clean insert has no projection
+            // entry, so the BEFORE guards clear only rows a REPLACE displaces
+            // through the primary key or a unique index; SQLite does not
+            // reliably fire the delete trigger for a displaced row. A guard
+            // runs before SQLite resolves the conflict, so an OR IGNORE insert
+            // or a conditional upsert that keeps the held row would lose its
+            // entry (SPEC "Built-in FTS5 projections"); the mirror writes
+            // never issue one.
+            let new_id = format!("SELECT CAST(new.{} AS TEXT)", sql.pk);
+            let old_id = format!("SELECT CAST(old.{} AS TEXT)", sql.pk);
+            let displaced: Vec<_> = source
+                .indexes
+                .iter()
+                .filter(|index| index.unique)
+                .map(|index| {
+                    let matches = index
+                        .columns
                         .iter()
-                        .flat_map(|dep| {
-                            sides.iter().map(|side| {
-                                let left = format!("s.{}", quote_ident(&dep.source_column));
-                                let right = format!("{side}.{}", quote_ident(&dep.column));
-                                format!("({left}=+{right} AND +{left}=+{right})")
-                            })
+                        .map(|column| format!("s.{0}=new.{0}", quote_ident(column)))
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    format!(
+                        "SELECT {} FROM {} WHERE {matches} AND s.{pk}!=new.{pk}",
+                        sql.source_id,
+                        sql.from,
+                        pk = sql.pk
+                    )
+                })
+                .collect();
+            let guard: Vec<_> = displaced
+                .iter()
+                .flat_map(|select| sql.clear(select))
+                .collect();
+            let exists: Vec<_> = displaced
+                .iter()
+                .map(|select| format!("EXISTS({select})"))
+                .collect();
+            let fill = sql.fill(&format!("s.{pk}=new.{pk}", pk = sql.pk));
+            let mut triggers = vec![
+                (
+                    "bi",
+                    "BEFORE INSERT",
+                    [
+                        vec![format!(
+                            "EXISTS(SELECT 1 FROM {} WHERE s.{pk}=new.{pk})",
+                            sql.from,
+                            pk = sql.pk
+                        )],
+                        exists.clone(),
+                    ]
+                    .concat(),
+                    [sql.clear(&new_id), guard.clone()].concat(),
+                ),
+                ("ai", "AFTER INSERT", Vec::new(), fill.to_vec()),
+                ("ad", "AFTER DELETE", Vec::new(), sql.clear(&old_id)),
+                (
+                    "au",
+                    "AFTER UPDATE",
+                    Vec::new(),
+                    [sql.clear(&old_id), sql.clear(&new_id), fill.to_vec()].concat(),
+                ),
+            ];
+            if !displaced.is_empty() {
+                triggers.push(("bu", "BEFORE UPDATE", exists, guard));
+            }
+            for (suffix, timing, when, body) in triggers {
+                self.stored(self.conn.execute_batch(
+                    &format!(
+                        "DROP TRIGGER IF EXISTS {trigger}; CREATE TRIGGER {trigger} {timing} ON {}{} BEGIN {}; END",
+                        quote_ident(&source.name),
+                        if when.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" WHEN {}", when.join(" OR "))
+                        },
+                        body.join(";"),
+                        trigger = quote_ident(&format!("_syncular_project_{name}_{suffix}")),
+                    ),
+                ))?;
+            }
+            return Ok(());
+        }
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert(source.name.as_str(), Vec::new());
+        for dep in &spec.dependencies {
+            dependencies.entry(&dep.table).or_default().push(dep);
+        }
+        for (index, (table, columns)) in dependencies.into_iter().enumerate() {
+            for (event, sides) in [
+                ("INSERT", &["new"][..]),
+                ("UPDATE", &["old", "new"][..]),
+                ("DELETE", &["old"][..]),
+            ] {
+                let mut conditions: Vec<_> = columns
+                    .iter()
+                    .flat_map(|dep| {
+                        sides.iter().map(|side| {
+                            let left = format!("s.{}", quote_ident(&dep.source_column));
+                            let right = format!("{side}.{}", quote_ident(&dep.column));
+                            format!("({left}=+{right} AND +{left}=+{right})")
                         })
-                        .collect();
-                    let mut statements = Vec::new();
-                    if table == source.name {
-                        if event != "INSERT" {
-                            let old_id = format!("SELECT CAST(old.{} AS TEXT)", sql.pk);
-                            statements.extend(sql.clear(&old_id));
-                            statements.push(format!(
-                                "DELETE FROM {PENDING} WHERE name={} AND source_id IN ({old_id})",
-                                sql.name
-                            ));
-                        }
-                        if event != "DELETE" {
-                            conditions.push(format!("s.{pk}=new.{pk}", pk = sql.pk));
-                        }
+                    })
+                    .collect();
+                let mut statements = Vec::new();
+                if table == source.name {
+                    if event != "INSERT" {
+                        let old_id = format!("SELECT CAST(old.{} AS TEXT)", sql.pk);
+                        statements.extend(sql.clear(&old_id));
+                        statements.push(format!(
+                            "DELETE FROM {PENDING} WHERE name={} AND source_id IN ({old_id})",
+                            sql.name
+                        ));
                     }
-                    if !conditions.is_empty() {
-                        let condition = conditions.join(" OR ");
-                        statements.extend(sql.clear(&sql.ids(&condition)));
-                        statements.extend(sql.pending(&condition));
+                    if event != "DELETE" {
+                        conditions.push(format!("s.{pk}=new.{pk}", pk = sql.pk));
                     }
-                    self.stored(self.conn.execute(
-                        &format!(
-                            "CREATE TRIGGER {} AFTER {event} ON {} BEGIN {}; END",
-                            quote_ident(&format!("_syncular_project_{name}_{index}_{event}")),
-                            quote_ident(table),
-                            statements.join(";"),
-                        ),
-                        [],
-                    ))?;
                 }
+                if !conditions.is_empty() {
+                    let condition = conditions.join(" OR ");
+                    statements.extend(sql.clear(&sql.ids(&condition)));
+                    statements.extend(sql.pending(&condition));
+                }
+                self.stored(self.conn.execute_batch(&format!(
+                    "DROP TRIGGER IF EXISTS {trigger}; CREATE TRIGGER {trigger} AFTER {event} ON {} BEGIN {}; END",
+                    quote_ident(table),
+                    statements.join(";"),
+                    trigger = quote_ident(&format!("_syncular_project_{name}_{index}_{event}")),
+                )))?;
             }
         }
         Ok(())
@@ -378,6 +554,18 @@ impl SyncClient {
                 message: "unknown local projection".to_owned(),
                 details: Some(json!({"name": name})),
                 retryable: false,
+            })
+            .and_then(|found| {
+                if found.0.built_in() {
+                    return Err(ClientError {
+                        code: "client.projection_invalid".to_owned(),
+                        message: "a built-in local projection fills from its source rows"
+                            .to_owned(),
+                        details: Some(json!({"name": name})),
+                        retryable: false,
+                    });
+                }
+                Ok(found)
             })
     }
 
@@ -714,4 +902,215 @@ fn dependency_statement_clears_three_hundred_fts_rows_in_its_transaction() {
             .len(),
         300
     );
+}
+
+#[cfg(test)]
+#[test]
+fn a_built_in_projection_fills_from_every_source_write_in_external_content_storage() {
+    let schema = json!({"version": 1, "tables": [{"name": "tasks", "primaryKey": "id",
+        "scopes": [{"pattern": "project:{project_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false},
+            {"name": "project_id", "type": "string", "nullable": false},
+            {"name": "code", "type": "string", "nullable": false},
+            {"name": "title", "type": "string", "nullable": true}
+        ],
+        "indexes": [{"name": "tasks_by_code", "columns": ["code"], "unique": true}],
+        "localProjections": [{"name": "tasks_fts", "generation": "1",
+            "columns": [{"name": "title", "declaredType": "string", "source": "title"}],
+            "fts": {"tokenize": "unicode61", "columns": ["title"]}}]}]});
+    let mut client = SyncClient::new("built-in".into(), &schema, ClientLimits::default()).unwrap();
+    let search = |client: &SyncClient, term: &str| -> Vec<String> {
+        client
+            .query(
+                "SELECT m.source_id AS id FROM tasks_fts JOIN _syncular_fts_tasks_fts AS m ON m.id = tasks_fts.rowid WHERE tasks_fts MATCH ?1 ORDER BY m.source_id",
+                &[Value::from(term)],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let count = |client: &SyncClient, table: &str| -> i64 {
+        client
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    client
+        .mutate(vec![Mutation::Upsert {
+            table: "tasks".into(),
+            values: Map::from_iter([
+                ("id".into(), json!("t1")),
+                ("project_id".into(), json!("p1")),
+                ("code".into(), json!("A")),
+                ("title".into(), json!("alpha needle")),
+            ]),
+            base_version: None,
+        }])
+        .unwrap();
+    assert!(client.drain_projection_pending().is_empty());
+    assert_eq!(count(&client, PENDING), 0);
+    assert_eq!(search(&client, "needle"), ["t1"]);
+
+    client
+        .conn
+        .execute_batch(
+            "INSERT INTO tasks VALUES ('t2','p1','B','beta',1);
+             UPDATE tasks SET title='gamma needle' WHERE id='t2';",
+        )
+        .unwrap();
+    assert_eq!(search(&client, "needle"), ["t1", "t2"]);
+    // A primary-key REPLACE and a unique-index REPLACE both drop the
+    // displaced row's entry.
+    client
+        .conn
+        .execute_batch(
+            "INSERT OR REPLACE INTO tasks VALUES ('t1','p1','A','delta',2);
+             INSERT OR REPLACE INTO tasks VALUES ('t3','p1','B','epsilon',1);",
+        )
+        .unwrap();
+    assert!(search(&client, "needle").is_empty());
+    assert_eq!(search(&client, "delta"), ["t1"]);
+    assert_eq!(search(&client, "epsilon"), ["t3"]);
+    client
+        .conn
+        .execute("DELETE FROM tasks WHERE id='t3'", [])
+        .unwrap();
+    assert!(search(&client, "epsilon").is_empty());
+    for table in [
+        "_syncular_projection_tasks_fts",
+        "_syncular_fts_tasks_fts",
+        "tasks_fts_docsize",
+    ] {
+        assert_eq!(count(&client, table), 1, "{table}");
+    }
+    let fts_sql: String = client
+        .conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(fts_sql.contains("content='_syncular_projection_tasks_fts'"));
+
+    let refused = |error: ClientError| {
+        assert_eq!(error.code, "client.projection_invalid");
+        assert_eq!(error.details, Some(json!({"name": "tasks_fts"})));
+    };
+    refused(client.projection_pending("tasks_fts", 10).unwrap_err());
+    refused(client.write_projection("tasks_fts", 0, &[]).unwrap_err());
+    refused(client.invalidate_projection("tasks_fts", None).unwrap_err());
+    refused(
+        client
+            .purge_local_data(&LocalDataPurgeInput {
+                purge_id: "purge-built-in".into(),
+                targets: vec![LocalDataPurgeTarget::Projection {
+                    projection: "tasks_fts".into(),
+                }],
+            })
+            .unwrap_err(),
+    );
+    assert_eq!(search(&client, "delta"), ["t1"]);
+}
+
+#[cfg(test)]
+#[test]
+fn an_open_replaces_a_contentful_fts_table_once_and_rebuilds_on_a_count_mismatch() {
+    let path = std::env::temp_dir()
+        .join(format!("syncular-built-in-{}.db", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned();
+    let mut schema = json!({"version": 1, "tables": [{"name": "tasks", "primaryKey": "id",
+    "scopes": [{"pattern": "project:{project_id}"}], "columns": [
+        {"name": "id", "type": "string", "nullable": false},
+        {"name": "project_id", "type": "string", "nullable": false},
+        {"name": "title", "type": "string", "nullable": false}
+    ]}]});
+    let open = |schema: &Value| {
+        SyncClient::open_path("built-in".into(), schema, ClientLimits::default(), &path).unwrap()
+    };
+    // The storage an earlier release kept for the same declaration.
+    open(&schema)
+        .conn
+        .execute_batch(
+            "INSERT INTO tasks VALUES ('t1','p1','alpha needle',1),('t2','p1','beta needle',1);
+             CREATE VIRTUAL TABLE tasks_fts USING fts5(_syncular_source_id UNINDEXED, title, tokenize='unicode61');
+             CREATE TABLE _syncular_fts_tasks_fts(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE);
+             INSERT INTO tasks_fts(_syncular_source_id,title) SELECT id,title FROM tasks;
+             INSERT INTO _syncular_fts_tasks_fts(id,source_id) SELECT rowid,_syncular_source_id FROM tasks_fts;
+             CREATE TRIGGER tasks_fts_ai AFTER INSERT ON tasks BEGIN INSERT INTO tasks_fts(_syncular_source_id,title) VALUES (new.id,new.title); END;",
+        )
+        .unwrap();
+    schema["tables"][0]["localProjections"] = json!([{"name": "tasks_fts", "generation": "1",
+        "columns": [{"name": "title", "declaredType": "string", "source": "title"}],
+        "fts": {"tokenize": "unicode61", "columns": ["title"]}}]);
+    let search = |client: &SyncClient| -> Vec<String> {
+        client
+            .query(
+                "SELECT m.source_id AS id FROM tasks_fts JOIN _syncular_fts_tasks_fts AS m ON m.id = tasks_fts.rowid WHERE tasks_fts MATCH 'needle' ORDER BY m.source_id",
+                &[],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let mapping = |client: &SyncClient| {
+        client
+            .query(
+                "SELECT rowid, _syncular_source_id FROM _syncular_projection_tasks_fts ORDER BY rowid",
+                &[],
+            )
+            .unwrap()
+    };
+
+    let client = open(&schema);
+    let fts_sql: String = client
+        .conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(fts_sql.contains("content='_syncular_projection_tasks_fts'"));
+    let legacy_trigger: bool = client
+        .conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='tasks_fts_ai')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!legacy_trigger);
+    assert_eq!(search(&client), ["t1", "t2"]);
+    client
+        .conn
+        .execute_batch(
+            "INSERT INTO tasks VALUES ('t3','p1','gamma needle',1);
+             DELETE FROM tasks WHERE id='t1';",
+        )
+        .unwrap();
+    let held = mapping(&client);
+    drop(client);
+
+    // Matching counts: the open keeps the projection as it is.
+    let client = open(&schema);
+    assert_eq!(mapping(&client), held);
+    assert_eq!(search(&client), ["t2", "t3"]);
+    client
+        .conn
+        .execute_batch("DELETE FROM _syncular_projection_tasks_fts WHERE _syncular_source_id='t2'")
+        .unwrap();
+    drop(client);
+
+    // A missing content row: the open rebuilds from the source rows.
+    let client = open(&schema);
+    assert_eq!(search(&client), ["t2", "t3"]);
+    assert_eq!(mapping(&client).len(), 2);
+    drop(client);
+    let _ = std::fs::remove_file(&path);
 }

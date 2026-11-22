@@ -3,8 +3,7 @@ import type { ClientDatabase, SqlValue } from './database';
 import { ClientSyncError, invalidRequest, projectionUnknown } from './errors';
 import { ChangeEmitter } from './invalidation';
 import {
-  ALLOWED_FTS_TOKENIZERS,
-  createFtsStorage,
+  localColumnType,
   quoteIdent,
   tableExists,
   type ClientSchema,
@@ -79,6 +78,8 @@ export interface ProjectionStore {
 type Projection = {
   readonly spec: ClientLocalProjectionSpec;
   readonly source: CompiledClientTable;
+  /** Every column names a source column: the source triggers fill it. */
+  readonly builtin: boolean;
 };
 
 export function compileLocalProjections(
@@ -90,7 +91,13 @@ export function compileLocalProjections(
   for (const table of input.tables) {
     for (const spec of table.localProjections ?? []) {
       if (projections.has(spec.name)) invalidDeclaration(spec.name);
-      projections.set(spec.name, { spec, source: tables.get(table.name)! });
+      projections.set(spec.name, {
+        spec,
+        source: tables.get(table.name)!,
+        builtin:
+          Array.isArray(spec.columns) &&
+          spec.columns.some((column) => column.source !== undefined),
+      });
     }
   }
   validateProjections(tables, projections, names);
@@ -157,13 +164,22 @@ const COLUMN_TYPES = {
   json: 'TEXT',
 } as const;
 
+const ALLOWED_FTS_TOKENIZERS = new Set([
+  'unicode61',
+  'unicode61 remove_diacritics 0',
+  'unicode61 remove_diacritics 1',
+  'unicode61 remove_diacritics 2',
+  'porter unicode61',
+  'trigram',
+]);
+
 function validateProjections(
   tables: CompiledClientSchema['tables'],
   projections: ReadonlyMap<string, Projection>,
   objectNames: ReadonlySet<string>,
 ): void {
   const names = new Set([...objectNames].map((name) => name.toLowerCase()));
-  for (const [name, { spec, source }] of projections) {
+  for (const [name, { spec, source, builtin }] of projections) {
     const identifier = (value: string) =>
       /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value) &&
       !/^(?:_sync|sync_|sqlite_)/i.test(value);
@@ -175,6 +191,7 @@ function validateProjections(
       !Array.isArray(spec.columns) ||
       !spec.columns.length ||
       (spec.dependencies !== undefined && !Array.isArray(spec.dependencies)) ||
+      (builtin && (!spec.fts || spec.dependencies?.length)) ||
       (spec.fts !== undefined &&
         (!spec.fts ||
           !ALLOWED_FTS_TOKENIZERS.has(spec.fts.tokenize) ||
@@ -194,10 +211,17 @@ function validateProjections(
     );
     for (const column of spec.columns) {
       const lower = column.name.toLowerCase();
+      // A mix of sourced and unsourced columns fails on the first unsourced one.
+      const sourceColumn =
+        source.columns[source.columnIndex.get(column.source ?? '') ?? -1];
       if (
         !identifier(column.name) ||
         columns.has(lower) ||
-        column.source !== undefined ||
+        (builtin
+          ? column.declaredType !== 'string' ||
+            !sourceColumn ||
+            localColumnType(sourceColumn) !== 'string'
+          : column.source !== undefined) ||
         'nullable' in column ||
         !Object.hasOwn(COLUMN_TYPES, column.declaredType)
       )
@@ -286,35 +310,55 @@ function openProjections(
     `CREATE INDEX IF NOT EXISTS _syncular_projection_tokens ON ${PENDING}(name,token) WHERE token IS NOT NULL`,
   );
   for (const [name, projection] of projections) {
-    const { spec, source } = projection;
+    const { spec, source, builtin } = projection;
     const sql = projectionSql(projection);
     const columns = spec.columns
       .map((col) => `${quoteIdent(col.name)} ${COLUMN_TYPES[col.declaredType]}`)
       .join(', ');
+    // Releases before 0.102 kept built-in FTS in a contentful table under the
+    // projection name, filled by triggers named after it. The first open with
+    // the projection implementation drops them once; the count comparison
+    // below rebuilds from the source rows.
+    if (
+      builtin &&
+      !db.query(`SELECT 1 FROM ${REGISTRY} WHERE name=?`, [name]).length
+    ) {
+      for (const suffix of ['bi', 'ai', 'ad', 'au', 'bu'])
+        db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${name}_${suffix}`)}`);
+      db.exec(`DROP TABLE IF EXISTS ${sql.relation}`);
+      db.exec(`DROP TABLE IF EXISTS ${sql.identity}`);
+    }
     if (spec.fts) {
       db.exec(
         `CREATE TABLE IF NOT EXISTS ${sql.content}(rowid INTEGER PRIMARY KEY,"_syncular_source_id" TEXT NOT NULL,${columns})`,
       );
       const indexed = spec.fts.columns;
-      createFtsStorage(
-        db,
-        name,
-        spec.columns
+      db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS ${sql.relation} USING fts5("_syncular_source_id" UNINDEXED,${spec.columns
           .map(
             (column) =>
               quoteIdent(column.name) +
               (indexed.includes(column.name) ? '' : ' UNINDEXED'),
           )
-          .join(', '),
-        spec.fts.tokenize,
-        `,content='${`_syncular_projection_${name}`}'`,
+          .join(
+            ',',
+          )},tokenize='${spec.fts.tokenize}',content='_syncular_projection_${name}')`,
+      );
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS ${sql.identity}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
       );
       const count = `(SELECT count(*) FROM ${sql.content})`;
       if (
         db.query(
-          `SELECT ${count}!=(SELECT count(*) FROM ${sql.identity}) OR ${count}!=(SELECT count(*) FROM ${quoteIdent(`${name}_docsize`)}) AS damaged`,
+          `SELECT ${count}!=(SELECT count(*) FROM ${sql.identity}) OR ${count}!=(SELECT count(*) FROM ${quoteIdent(`${name}_docsize`)})${builtin ? ` OR ${count}!=(SELECT count(*) FROM ${quoteIdent(source.name)})` : ''} AS damaged`,
         )[0]?.damaged
       ) {
+        if (builtin) {
+          db.exec(`DELETE FROM ${sql.content}`);
+          db.exec(
+            `INSERT INTO ${sql.content}(${sql.fields}) SELECT ${sql.sourceId},${spec.columns.map((column) => `s.${quoteIdent(column.source!)}`).join(',')} FROM ${sql.from}`,
+          );
+        }
         db.exec(`DELETE FROM ${sql.identity}`);
         db.exec(
           `INSERT INTO ${sql.identity}(id,source_id) SELECT rowid,"_syncular_source_id" FROM ${sql.content}`,
@@ -334,6 +378,61 @@ function openProjections(
       `INSERT INTO ${REGISTRY}(name,generation,fts,epoch) VALUES (?,?,?,?) ON CONFLICT(name) DO UPDATE SET generation=excluded.generation,fts=excluded.fts`,
       [name, spec.generation, Number(!!spec.fts), epoch],
     );
+    if (builtin) {
+      // The source triggers fill the projection from the source row in the
+      // statement that writes it. A clean insert has no projection entry, so
+      // the BEFORE guards clear only rows a REPLACE displaces through the
+      // primary key or a unique index; SQLite does not reliably fire the
+      // delete trigger for a displaced row. A guard runs before SQLite
+      // resolves the conflict, so an OR IGNORE insert or a conditional
+      // upsert that keeps the held row would lose its entry (SPEC "Built-in
+      // FTS5 projections"); Syncular's mirror writes never issue one.
+      const newId = `CAST(new.${sql.pk} AS TEXT)`;
+      const clear = (id: string) => sql.clear(`SELECT ${id}`);
+      const displaced = source.indexes
+        .filter((index) => index.unique)
+        .map(
+          (index) =>
+            `SELECT ${sql.sourceId} FROM ${sql.from} WHERE ${index.columns.map((column) => `s.${quoteIdent(column)}=new.${quoteIdent(column)}`).join(' AND ')} AND s.${sql.pk}!=new.${sql.pk}`,
+        );
+      const insert = [
+        `INSERT INTO ${sql.identity}(source_id) VALUES (${newId})`,
+        `INSERT INTO ${sql.content}(rowid,${sql.fields}) VALUES (last_insert_rowid(),${newId},${spec.columns.map((column) => `new.${quoteIdent(column.source!)}`).join(',')})`,
+        `INSERT INTO ${sql.relation}(rowid,${sql.fields}) SELECT rowid,${sql.fields} FROM ${sql.content} WHERE rowid=last_insert_rowid()`,
+      ];
+      const oldId = `CAST(old.${sql.pk} AS TEXT)`;
+      const triggers: [string, string, string[], string[]][] = [
+        [
+          'bi',
+          'BEFORE INSERT',
+          [
+            `EXISTS(SELECT 1 FROM ${sql.from} WHERE s.${sql.pk}=new.${sql.pk})`,
+            ...displaced.map((select) => `EXISTS(${select})`),
+          ],
+          [...clear(newId), ...displaced.flatMap(sql.clear)],
+        ],
+        ['ai', 'AFTER INSERT', [], insert],
+        ['ad', 'AFTER DELETE', [], clear(oldId)],
+        [
+          'au',
+          'AFTER UPDATE',
+          [],
+          [...clear(oldId), ...clear(newId), ...insert],
+        ],
+      ];
+      if (displaced.length)
+        triggers.push([
+          'bu',
+          'BEFORE UPDATE',
+          displaced.map((select) => `EXISTS(${select})`),
+          displaced.flatMap(sql.clear),
+        ]);
+      for (const [suffix, timing, when, body] of triggers)
+        db.exec(
+          `CREATE TRIGGER ${quoteIdent(`_syncular_project_${name}_${suffix}`)} ${timing} ON ${quoteIdent(source.name)}${when.length ? ` WHEN ${when.join(' OR ')}` : ''} BEGIN ${body.join(';')}; END`,
+        );
+      continue;
+    }
     for (const statement of sql.pending(
       `NOT EXISTS(SELECT 1 FROM ${sql.identity} WHERE ${sql.identityId}=${sql.sourceId}) AND NOT EXISTS(SELECT 1 FROM ${PENDING} WHERE name=${sql.name} AND source_id=${sql.sourceId})`,
     ))
@@ -416,6 +515,7 @@ function projectionSql({ spec, source }: Projection) {
     relation,
     pk,
     sourceId,
+    from,
     identity,
     identityId,
     content,
@@ -444,7 +544,15 @@ function requireProjection(
   projections: ReadonlyMap<string, Projection>,
   name: string,
 ): Projection {
-  return projections.get(name) ?? projectionUnknown(name);
+  const projection = projections.get(name) ?? projectionUnknown(name);
+  if (projection.builtin)
+    throw new ClientSyncError(
+      'client.projection_invalid',
+      'a built-in local projection fills from its source rows',
+      false,
+      { name },
+    );
+  return projection;
 }
 
 function projectionPending(

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { cpus, platform } from 'node:os';
 import { parseArgs } from 'node:util';
 import { SyncClient } from '../../packages/web-client/src/client';
+import { compileLocalProjections } from '../../packages/web-client/src/projection';
 import { ReactiveClientStore } from '../../packages/web-client/src/reactive-store';
 import { BunClientDatabase } from '../../packages/web-client/src/bun-database';
 import {
@@ -94,16 +95,20 @@ export async function runResponsiveness(
           columns,
           primaryKey: 'id',
           scopes: ['project:{project_id}'],
-          ftsIndexes: [
+          localProjections: [
             {
               name: 'catalogue_fts',
-              columns: ['title'],
-              tokenize: 'unicode61',
+              generation: '1',
+              columns: [
+                { name: 'title', declaredType: 'string', source: 'title' },
+              ],
+              fts: { tokenize: 'unicode61', columns: ['title'] },
             },
           ],
         },
       ],
     },
+    createProjections: compileLocalProjections,
     transport: async () => {
       await hold;
       const bootstrap = !delivered;
@@ -225,7 +230,7 @@ export async function runResponsiveness(
           id: 'cached-code',
           sql: 'SELECT id FROM catalogue ORDER BY id LIMIT 1',
           dependencies: [{ table: 'catalogue' }],
-          coverage: [{ base, units: ['p1'] }],
+          coverage: [{ table: 'catalogue', base, units: ['p1'] }],
         });
         unsubscribe = entry.subscribe(() => {});
         for (let turn = 0; turn < 20; turn++) await Promise.resolve();

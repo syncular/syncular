@@ -969,7 +969,6 @@ mod naming_tests {
             pk_index: 0,
             scope_variables: Vec::new(),
             indexes: Vec::new(),
-            fts_indexes: Vec::new(),
             local_projections: Vec::new(),
             encrypted_columns: vec![EncryptedColumn {
                 index: 2,
@@ -1028,7 +1027,6 @@ mod naming_tests {
             pk_index: 0,
             scope_variables: Vec::new(),
             indexes: Vec::new(),
-            fts_indexes: Vec::new(),
             local_projections: Vec::new(),
             encrypted_columns: Vec::new(),
             server_owned_columns: Vec::new(),
@@ -1164,7 +1162,6 @@ mod sparse_key_tests {
             pk_index: 0,
             scope_variables: Vec::new(),
             indexes: Vec::new(),
-            fts_indexes: Vec::new(),
             local_projections: Vec::new(),
             encrypted_columns: vec![EncryptedColumn {
                 index: 2,

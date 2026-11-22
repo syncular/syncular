@@ -25,7 +25,6 @@ function table(
     scopes: [],
     references: [],
     indexes,
-    ftsIndexes: [],
     extensions: {},
   };
 }

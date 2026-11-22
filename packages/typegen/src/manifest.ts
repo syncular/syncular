@@ -321,7 +321,7 @@ function parseLocalProjection(
       const type = column.declaredType;
       if (
         Object.keys(column).some(
-          (key) => key !== 'name' && key !== 'declaredType',
+          (key) => !['name', 'declaredType', 'source'].includes(key),
         )
       )
         return invalid(columnName);
@@ -333,7 +333,15 @@ function parseLocalProjection(
         type !== 'json'
       )
         return invalid(columnName);
-      return { name: columnName, declaredType: type };
+      return {
+        name: columnName,
+        declaredType: type,
+        ...(column.source === undefined
+          ? {}
+          : {
+              source: asString(column.source, 'local projection column source'),
+            }),
+      };
     },
   );
   let fts: IrLocalProjection['fts'];

@@ -56,8 +56,59 @@ decisions are open. The TypeScript implementation is the opt-in entry
 
 [Replace a pending commit](https://syncular.dev/reference-outbox-outcomes/#replace-a-pending-commit)
 
+### One projection mechanism for local search
+
+Built-in FTS search is now a built-in local projection: typegen turns a
+`CREATE VIRTUAL TABLE … USING fts5` declaration into a `localProjections`
+entry whose columns name their `source` columns, and the client stores it in
+the external-content form app-filled projections use. The owner table's
+triggers fill the content row in the same statement, so a built-in projection
+has no pending work, tokens or epoch. Query lowering for `MATCH` and the
+generated query SQL are unchanged.
+
+[Local full-text search](https://syncular.dev/tooling-local-search/)
+
+### Index changes without a table reset
+
+Declared indexes and local projections no longer feed the table generation,
+and a migration that only creates or drops an index or declares an FTS
+projection names no table. The client creates, recreates and drops the
+declared indexes it created at every open and after every reset, and never
+drops an index the app created.
+
+[Schema upgrades](https://syncular.dev/concepts-schema-upgrades/)
+
 ### Upgrading
 
+- **One-time resets, once, at the first open of 0.102.0.** These tables take a
+  new generation, so the first open after the upgrade resets exactly them,
+  bootstraps them again and replays the outbox on top; every other table and
+  its units stay:
+  - every table that declares a secondary index, because declared indexes left
+    the generation hash;
+  - every table that owns an FTS projection, because FTS projections left the
+    generation hash and became built-in local projections;
+  - every table a migration names only in a `CREATE INDEX`, `DROP INDEX` or
+    fts5 `CREATE VIRTUAL TABLE` statement, because those statements no longer
+    name a table.
+
+  The old contentful FTS tables are dropped and rebuilt in the
+  external-content form in the same step. After this one reset, index and
+  projection changes reset nothing.
+- **TypeScript apps with FTS add the projection implementation.** FTS search is
+  a projection, so a schema with FTS needs it, like app-filled projections:
+
+  ```ts
+  import { compileLocalProjections } from '@syncular/client/projections';
+  new SyncClient({ ...config, createProjections: compileLocalProjections });
+  startSyncWorker({ createProjections: compileLocalProjections });
+  ```
+
+  Without it, construction fails with `client.schema_invalid` and
+  `{ reason: "projections_unavailable" }`. Rust, Tauri and FFI hosts need no
+  change.
+- Regenerate with typegen: `ftsIndexes` is gone from the IR and the generated
+  schema.
 - `transportEnabled: false` becomes `transportGate: 'closed'` on the direct
   client, worker handles, Tauri and the native `create` command.
 - `setTransportEnabled(true)` and `setTransportEnabled(false)` become

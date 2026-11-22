@@ -72,6 +72,26 @@ const TASKS_BY_TEAM: DriverSchema = {
   ],
 };
 
+/** §7.4.3: version 2 only declares an index on `tasks`; the generation
+ * excludes indexes, so it stays. */
+const INDEX_V1: DriverSchema = {
+  version: 1,
+  tables: [
+    { ...(FIXTURE_SCHEMA.tables[0] as DriverTable), generation: 'tasks-1' },
+    { ...(FIXTURE_SCHEMA.tables[1] as DriverTable), generation: 'docs-1' },
+  ],
+};
+const INDEX_V2: DriverSchema = {
+  version: 2,
+  tables: [
+    {
+      ...(INDEX_V1.tables[0] as DriverTable),
+      indexes: [{ name: 'tasks_by_title', columns: ['title'], unique: false }],
+    },
+    INDEX_V1.tables[1] as DriverTable,
+  ],
+};
+
 /** §3.1 re-key: version 2 adds a second scope pattern to `docs`; `tasks`
  * keeps its patterns and its generation. */
 const REKEY_V1: DriverSchema = {
@@ -250,6 +270,81 @@ function restrictsSent(a: ClientHandle, from: number): unknown[] {
 }
 
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    // §7.4.3 declared indexes: an index-only change reconciles in place and
+    // resets no table and no unit.
+    name: 'schema-bump/an-index-only-change-keeps-the-table',
+    specRefs: ['§7.4.3'],
+    server: { schema: INDEX_V1 },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'one')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: INDEX_V1,
+        allowed: { project_id: ['p1'] },
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      const kept = await unitProgress(a, U1);
+      await ctx.server.restart(INDEX_V2);
+      await ctx.recreateClient(a, INDEX_V2);
+      checkEqual(
+        await unitProgress(a, U1),
+        kept,
+        'the unit keeps its state across the index-only bump',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the table keeps its rows',
+      );
+      const indexes = await a.api.querySnapshot?.(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'tasks_by_title'",
+      );
+      if (indexes !== undefined)
+        checkEqual(
+          indexes.rows,
+          [{ name: 'tasks_by_title' }],
+          'the declared index exists',
+        );
+      await ctx.server.setAllowedScopes('writer', { project_id: ['p1'] });
+      const t2 = await ctx.rawSync(
+        'writer',
+        [
+          rawPushCommit('t2', [
+            rawUpsert(INDEX_V2, 'tasks', task('t2', 'p1', 'two')),
+          ]),
+        ],
+        { clientId: 'writer', schemaVersion: INDEX_V2.version },
+      );
+      check(t2.ok, 't2 commits after the bump');
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1', 't2'],
+        'the kept unit keeps pulling',
+      );
+      // Version 3 no longer declares the index: the client drops the index
+      // it created, and still keeps the table.
+      await ctx.server.restart({ ...INDEX_V1, version: 3 });
+      await ctx.recreateClient(a, { ...INDEX_V1, version: 3 });
+      checkEqual(
+        (
+          await a.api.querySnapshot?.(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'tasks_by_title'",
+          )
+        )?.rows ?? [],
+        [],
+        'a stale declared index is dropped',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1', 't2'],
+        'dropping an index keeps the table',
+      );
+    },
+  },
   {
     // §7.4.3, §4.7: a unit covering a kept and a changed table bootstraps the
     // changed table only and joins the scan at its kept cursor.

@@ -276,20 +276,17 @@ function tableInfo(ir: IrDocument, name: string): readonly ColumnInfo[] {
   const table = ir.tables.find((candidate) => candidate.name === name);
   if (table !== undefined) return table.columns;
   for (const owner of ir.tables) {
-    const fts = owner.ftsIndexes.find((candidate) => candidate.name === name);
-    if (fts !== undefined) {
+    const projection = owner.localProjections?.find(
+      (candidate) => candidate.name === name,
+    );
+    if (projection !== undefined) {
       return [
         { name: '_syncular_source_id', type: 'string', nullable: false },
-        ...fts.columns.map((column) => {
-          const source = owner.columns.find(
-            (candidate) => candidate.name === column,
-          );
-          return {
-            name: column,
-            type: source?.type ?? 'string',
-            nullable: source?.nullable ?? true,
-          };
-        }),
+        ...projection.columns.map((column) => ({
+          name: column.name,
+          type: column.declaredType === 'real' ? 'float' : column.declaredType,
+          nullable: true,
+        })),
       ];
     }
   }
@@ -327,12 +324,12 @@ function tableCompletions(ir: IrDocument): readonly SyqlCompletion[] {
       kind: 'table',
       detail: `${table.columns.length} columns · primary key ${table.primaryKey}`,
     });
-    for (const fts of table.ftsIndexes) {
+    for (const projection of table.localProjections ?? []) {
       completions.push({
-        label: fts.name,
-        insertText: fts.name,
+        label: projection.name,
+        insertText: projection.name,
         kind: 'table',
-        detail: `FTS5 projection of ${table.name}`,
+        detail: `${projection.fts ? 'FTS5 projection' : 'projection'} of ${table.name}`,
       });
     }
   }

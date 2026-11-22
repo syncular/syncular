@@ -25,16 +25,24 @@ it. This behavior is automatic, independent of `retainFailedCommits`. The core
 requests a following pull without relying on an origin realtime notification.
 See [optimistic writes](https://syncular.dev/concepts-conflicts/#the-optimistic-outbox).
 
-## Client-local FTS5 projections
+## Built-in FTS5 projections
 
-Generated schemas may attach `ftsIndexes` to a synced table. The
-client materializes each as a contentful local FTS5 table with a private stable
-source identity and insert/update/delete triggers. Existing visible rows are
-bulk-indexed on first creation; schema reset recreates the projection. The FTS
-table is a read-only application query surface: it is never synced, subscribed,
-or mutated. A missing FTS5 build fails schema setup explicitly—Syncular does
-not substitute an unbounded `LIKE` scan. Indexed fields must be non-encrypted
-strings.
+Typegen turns an `fts` declaration into a built-in local projection: every
+projection column names a string source column. The client stores it as an
+external-content FTS5 table under the projection name, with its content in
+`_syncular_projection_<name>` and the source-ID mapping in
+`_syncular_fts_<name>`. Triggers on the source table write the content row and
+the index entry in the statement that writes the source row, and remove them
+with it. Every open compares the content, mapping and index counts with the
+source row count and rebuilds from the source rows on a mismatch. A missing
+FTS5 build fails schema setup; Syncular does not substitute a `LIKE` scan.
+Encrypted string columns index the decrypted local plaintext.
+
+Built-in projections run in the projection implementation. Pass
+`createProjections` from `@syncular/client/projections` to `SyncClient`, or
+to `startSyncWorker` in a worker, whenever the schema declares a projection.
+Without it, construction fails with `client.schema_invalid` and
+`{ reason: 'projections_unavailable' }`.
 
 ## Browser modes — there are exactly two
 

@@ -1747,8 +1747,9 @@ fn a_section_boundary_ends_the_previous_payload_without_inventing_totals() {
 fn generated(version: i32, tasks: Option<&str>, notes: Option<&str>) -> Value {
     let mut schema = schema();
     schema["version"] = json!(version);
-    schema["tables"][1]["ftsIndexes"] =
-        json!([{"name": "notes_fts", "columns": ["body"], "tokenize": "unicode61"}]);
+    schema["tables"][1]["localProjections"] = json!([{"name": "notes_fts", "generation": "1",
+        "columns": [{"name": "body", "declaredType": "string", "source": "body"}],
+        "fts": {"tokenize": "unicode61", "columns": ["body"]}}]);
     if let Some(generation) = tasks {
         schema["tables"][0]["generation"] = json!(generation);
     }
@@ -2755,4 +2756,128 @@ fn an_explicit_unit_finishing_a_zero_row_bootstrap_publishes_its_derived_window_
         .all(|name| name == &(base_key.clone(), vec!["p1".to_owned()])));
     assert!(completed.iter().all(|batch| batch.tables.is_empty()));
     assert!(h.unit(&p1()).cursor.is_none());
+}
+
+#[test]
+fn declared_indexes_reconcile_in_place_and_an_index_only_bump_keeps_rows_and_units() {
+    let path = generation_db("declared-indexes");
+    let pending = synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE INDEX app_tasks ON tasks(project_id)")
+        .unwrap();
+    let with_index = |version: i32, columns: &[&str], unique: bool| {
+        let mut schema = generated(version, Some("t1"), Some("n1"));
+        schema["tables"][0]["indexes"] =
+            json!([{"name": "tasks_by_title", "columns": columns, "unique": unique}]);
+        schema
+    };
+    let open = |schema: &Value| {
+        SyncClient::open_path(
+            "units-client".into(),
+            schema,
+            ClientLimits::default(),
+            &path,
+        )
+        .unwrap()
+    };
+    // (table, unique, columns) of an index, read from SQLite.
+    let definition = |client: &SyncClient, name: &str| {
+        let table: Option<(String, bool)> = client
+            .conn
+            .query_row(
+                "SELECT m.tbl_name, l.\"unique\" FROM sqlite_master AS m JOIN pragma_index_list(m.tbl_name) AS l ON l.name = m.name WHERE m.type = 'index' AND m.name = ?1",
+                [name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap();
+        table.map(|(table, unique)| {
+            let columns = client
+                .conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+                .unwrap()
+                .query_map([name], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            (table, unique, columns)
+        })
+    };
+
+    // §7.4.3: an index-only change keeps the generation, so the bump keeps
+    // both tables, their rows and every unit, and creates the index on both
+    // halves.
+    let h = Harness::over(open(&with_index(2, &["title"], false)));
+    assert_eq!(h.ids("tasks"), vec!["t1"]);
+    assert_eq!(h.ids("notes"), vec!["n1", "n2"]);
+    assert_eq!(base_ids(&h.client, "tasks"), vec!["t1"]);
+    assert_eq!(h.client.pending_commit_ids(), vec![pending]);
+    for unit in [org(), p1()] {
+        assert_eq!(h.unit(&unit).cursor, None, "the unit stays live");
+        assert_eq!(h.unit(&unit).restriction, None);
+    }
+    assert_eq!(
+        definition(&h.client, "tasks_by_title"),
+        Some(("tasks".to_owned(), false, vec!["title".to_owned()]))
+    );
+    assert_eq!(
+        definition(&h.client, "_syncular_base_tasks_by_title"),
+        Some((
+            "_syncular_base_tasks".to_owned(),
+            false,
+            vec!["title".to_owned()]
+        ))
+    );
+    assert_eq!(
+        h.client.get_meta("localIndexes").unwrap().as_deref(),
+        Some(r#"{"tasks":["tasks_by_title"]}"#)
+    );
+    drop(h);
+
+    // A changed definition is dropped and recreated at a same-version open.
+    let client = open(&with_index(2, &["project_id", "title"], true));
+    assert_eq!(
+        definition(&client, "tasks_by_title"),
+        Some((
+            "tasks".to_owned(),
+            true,
+            vec!["project_id".to_owned(), "title".to_owned()]
+        ))
+    );
+    drop(client);
+
+    // A declared index the schema drops goes; the application index stays.
+    let client = open(&generated(2, Some("t1"), Some("n1")));
+    assert_eq!(definition(&client, "tasks_by_title"), None);
+    assert_eq!(definition(&client, "_syncular_base_tasks_by_title"), None);
+    assert!(definition(&client, "app_tasks").is_some());
+    assert_eq!(
+        client.get_meta("localIndexes").unwrap().as_deref(),
+        Some("{}")
+    );
+    drop(client);
+
+    // A replica without the record adopts the declared indexes that exist and
+    // never an application index.
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE INDEX tasks_by_title ON tasks(title);
+         DELETE FROM _syncular_meta WHERE key = 'localIndexes';",
+    )
+    .unwrap();
+    drop(conn);
+    let client = open(&with_index(2, &["title"], false));
+    assert!(definition(&client, "app_tasks").is_some());
+    assert_eq!(
+        client.get_meta("localIndexes").unwrap().as_deref(),
+        Some(r#"{"tasks":["tasks_by_title"]}"#)
+    );
+    drop(client);
+    let client = open(&generated(2, Some("t1"), Some("n1")));
+    assert_eq!(definition(&client, "tasks_by_title"), None);
+    assert!(definition(&client, "app_tasks").is_some());
+    assert_eq!(client.query("SELECT id FROM tasks", &[]).unwrap().len(), 1);
+    drop(client);
+    let _ = std::fs::remove_file(&path);
 }

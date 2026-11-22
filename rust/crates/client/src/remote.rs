@@ -920,9 +920,9 @@ mod tests {
                     column: None,
                 }],
                 indexes: Vec::new(),
-                fts_indexes: Vec::new(),
                 local_projections: Vec::new(),
                 generation: None,
+                fts_indexes: None,
             }],
         })
         .expect("schema compiles")

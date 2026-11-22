@@ -59,19 +59,19 @@ Schema validation refusals leave the replica's journal mode and contents untouch
 
 | Kept | Wiped and rebuilt |
 |---|---|
-| The outbox (schema-independent by design, §0 and §7.1) | Every synced table whose generation changed or is absent, with its secondary indexes and FTS projections |
+| The outbox (schema-independent by design, §0 and §7.1) | Every synced table whose generation changed or is absent, with its FTS projections |
 | The client identity (`clientId`) | The cursor, resume token and status of every unit that covers a wiped table |
 | The auth lease (`leaseState`) | Incompatible units and their window bookkeeping |
-| Every table whose generation is unchanged, with its rows and indexes | |
+| Every table whose generation is unchanged, with its rows; the client creates and drops its declared indexes in place | |
 | The state of every unit that covers only unchanged tables | |
 | The registration and echo of every other compatible unit, reset to cursor `-1` | |
 | The kept cursor of every live or caught-up unit that also covers an unchanged table | |
 
 ### Which tables the reset keeps
 
-`typegen` gives each table a `generation` in the generated schema (SPEC §7.4.3). It is a hash of the table's columns, primary key, scope patterns, references, indexes and FTS projections, and of the names of every migration with a statement that names the table. The client persists the generations beside its schema-version marker. At a bump it keeps a table whose generation is present and equal to the persisted one: its rows stay, and its FTS projections are rebuilt from those rows. Every other table is dropped and recreated.
+`typegen` gives each table a `generation` in the generated schema (SPEC §7.4.3). It is a hash of the table's columns, primary key, scope patterns and references, and of the names of every migration with a statement that names the table. Declared indexes and FTS projections are not part of it, and a statement that only creates or drops an index or declares an FTS projection names no table. The client persists the generations beside its schema-version marker. At a bump it keeps a table whose generation is present and equal to the persisted one: its rows stay, and its FTS projections are rebuilt from those rows. Every other table is dropped and recreated.
 
-Migration SQL cannot change rows: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a migration, so every data change reaches clients through the change log ([Data changes and backfills](/guide-schema/#data-changes-and-backfills)). A migration that names a table, even one that only adds an index or a column whose name matches the table, changes that table's generation and resets it. A schema written by hand has no generations, and a replica written before 0.77 persisted none: its next bump resets every table, as before. One open at the unchanged schema version on a build that writes generations records them, so the bump after that keeps unchanged tables.
+Migration SQL cannot change rows: `typegen` refuses `UPDATE`, `INSERT` and `DELETE` in a migration, so every data change reaches clients through the change log ([Data changes and backfills](/guide-schema/#data-changes-and-backfills)). A migration that names a table, even one that only adds a column whose name matches the table, changes that table's generation and resets it. A migration that only adds or drops an index does not: the client reconciles declared indexes at open without a reset. A schema written by hand has no generations, and a replica written before 0.77 persisted none: its next bump resets every table, as before. One open at the unchanged schema version on a build that writes generations records them, so the bump after that keeps unchanged tables.
 
 A unit keeps its cursor, echo and status only when every table it covers, under the old schema and the new one, is kept. The replica cursor stays while at least one kept unit is live.
 

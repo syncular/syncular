@@ -1,4 +1,4 @@
-/** Client-local FTS5 projections. */
+/** Built-in FTS5 projections: the source triggers fill external content. */
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
@@ -8,6 +8,7 @@ import {
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { compileLocalProjections } from '@syncular/client/projections';
 import { applySqliteSegment } from '../src/apply';
 
 const SCHEMA: ClientSchema = {
@@ -23,16 +24,26 @@ const SCHEMA: ClientSchema = {
       ],
       primaryKey: 'id',
       scopes: ['release:{release_id}'],
-      ftsIndexes: [
+      localProjections: [
         {
           name: 'catalogue_codes_fts',
-          columns: ['code', 'title'],
-          tokenize: 'unicode61 remove_diacritics 2',
+          generation: '1',
+          columns: [
+            { name: 'code', declaredType: 'string', source: 'code' },
+            { name: 'title', declaredType: 'string', source: 'title' },
+          ],
+          fts: {
+            tokenize: 'unicode61 remove_diacritics 2',
+            columns: ['code', 'title'],
+          },
         },
       ],
     },
   ],
 };
+
+const compile = (schema: ClientSchema) =>
+  compileClientSchema(schema, compileLocalProjections);
 
 function search(db: BunClientDatabase, query: string): string[] {
   return db
@@ -88,11 +99,11 @@ function catalogueImage(
   }
 }
 
-describe('client-local FTS5 projections', () => {
+describe('built-in FTS5 projections', () => {
   test('an image range applied again keeps every held row findable', async () => {
     const db = new BunClientDatabase();
     try {
-      const compiled = compileClientSchema(SCHEMA);
+      const compiled = compile(SCHEMA);
       ensureLocalSchema(db, compiled);
       const apply = (titles: readonly string[], version: number) =>
         applySqliteSegment(
@@ -134,17 +145,46 @@ describe('client-local FTS5 projections', () => {
     }
   });
 
-  test('an open rebuilds a projection missing entries for held rows', () => {
+  test('the projection stores external content and an open rebuilds it on a count mismatch', () => {
     const db = new BunClientDatabase();
     try {
-      const compiled = compileClientSchema(SCHEMA);
+      const compiled = compile(SCHEMA);
       ensureLocalSchema(db, compiled);
+      expect(
+        db.query(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('catalogue_codes_fts','_syncular_projection_catalogue_codes_fts','_syncular_fts_catalogue_codes_fts') ORDER BY name",
+        ),
+      ).toEqual([
+        { name: '_syncular_fts_catalogue_codes_fts' },
+        { name: '_syncular_projection_catalogue_codes_fts' },
+        { name: 'catalogue_codes_fts' },
+      ]);
+      expect(
+        String(
+          db.query(
+            "SELECT sql FROM sqlite_master WHERE name='catalogue_codes_fts'",
+          )[0]?.sql,
+        ),
+      ).toContain("content='_syncular_projection_catalogue_codes_fts'");
       db.exec(
         "INSERT INTO catalogue_codes VALUES ('c1','r1','A01','Cholera',1),('c2','r1','B01','Typhoid',1)",
       );
-      // A guard that deletes without a replacement, as releases before
-      // 0.78.2 did for an image row held at its own version.
-      db.exec("DELETE FROM catalogue_codes_fts WHERE _syncular_source_id='c2'");
+      expect(
+        db.query(
+          'SELECT "_syncular_source_id" AS id, code, title FROM _syncular_projection_catalogue_codes_fts ORDER BY id',
+        ),
+      ).toEqual([
+        { id: 'c1', code: 'A01', title: 'Cholera' },
+        { id: 'c2', code: 'B01', title: 'Typhoid' },
+      ]);
+      // Damage: c2 loses its index entry, content row and mapping.
+      db.exec('DROP TRIGGER _syncular_project_catalogue_codes_fts_ad');
+      db.exec(
+        'INSERT INTO catalogue_codes_fts(catalogue_codes_fts,rowid,"_syncular_source_id",code,title) SELECT \'delete\',rowid,"_syncular_source_id",code,title FROM _syncular_projection_catalogue_codes_fts WHERE "_syncular_source_id"=\'c2\'',
+      );
+      db.exec(
+        'DELETE FROM _syncular_projection_catalogue_codes_fts WHERE "_syncular_source_id"=\'c2\'',
+      );
       db.exec(
         "DELETE FROM _syncular_fts_catalogue_codes_fts WHERE source_id='c2'",
       );
@@ -155,32 +195,6 @@ describe('client-local FTS5 projections', () => {
       expect(rawFtsHits(db, 'cholera OR typhoid')).toEqual(['c1', 'c2']);
       db.exec("DELETE FROM catalogue_codes WHERE id='c2'");
       expect(rawFtsHits(db, 'cholera OR typhoid')).toEqual(['c1']);
-    } finally {
-      db.close();
-    }
-  });
-
-  test('an existing projection gains an indexed identity map without rebuilding rows', () => {
-    const db = new BunClientDatabase();
-    try {
-      const compiled = compileClientSchema(SCHEMA);
-      ensureLocalSchema(db, compiled);
-      db.exec(
-        "INSERT INTO catalogue_codes VALUES ('c1','r1','A01','Cholera',7)",
-      );
-      const before = db.query('SELECT rowid, * FROM catalogue_codes_fts');
-      db.exec('DROP TABLE _syncular_fts_catalogue_codes_fts');
-      // An existing projection must only be read when upgrading its mapping.
-      db.exec(
-        "CREATE TRIGGER forbid_rebuild BEFORE UPDATE ON catalogue_codes BEGIN SELECT RAISE(ABORT,'source changed'); END",
-      );
-      ensureLocalSchema(db, compiled);
-      expect(db.query('SELECT rowid, * FROM catalogue_codes_fts')).toEqual(
-        before,
-      );
-      expect(
-        db.query('SELECT id, source_id FROM _syncular_fts_catalogue_codes_fts'),
-      ).toEqual([{ id: before[0]!.rowid!, source_id: 'c1' }]);
       const plan = db.db.prepare(
         'EXPLAIN QUERY PLAN SELECT rowid FROM catalogue_codes_fts WHERE rowid = (SELECT id FROM _syncular_fts_catalogue_codes_fts WHERE source_id = ?)',
       );
@@ -188,6 +202,50 @@ describe('client-local FTS5 projections', () => {
       plan.finalize();
       expect(details).toContain('COVERING INDEX');
       expect(details).toContain('INDEX 0:=');
+    } finally {
+      db.close();
+    }
+  });
+
+  test('an old contentful FTS replica is dropped and rebuilt once', () => {
+    const db = new BunClientDatabase();
+    try {
+      // The layout releases before 0.102 created for a built-in projection.
+      db.exec(
+        'CREATE TABLE catalogue_codes(id TEXT PRIMARY KEY, release_id TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, _sync_version INTEGER NOT NULL DEFAULT 0)',
+      );
+      db.exec(
+        'CREATE VIRTUAL TABLE catalogue_codes_fts USING fts5("_syncular_source_id" UNINDEXED,code,title,tokenize=\'unicode61 remove_diacritics 2\')',
+      );
+      db.exec(
+        'CREATE TABLE _syncular_fts_catalogue_codes_fts(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)',
+      );
+      db.exec(
+        'CREATE TRIGGER catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN INSERT INTO _syncular_fts_catalogue_codes_fts(source_id) VALUES (new.id); INSERT INTO catalogue_codes_fts(rowid,"_syncular_source_id",code,title) VALUES (last_insert_rowid(),new.id,new.code,new.title); END',
+      );
+      db.exec(
+        "INSERT INTO catalogue_codes(id,release_id,code,title) VALUES ('c1','r1','A01','Cholera'),('c2','r1','B01','Typhoid')",
+      );
+      const compiled = compile(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      expect(
+        db.query(
+          "SELECT name FROM sqlite_master WHERE type='trigger' AND name NOT LIKE '_syncular_project_%'",
+        ),
+      ).toEqual([]);
+      expect(search(db, 'cholera OR typhoid')).toEqual(['c1', 'c2']);
+      expect(
+        db.query(
+          'SELECT count(*) AS n FROM _syncular_projection_catalogue_codes_fts',
+        ),
+      ).toEqual([{ n: 2 }]);
+      // The second open neither drops nor refills the projection.
+      db.exec(
+        "CREATE TRIGGER forbid_refill BEFORE INSERT ON _syncular_projection_catalogue_codes_fts BEGIN SELECT RAISE(ABORT,'refilled'); END",
+      );
+      ensureLocalSchema(db, compiled);
+      expect(search(db, 'cholera OR typhoid')).toEqual(['c1', 'c2']);
+      db.exec('DROP TRIGGER forbid_refill');
       expect(() =>
         db.transaction(() => {
           db.exec("DELETE FROM catalogue_codes WHERE id='c1'");
@@ -195,14 +253,11 @@ describe('client-local FTS5 projections', () => {
         }),
       ).toThrow('rollback');
       expect(search(db, 'cholera')).toEqual(['c1']);
-      expect(
-        db.query('SELECT count(*) AS n FROM _syncular_fts_catalogue_codes_fts'),
-      ).toEqual([{ n: 1 }]);
       db.exec("DELETE FROM catalogue_codes WHERE id='c1'");
       expect(search(db, 'cholera')).toEqual([]);
       expect(
-        db.query('SELECT * FROM _syncular_fts_catalogue_codes_fts'),
-      ).toEqual([]);
+        db.query('SELECT source_id FROM _syncular_fts_catalogue_codes_fts'),
+      ).toEqual([{ source_id: 'c2' }]);
     } finally {
       db.close();
     }
@@ -210,7 +265,7 @@ describe('client-local FTS5 projections', () => {
 
   test('initial build and insert/update/delete stay transactionally current', () => {
     const db = new BunClientDatabase();
-    const compiled = compileClientSchema(SCHEMA);
+    const compiled = compile(SCHEMA);
     // Simulate content created before a newly-added projection is ensured.
     db.exec(
       `CREATE TABLE catalogue_codes(id TEXT PRIMARY KEY, release_id TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, _sync_version INTEGER NOT NULL DEFAULT 0)`,
@@ -222,10 +277,10 @@ describe('client-local FTS5 projections', () => {
     expect(search(db, 'cholera')).toEqual(['c1']);
 
     const insertTrigger = db.query(
-      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_ai'",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_ai'",
     )[0]?.sql;
     const replaceGuard = db.query(
-      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+      "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_bi'",
     )[0]?.sql;
     expect(String(insertTrigger)).not.toContain('DELETE FROM');
     expect(String(replaceGuard)).toContain('BEFORE INSERT');
@@ -264,12 +319,12 @@ describe('client-local FTS5 projections', () => {
 
   test('ensure is idempotent and schema reset recreates a working projection', () => {
     const db = new BunClientDatabase();
-    const compiled = compileClientSchema(SCHEMA);
+    const compiled = compile(SCHEMA);
     ensureLocalSchema(db, compiled);
-    db.exec('DROP TRIGGER catalogue_codes_fts_bi');
-    db.exec('DROP TRIGGER catalogue_codes_fts_ai');
+    db.exec('DROP TRIGGER _syncular_project_catalogue_codes_fts_bi');
+    db.exec('DROP TRIGGER _syncular_project_catalogue_codes_fts_ai');
     db.exec(
-      `CREATE TRIGGER catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN
+      `CREATE TRIGGER _syncular_project_catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN
         DELETE FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
         INSERT INTO catalogue_codes_fts (_syncular_source_id, code, title)
           VALUES (CAST(new.id AS TEXT), new.code, new.title);
@@ -279,13 +334,13 @@ describe('client-local FTS5 projections', () => {
     expect(
       String(
         db.query(
-          "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_ai'",
+          "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_ai'",
         )[0]?.sql,
       ),
     ).not.toContain('DELETE FROM');
     expect(
       db.query(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_bi'",
       ),
     ).toHaveLength(1);
     db.exec(
@@ -316,7 +371,7 @@ describe('client-local FTS5 projections', () => {
       ],
     };
     const db = new BunClientDatabase();
-    ensureLocalSchema(db, compileClientSchema(schema));
+    ensureLocalSchema(db, compile(schema));
     db.exec(
       `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
     );
@@ -365,7 +420,7 @@ describe('client-local FTS5 projections', () => {
       ],
     };
     const db = new BunClientDatabase();
-    ensureLocalSchema(db, compileClientSchema(schema));
+    ensureLocalSchema(db, compile(schema));
     // Same code in two releases coexists under the composite unique key.
     db.exec(
       `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
@@ -401,13 +456,13 @@ describe('client-local FTS5 projections', () => {
         },
       ],
     };
-    const compiled = compileClientSchema(schema);
+    const compiled = compile(schema);
     const db = new BunClientDatabase();
     ensureLocalSchema(db, compiled);
     // Simulate a database written by the pk-only guard generation.
-    db.exec('DROP TRIGGER catalogue_codes_fts_bi');
+    db.exec('DROP TRIGGER _syncular_project_catalogue_codes_fts_bi');
     db.exec(
-      `CREATE TRIGGER catalogue_codes_fts_bi BEFORE INSERT ON catalogue_codes
+      `CREATE TRIGGER _syncular_project_catalogue_codes_fts_bi BEFORE INSERT ON catalogue_codes
        WHEN EXISTS (SELECT 1 FROM catalogue_codes WHERE id = new.id) BEGIN
          DELETE FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
        END`,
@@ -417,7 +472,7 @@ describe('client-local FTS5 projections', () => {
     ensureLocalSchema(db, compiled);
     const guard = String(
       db.query(
-        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_bi'",
       )[0]?.sql,
     );
     expect(guard).toContain('IN (SELECT');
@@ -448,23 +503,17 @@ describe('client-local FTS5 projections', () => {
           indexes: [
             { name: 'catalogue_codes_code', columns: ['code'], unique: true },
           ],
-          ftsIndexes: [
-            {
-              name: 'catalogue_codes_fts',
-              columns: ['code', 'title'],
-              tokenize: 'unicode61 remove_diacritics 2',
-            },
-          ],
+          localProjections: SCHEMA.tables[0]!.localProjections!,
         },
       ],
     };
     const db = new BunClientDatabase();
-    ensureLocalSchema(db, compileClientSchema(UNIQUE_SCHEMA));
+    ensureLocalSchema(db, compile(UNIQUE_SCHEMA));
 
     // The migration recreates the BEFORE UPDATE guard for the unique index.
     expect(
       db.query(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bu'",
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='_syncular_project_catalogue_codes_fts_bu'",
       ),
     ).toHaveLength(1);
 
@@ -494,7 +543,9 @@ describe('client-local FTS5 projections', () => {
     expect(search(db, 'A01')).toEqual(['c2']);
     // The projection has exactly one row (no orphaned c1 entry).
     expect(
-      db.query('SELECT COUNT(*) AS n FROM catalogue_codes_fts')[0]?.n,
+      db.query(
+        'SELECT COUNT(*) AS n FROM _syncular_projection_catalogue_codes_fts',
+      )[0]?.n,
     ).toBe(1);
   });
 
@@ -522,22 +573,25 @@ describe('client-local FTS5 projections', () => {
     };
 
     const clean = new BunClientDatabase();
-    ensureLocalSchema(clean, compileClientSchema(SCHEMA));
+    ensureLocalSchema(clean, compile(SCHEMA));
     const cleanMs = bulkInsertMs(clean);
     expect(search(clean, '"synthetic" "1499"')).toEqual(['c1499']);
 
-    // Comparative bound: an insert trigger that deletes by source id scans
-    // the whole projection per row. The clean triggers must stay decisively
+    // Comparative bound: an insert trigger that looks up the source id in
+    // the FTS table scans the whole projection per row. The clean triggers must stay decisively
     // faster than that hazard on the same machine — a wall-clock cap here
     // would flake on loaded CI.
     const scanning = new BunClientDatabase();
-    ensureLocalSchema(scanning, compileClientSchema(SCHEMA));
-    scanning.exec('DROP TRIGGER catalogue_codes_fts_ai');
+    ensureLocalSchema(scanning, compile(SCHEMA));
+    scanning.exec('DROP TRIGGER _syncular_project_catalogue_codes_fts_ai');
     scanning.exec(
-      `CREATE TRIGGER catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN
-        DELETE FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
-        INSERT INTO catalogue_codes_fts (_syncular_source_id, code, title)
-          VALUES (CAST(new.id AS TEXT), new.code, new.title);
+      `CREATE TRIGGER _syncular_project_catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN
+        SELECT count(*) FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
+        INSERT INTO _syncular_fts_catalogue_codes_fts(source_id) VALUES (CAST(new.id AS TEXT));
+        INSERT INTO _syncular_projection_catalogue_codes_fts(rowid, _syncular_source_id, code, title)
+          VALUES (last_insert_rowid(), CAST(new.id AS TEXT), new.code, new.title);
+        INSERT INTO catalogue_codes_fts(rowid, _syncular_source_id, code, title)
+          VALUES (last_insert_rowid(), CAST(new.id AS TEXT), new.code, new.title);
       END`,
     );
     const scanningMs = bulkInsertMs(scanning);
@@ -566,7 +620,7 @@ describe('client-local FTS5 projections', () => {
       ],
     };
     const db = new BunClientDatabase();
-    ensureLocalSchema(db, compileClientSchema(encrypted));
+    ensureLocalSchema(db, compile(encrypted));
     db.exec(
       `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Encrypted local identity')`,
     );
@@ -576,18 +630,112 @@ describe('client-local FTS5 projections', () => {
   test('compile fails loudly for unsafe or unsupported definitions', () => {
     const table = SCHEMA.tables[0];
     if (table === undefined) throw new Error('fixture table missing');
-    const withFts = (ftsIndexes: NonNullable<typeof table.ftsIndexes>) =>
-      compileClientSchema({
+    const projection = table.localProjections![0]!;
+    const withProjection = (
+      changes: Partial<NonNullable<typeof table.localProjections>[number]>,
+    ) =>
+      compile({
         version: 1,
-        tables: [{ ...table, ftsIndexes }],
+        tables: [
+          { ...table, localProjections: [{ ...projection, ...changes }] },
+        ],
       });
+    const invalid = (column?: string) =>
+      expect.objectContaining({
+        code: 'client.schema_invalid',
+        details: {
+          name: 'catalogue_codes_fts',
+          ...(column === undefined ? {} : { column }),
+        },
+      });
+    // A mix of sourced and app-filled columns.
     expect(() =>
-      withFts([
-        { name: 'bad', columns: ['release_id', 'nope'], tokenize: 'unicode61' },
-      ]),
-    ).toThrow(/unknown column "nope"/);
+      withProjection({
+        columns: [
+          { name: 'code', declaredType: 'string', source: 'code' },
+          { name: 'title', declaredType: 'string' },
+        ],
+      }),
+    ).toThrow(invalid('title'));
+    const { fts: _, ...unindexed } = projection;
     expect(() =>
-      withFts([{ name: 'bad', columns: ['title'], tokenize: 'custom' }]),
-    ).toThrow(/not allowlisted/);
+      compile({
+        version: 1,
+        tables: [{ ...table, localProjections: [unindexed] }],
+      }),
+    ).toThrow(invalid());
+    expect(() =>
+      withProjection({
+        dependencies: [
+          { table: 'catalogue_codes', column: 'id', sourceColumn: 'id' },
+        ],
+      }),
+    ).toThrow(invalid());
+    expect(() =>
+      withProjection({
+        columns: [{ name: 'code', declaredType: 'string', source: 'nope' }],
+        fts: { tokenize: 'unicode61', columns: ['code'] },
+      }),
+    ).toThrow(invalid('code'));
+    expect(() =>
+      compile({
+        version: 1,
+        tables: [
+          {
+            ...table,
+            columns: [
+              ...table.columns,
+              { name: 'rank_value', type: 'integer', nullable: true },
+            ],
+            localProjections: [
+              {
+                ...projection,
+                columns: [
+                  {
+                    name: 'code',
+                    declaredType: 'string',
+                    source: 'rank_value',
+                  },
+                ],
+                fts: { tokenize: 'unicode61', columns: ['code'] },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(invalid('code'));
+    expect(() =>
+      withProjection({ fts: { tokenize: 'custom', columns: ['title'] } }),
+    ).toThrow(invalid());
+    expect(() => compileClientSchema(SCHEMA)).toThrow(
+      expect.objectContaining({
+        code: 'client.schema_invalid',
+        details: { reason: 'projections_unavailable' },
+      }),
+    );
+  });
+
+  test('the app-filled operations refuse a built-in projection', () => {
+    const db = new BunClientDatabase();
+    try {
+      const compiled = compile(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      const store = compiled.projections!;
+      const refused = expect.objectContaining({
+        code: 'client.projection_invalid',
+        details: { name: 'catalogue_codes_fts' },
+      });
+      expect(() => store.pending(db, 'catalogue_codes_fts', 1)).toThrow(
+        refused,
+      );
+      expect(() => store.write(db, 'catalogue_codes_fts', 0, [])).toThrow(
+        refused,
+      );
+      expect(() => store.invalidate(db, 'catalogue_codes_fts')).toThrow(
+        refused,
+      );
+    } finally {
+      db.close();
+    }
   });
 });

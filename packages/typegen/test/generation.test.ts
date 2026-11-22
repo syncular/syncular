@@ -1,7 +1,8 @@
 /**
  * §7.4.3 table generations: a table keeps its generation across a schema
  * version when no migration names it and its declaration is unchanged; any
- * change to its shape, scopes, indexes, or a migration naming it bumps it.
+ * change to its shape or scopes, or a migration naming it, bumps it. Index
+ * and FTS5 projection statements name no table.
  */
 import { describe, expect, test } from 'bun:test';
 import {
@@ -70,13 +71,47 @@ describe('table generations', () => {
     expect(generations(ir).catalog).toBe(BASE.catalog);
   });
 
-  test('an index change bumps the generation', () => {
-    const ir = build('CREATE INDEX idx_notes_shelf ON notes (shelf_id)');
-    expect(generations(ir).notes).not.toBe(BASE.notes);
+  test('an index change keeps the generation', () => {
+    // Declared indexes reconcile in place: an index-only migration names no
+    // table and the index list stays out of the hash.
+    const ir = build('CREATE UNIQUE INDEX idx_notes_shelf ON notes (shelf_id)');
+    expect(generations(ir)).toEqual(BASE);
+    expect(ir.tables[1]?.indexes).toEqual([
+      { name: 'idx_notes_shelf', columns: ['shelf_id'], unique: true },
+    ]);
     const dropped = build(
       'CREATE INDEX idx_notes_body ON notes (body); DROP INDEX idx_notes_body',
     );
-    expect(generations(dropped).notes).not.toBe(BASE.notes);
+    expect(generations(dropped)).toEqual(BASE);
+    expect(dropped.tables[1]?.indexes).toEqual([]);
+  });
+
+  test('an fts5 migration becomes a built-in projection and keeps the generation', () => {
+    const ir = build(
+      "CREATE VIRTUAL TABLE notes_fts USING fts5(body, content = notes, tokenize = 'porter unicode61')",
+    );
+    expect(generations(ir)).toEqual(BASE);
+    expect(ir.tables[1]?.localProjections).toEqual([
+      {
+        name: 'notes_fts',
+        generation: expect.stringMatching(/^[0-9a-f]{32}$/),
+        columns: [{ name: 'body', declaredType: 'string', source: 'body' }],
+        fts: { tokenize: 'porter unicode61', columns: ['body'] },
+      },
+    ]);
+  });
+
+  test('in a mixed migration the ALTER changes the generation and the index does not', () => {
+    const altered = build('ALTER TABLE notes ADD COLUMN pinned BOOLEAN');
+    const mixed = build(
+      'ALTER TABLE notes ADD COLUMN pinned BOOLEAN; CREATE INDEX idx_notes_pinned ON notes (pinned); CREATE INDEX idx_catalog_title ON catalog (title)',
+    );
+    expect(generations(mixed).notes).not.toBe(BASE.notes);
+    expect(generations(mixed).notes).toBe(generations(altered).notes);
+    expect(generations(mixed).catalog).toBe(BASE.catalog);
+    expect(
+      mixed.tables.map((table) => table.indexes.map((i) => i.name)),
+    ).toEqual([['idx_catalog_title'], ['idx_notes_pinned']]);
   });
 
   test('a migration that names a table without changing it bumps it', () => {

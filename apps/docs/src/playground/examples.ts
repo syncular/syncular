@@ -54,7 +54,6 @@ export const BOARD_SCHEMA: IrDocument = {
           }))
         : [],
     indexes: 'indexes' in table ? table.indexes : [],
-    ftsIndexes: [],
   })),
 };
 

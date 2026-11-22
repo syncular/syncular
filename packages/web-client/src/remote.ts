@@ -249,7 +249,13 @@ export class SyncRemoteClient {
     this.#schema =
       config.schema === undefined
         ? undefined
-        : compileClientSchema(config.schema);
+        : // A database-less producer holds no local projection.
+          compileClientSchema({
+            ...config.schema,
+            tables: config.schema.tables.map(
+              ({ localProjections, ...table }) => table,
+            ),
+          });
     this.#clientId = config.clientId;
     this.#transport = config.transport;
     this.#operations = config.operations;

@@ -26,7 +26,6 @@ const IR: IrDocument = {
       indexes: [
         { name: 'idx_todos_list', columns: ['list_id'], unique: false },
       ],
-      ftsIndexes: [],
       extensions: {},
     },
   ],

@@ -82,6 +82,8 @@ interface DriverLocalProjection {
   readonly columns: readonly {
     readonly name: string;
     readonly declaredType: 'string' | 'integer' | 'real' | 'boolean' | 'json';
+    /** SPEC built-in FTS5 projections: the source column it copies. */
+    readonly source?: string;
   }[];
   readonly fts?: {
     readonly tokenize: string;
@@ -136,11 +138,6 @@ export interface DriverTable {
     readonly onDelete?: 'RESTRICT' | 'CASCADE' | 'SET NULL';
   }[];
   readonly localProjections?: readonly DriverLocalProjection[];
-  readonly ftsIndexes?: readonly {
-    readonly name: string;
-    readonly columns: readonly string[];
-    readonly tokenize: string;
-  }[];
 }
 
 export interface DriverSchema {

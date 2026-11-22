@@ -168,7 +168,7 @@ describe('supported subset', () => {
     expect([...tables.keys()]).toEqual(['kept']);
   });
 
-  test('CREATE VIRTUAL TABLE fts5 attaches a local projection to its owner', () => {
+  test('CREATE VIRTUAL TABLE fts5 attaches a built-in projection to its owner', () => {
     const tables = parse(`
       CREATE TABLE catalogue_codes (
         id TEXT PRIMARY KEY, release_id TEXT NOT NULL,
@@ -180,11 +180,17 @@ describe('supported subset', () => {
         tokenize = 'unicode61 remove_diacritics 2'
       );
     `);
-    expect(tables.get('catalogue_codes')?.ftsIndexes).toEqual([
+    expect(tables.get('catalogue_codes')?.localProjections).toEqual([
       {
         name: 'catalogue_codes_fts',
-        columns: ['code', 'title'],
-        tokenize: 'unicode61 remove_diacritics 2',
+        columns: [
+          { name: 'code', declaredType: 'string', source: 'code' },
+          { name: 'title', declaredType: 'string', source: 'title' },
+        ],
+        fts: {
+          tokenize: 'unicode61 remove_diacritics 2',
+          columns: ['code', 'title'],
+        },
       },
     ]);
     expect(tables.has('catalogue_codes_fts')).toBe(false);
@@ -195,7 +201,9 @@ describe('supported subset', () => {
       CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT);
       CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs);
     `);
-    expect(tables.get('docs')?.ftsIndexes[0]?.tokenize).toBe('unicode61');
+    expect(tables.get('docs')?.localProjections[0]?.fts?.tokenize).toBe(
+      'unicode61',
+    );
   });
 });
 
@@ -330,9 +338,9 @@ describe('portable relational identifier parity', () => {
         { lockedHistory: true },
       ),
     ).not.toThrow();
-    expect(locked.get('docs')?.ftsIndexes.map((index) => index.name)).toEqual([
-      'docs_fts',
-    ]);
+    expect(
+      locked.get('docs')?.localProjections.map((projection) => projection.name),
+    ).toEqual(['docs_fts']);
 
     expect(() =>
       parse(

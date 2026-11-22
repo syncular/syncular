@@ -566,11 +566,18 @@ export const sqliteImageScenarios: readonly Scenario[] = [
             table.name === 'docs'
               ? {
                   ...table,
-                  ftsIndexes: [
+                  localProjections: [
                     {
                       name: 'docs_fts',
-                      columns: ['body'],
-                      tokenize: 'unicode61',
+                      generation: 'docs_fts-1',
+                      columns: [
+                        {
+                          name: 'body',
+                          declaredType: 'string',
+                          source: 'body',
+                        },
+                      ],
+                      fts: { tokenize: 'unicode61', columns: ['body'] },
                     },
                   ],
                 }

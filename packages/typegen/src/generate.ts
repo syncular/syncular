@@ -23,6 +23,7 @@ import { emitQueriesSwiftModule } from './emit-queries-swift';
 import { emitSwiftModule } from './emit-swift';
 import { TypegenError } from './errors';
 import {
+  appColumnType,
   canonicalizeExtensions,
   IR_VERSION,
   type IrColumn,
@@ -152,22 +153,19 @@ function buildTable(
     // Indexes flow through from the migration parser (already validated:
     // columns exist, names unique per schema) in declaration order.
     indexes: parsed.indexes,
-    ftsIndexes: parsed.ftsIndexes,
-    ...(manifestTable.localProjections
-      ? {
-          localProjections: manifestTable.localProjections.map(
-            (projection) => ({
-              name: projection.name,
-              generation: projectionGeneration(parsed.name, projection),
-              columns: projection.columns,
-              ...(projection.fts ? { fts: projection.fts } : {}),
-              ...(projection.dependencies
-                ? { dependencies: projection.dependencies }
-                : {}),
-            }),
-          ),
-        }
-      : {}),
+    // Built-in projections from `fts5` migrations, then manifest projections.
+    localProjections: [
+      ...parsed.localProjections,
+      ...(manifestTable.localProjections ?? []),
+    ].map((projection) => ({
+      name: projection.name,
+      generation: projectionGeneration(parsed.name, projection),
+      columns: projection.columns,
+      ...(projection.fts ? { fts: projection.fts } : {}),
+      ...(projection.dependencies
+        ? { dependencies: projection.dependencies }
+        : {}),
+    })),
     extensions: canonicalizeExtensions(manifestTable.extensions) as Record<
       string,
       unknown
@@ -466,7 +464,6 @@ export function buildIr(
       .flatMap((table) => [
         table.name,
         ...table.indexes.map((index) => index.name),
-        ...table.ftsIndexes.map((index) => index.name),
       ])
       .map((name) => name.toLowerCase()),
   );
@@ -501,11 +498,25 @@ export function buildIr(
             )))
       )
         invalid();
+      // Built-in when every column names a source, app-filled when none does.
+      // A built-in projection is an FTS5 index the client fills itself, so it
+      // needs `fts` and has no dependencies to invalidate.
+      const builtIn = projection.columns[0]?.source !== undefined;
+      if (builtIn && (!projection.fts || projection.dependencies)) invalid();
       names.add(lower);
       const columns = new Set(projection.fts ? [lower, 'rowid', 'rank'] : []);
       for (const column of projection.columns) {
         const key = column.name.toLowerCase();
-        if (!projectionIdentifier(column.name) || columns.has(key))
+        const source = table.columns.find((col) => col.name === column.source);
+        if (
+          !projectionIdentifier(column.name) ||
+          columns.has(key) ||
+          (column.source !== undefined) !== builtIn ||
+          (builtIn &&
+            (!source ||
+              appColumnType(source) !== 'string' ||
+              column.declaredType !== 'string'))
+        )
           invalid(column.name);
         columns.add(key);
       }

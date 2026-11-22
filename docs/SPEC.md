@@ -1325,8 +1325,8 @@ conflict `serverRow`.
 built-in when every column names a `source` column of its table, and
 app-filled when none does. Typegen and both client schema loaders refuse a
 declaration that mixes them with `client.schema_invalid`. A built-in
-projection declares `fts`, and each source column has `declaredType`
-`string`. An encrypted source column is eligible: apply decrypts it before
+projection declares `fts` and no `dependencies`, and each source column has
+`declaredType` `string`. An encrypted source column is eligible: apply decrypts it before
 the local base-table write, so the projection indexes the same plaintext
 already present in the protected local mirror and never the ciphertext
 envelope. A built-in projection uses the external-content storage of
@@ -1334,7 +1334,8 @@ app-filled FTS5. The source trigger fills its content row from the source row
 in the statement that writes the source row, in every write path, and deletes
 it with the source row; it has no pending set, change tokens or epoch, and
 `projectionPending`, `writeProjection` and `invalidateProjection` refuse it
-with `client.projection_invalid` and the `name` detail. Every open compares
+with `client.projection_invalid` and the `name` detail, and so does a
+`purgeLocalData` projection target: purging the source rows removes the copy. Every open compares
 the mapping, index and content counts with the source table's row count and
 rebuilds the projection from the source rows on a mismatch. If FTS5 is
 unavailable, local schema creation MUST fail loudly; a client MUST NOT
@@ -7212,7 +7213,10 @@ encryption and `declaredType`; the primary key; every scope pattern with
 its variable and column; references; extensions) and the names of every
 migration with a statement that names the table. Declared indexes and local
 projections are not part of it: an index change reconciles in place (below),
-and a projection has its own generation.
+and a projection has its own generation. For the same reason a statement that
+only creates or drops an index (`CREATE [UNIQUE] INDEX`, `DROP INDEX`) or
+declares a local FTS5 projection (`CREATE VIRTUAL TABLE … USING fts5`) names
+no table.
 A statement names a table when one of its identifiers or string literals
 equals the table name, compared case-insensitively; the match is lexical,
 so a column that shares a table's name also names that table. Migration

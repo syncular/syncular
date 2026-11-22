@@ -94,21 +94,18 @@ export interface IrReference {
   readonly onDelete: 'RESTRICT' | 'CASCADE' | 'SET NULL';
 }
 
-/** One client-local contentful FTS5 projection. It is owned by the
- * synced table in whose `ftsIndexes` array it appears and never enters the
- * row codec, server schema, scopes, or mutation surface. */
-export interface IrFtsIndex {
-  readonly name: string;
-  readonly columns: readonly string[];
-  readonly tokenize: string;
-}
-
+/** One client-local projection of its owning synced table. It never enters
+ * the row codec, server schema, scopes, or mutation surface. It is built-in
+ * when every column names a `source` column of the owning table (the client
+ * fills it from the source row; the `fts` migration declaration), and
+ * app-filled when none does. */
 export interface IrLocalProjection {
   readonly name: string;
   readonly generation: string;
   readonly columns: readonly {
     readonly name: string;
     readonly declaredType: 'string' | 'integer' | 'real' | 'boolean' | 'json';
+    readonly source?: string;
   }[];
   readonly fts?: {
     readonly tokenize: string;
@@ -138,8 +135,6 @@ export interface IrTable {
   /** Local secondary indexes (§migration subset), in declaration order.
    * Additive under irVersion 1: absent/empty for tables that declare none. */
   readonly indexes: readonly IrIndex[];
-  /** Client-local FTS5 projections, in migration declaration order. */
-  readonly ftsIndexes: readonly IrFtsIndex[];
   readonly localProjections?: readonly IrLocalProjection[];
   /** Reserved per-table hook slot (WP-49); empty object for now. */
   readonly extensions: Readonly<Record<string, unknown>>;
@@ -204,8 +199,8 @@ function canonicalScopeValue(value: IrScopeValue): Record<string, unknown> {
 
 /** Column, reference, and index entries shared by the IR document and the
  * schema object, in their fixed key order. Optional members (crdtType,
- * encrypted/declaredType, references, indexes, ftsIndexes) are emitted only
- * when present so documents without them stay byte-identical. */
+ * encrypted/declaredType, references, indexes) are emitted only when present
+ * so documents without them stay byte-identical. */
 function serializeTableShape(
   table: IrTable,
   scopes: readonly Readonly<Record<string, string>>[],
@@ -237,31 +232,23 @@ function serializeTableShape(
           })),
         }
       : {}),
-    ...(table.ftsIndexes.length > 0
-      ? {
-          ftsIndexes: table.ftsIndexes.map((index) => ({
-            name: index.name,
-            columns: index.columns,
-            tokenize: index.tokenize,
-          })),
-        }
-      : {}),
   };
 }
 
 /**
  * §7.4.3: the table generation hashes the table's serialized shape (columns,
- * primary key, scopes with variables, references, indexes, FTS projections,
- * extensions) and the names of every migration that names the table, as the
- * first 16 bytes of SHA-256 in lowercase hex. Locked migrations never change
- * (§7.4), so the generation of a table no later migration names and whose
- * declaration is unchanged stays equal across schema versions.
+ * primary key, scopes with variables, references, extensions) and the names
+ * of every migration that names the table, as the first 16 bytes of SHA-256
+ * in lowercase hex. Locked migrations never change (§7.4), so the generation
+ * of a table no later migration names and whose declaration is unchanged
+ * stays equal across schema versions. Declared indexes reconcile in place and
+ * local projections carry their own generation, so neither enters it.
  */
 export function tableGeneration(
   table: IrTable,
   migrations: readonly string[],
 ): string {
-  const { generation, ...shape } = serializeTableShape(
+  const { generation, indexes, ...shape } = serializeTableShape(
     table,
     table.scopes.map((scope) => ({ ...scope })),
   );

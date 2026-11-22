@@ -20,6 +20,7 @@ import {
   sqlIdentifier,
   splitSelectList,
   scanTableRefs,
+  builtInProjectionOwners,
   ftsRelationNames,
   stripCommentsAndStrings,
   type TableRef,
@@ -1390,7 +1391,6 @@ class Validator {
     const fallback = logical.declaration.statement.span;
     const tableNames = this.#ir.tables.flatMap((table) => [
       table.name,
-      ...table.ftsIndexes.map((index) => index.name),
       ...(table.localProjections ?? []).map((projection) => projection.name),
     ]);
     const noTable = new RegExp(
@@ -1512,10 +1512,6 @@ class Validator {
     );
     if (table !== undefined) return table.columns.map((column) => column.name);
     for (const owner of this.#ir.tables) {
-      const fts = owner.ftsIndexes.find(
-        (candidate) => candidate.name === tableName,
-      );
-      if (fts !== undefined) return ['_syncular_source_id', ...fts.columns];
       const projection = owner.localProjections?.find(
         (candidate) => candidate.name === tableName,
       );
@@ -1825,11 +1821,7 @@ class Validator {
       return { ...candidate, scopes };
     });
 
-    const ftsOwners = new Map(
-      this.#ir.tables.flatMap((table) =>
-        table.ftsIndexes.map((index) => [index.name, table.name] as const),
-      ),
-    );
+    const ftsOwners = builtInProjectionOwners(this.#ir);
     // Several instances of one table (a self-join) share one dependency and
     // one coverage entry only when their proofs are identical. Scopes follow
     // the table's declaration order, so only the parameter sets need sorting.
@@ -2497,12 +2489,10 @@ class Validator {
   #primaryKey(tableName: string): string | undefined {
     const table = this.#ir.tables.find((item) => item.name === tableName);
     if (table !== undefined) return table.primaryKey;
-    return this.#ir.tables.some(
-      (item) =>
-        item.ftsIndexes.some((index) => index.name === tableName) ||
-        item.localProjections?.some(
-          (projection) => projection.name === tableName,
-        ),
+    return this.#ir.tables.some((item) =>
+      item.localProjections?.some(
+        (projection) => projection.name === tableName,
+      ),
     )
       ? '_syncular_source_id'
       : undefined;

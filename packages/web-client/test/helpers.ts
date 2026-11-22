@@ -22,6 +22,7 @@ import {
   type SyncTransport,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { compileLocalProjections } from '@syncular/client/projections';
 import type { ApplyStep } from '../src/apply';
 import { ClientSyncError } from '../src/errors';
 import {
@@ -386,9 +387,13 @@ export async function makeClient(
   const requests: Uint8Array[] = [];
   let segmentCalls = 0;
   const downloads: string[] = [];
+  const schema = options.schema ?? CLIENT_SCHEMA;
   const config: SyncClientConfig = {
     database: db,
-    schema: options.schema ?? CLIENT_SCHEMA,
+    schema,
+    ...(schema.tables.some((table) => table.localProjections?.length)
+      ? { createProjections: compileLocalProjections }
+      : {}),
     clientId: options.clientId,
     ...(options.devtools !== undefined ? { devtools: options.devtools } : {}),
     now: () => server.now.ms,

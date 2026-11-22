@@ -123,11 +123,11 @@ SELECT id FROM notes WHERE body = :body AND amount = :amount`,
       },
     ];
     const ir = buildIr(manifest(['body']), migrations);
-    expect(ir.tables[0]?.ftsIndexes).toEqual([
+    expect(ir.tables[0]?.localProjections).toMatchObject([
       {
         name: 'notes_fts',
-        columns: ['body'],
-        tokenize: 'unicode61 remove_diacritics 2',
+        columns: [{ name: 'body', declaredType: 'string', source: 'body' }],
+        fts: { tokenize: 'unicode61 remove_diacritics 2', columns: ['body'] },
       },
     ]);
   });
@@ -346,27 +346,70 @@ test.each([
   ).toThrow(expect.objectContaining({ code: 'client.schema_invalid' }));
 });
 
-test('typegen refuses source columns mixed into an app-filled projection', () => {
-  expect(() =>
-    parseManifest({
-      manifestVersion: 1,
-      schemaVersions: [{ version: 1, through: '0001_initial' }],
-      tables: [
-        {
-          name: 'notes',
-          scopes: ['project:{project_id}'],
-          localProjections: [
-            {
-              name: 'local_notes',
-              columns: [
-                { name: 'summary', declaredType: 'string' },
-                { name: 'copied', declaredType: 'string', source: 'body' },
-              ],
-            },
-          ],
-        },
+const builtIn = {
+  name: 'notes_search',
+  columns: [{ name: 'body', declaredType: 'string', source: 'body' }],
+  fts: { tokenize: 'unicode61', columns: ['body'] },
+} as const;
+
+test('a manifest built-in projection may index an encrypted string source', () => {
+  const base = manifest(['body']);
+  const [notes] = base.tables;
+  const ir = buildIr(
+    { ...base, tables: [{ ...notes!, localProjections: [builtIn] }] },
+    MIGRATIONS,
+  );
+  expect(ir.tables[0]?.localProjections).toMatchObject([builtIn]);
+});
+
+test.each([
+  {
+    reason: 'mixed source and app-filled columns',
+    projection: {
+      ...builtIn,
+      columns: [
+        ...builtIn.columns,
+        { name: 'summary', declaredType: 'string' as const },
       ],
-    }),
+    },
+  },
+  {
+    reason: 'built-in without fts',
+    projection: { name: builtIn.name, columns: builtIn.columns },
+  },
+  {
+    reason: 'built-in with dependencies',
+    projection: {
+      ...builtIn,
+      dependencies: [{ table: 'notes', column: 'id', sourceColumn: 'id' }],
+    },
+  },
+  {
+    reason: 'unknown source column',
+    projection: {
+      ...builtIn,
+      columns: [
+        { name: 'body', declaredType: 'string' as const, source: 'nope' },
+      ],
+    },
+  },
+  {
+    reason: 'non-string source column',
+    projection: {
+      ...builtIn,
+      columns: [
+        { name: 'body', declaredType: 'string' as const, source: 'amount' },
+      ],
+    },
+  },
+])('typegen refuses a projection: $reason', ({ projection }) => {
+  const base = manifest([]);
+  const [notes] = base.tables;
+  expect(() =>
+    buildIr(
+      { ...base, tables: [{ ...notes!, localProjections: [projection] }] },
+      MIGRATIONS,
+    ),
   ).toThrow(expect.objectContaining({ code: 'client.schema_invalid' }));
 });
 

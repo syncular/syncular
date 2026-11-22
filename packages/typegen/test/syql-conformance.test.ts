@@ -209,7 +209,6 @@ const IR: IrDocument = {
       ],
       references: [],
       indexes: [],
-      ftsIndexes: [],
       extensions: {},
     },
   ],

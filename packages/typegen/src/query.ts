@@ -822,12 +822,23 @@ export interface SqlRelations {
 }
 
 export function ftsRelationNames(table: IrTable): string[] {
-  return [
-    ...table.ftsIndexes.map((index) => index.name),
-    ...(table.localProjections ?? [])
-      .filter((projection) => projection.fts)
-      .map((projection) => projection.name),
-  ];
+  return (table.localProjections ?? [])
+    .filter((projection) => projection.fts)
+    .map((projection) => projection.name);
+}
+
+/** Built-in projection name to owning table. The client fills a built-in
+ * projection in the statement that writes its source row, so a query reading
+ * it depends on the source table; an app-filled projection is its own
+ * dependency. */
+export function builtInProjectionOwners(ir: IrDocument): Map<string, string> {
+  return new Map(
+    ir.tables.flatMap((table) =>
+      (table.localProjections ?? [])
+        .filter((projection) => projection.columns[0]?.source !== undefined)
+        .map((projection) => [projection.name, table.name] as const),
+    ),
+  );
 }
 
 export function scanTableRefs(
@@ -1429,11 +1440,6 @@ function relationColumn(
   if (source)
     return source.columns.find((column) => column.name.toLowerCase() === name);
   for (const entry of ir.tables) {
-    if (
-      name === FTS_SOURCE_ID_COLUMN &&
-      ftsRelationNames(entry).includes(table)
-    )
-      return FTS_SOURCE_ID_IR_COLUMN;
     const projection = entry.localProjections?.find(
       (spec) => spec.name === table,
     );
@@ -1645,11 +1651,7 @@ function inferReactiveMetadata(
     scopes: QueryScopeBinding[];
   }> = [];
   const coverage: QueryCoverageBinding[] = [];
-  const ftsOwner = new Map(
-    ir.tables.flatMap((table) =>
-      table.ftsIndexes.map((index) => [index.name, table.name] as const),
-    ),
-  );
+  const ftsOwner = builtInProjectionOwners(ir);
 
   for (const tableName of [
     ...new Set(refs.map((ref) => ftsOwner.get(ref.table) ?? ref.table)),
@@ -1786,22 +1788,18 @@ export function synthesizeDdl(ir: IrDocument): string {
         `CREATE ${unique}INDEX ${index.name} ON ${table.name} (${index.columns.join(', ')});`,
       );
     }
-    const fullText = table.ftsIndexes.map((index) => ({
-      name: index.name,
-      tokenize: index.tokenize,
-      columns: index.columns,
-    }));
     for (const projection of table.localProjections ?? []) {
       const name = `"${projection.name}"`;
-      if (projection.fts) {
-        fullText.push({
-          name: projection.name,
-          tokenize: projection.fts.tokenize,
-          columns: projection.columns.map(
-            (column) =>
-              `"${column.name}"${projection.fts!.columns.includes(column.name) ? '' : ' UNINDEXED'}`,
-          ),
-        });
+      const { fts } = projection;
+      if (fts) {
+        const columns = projection.columns.map(
+          (column) =>
+            `"${column.name}"${fts.columns.includes(column.name) ? '' : ' UNINDEXED'}`,
+        );
+        lines.push(
+          `CREATE VIRTUAL TABLE ${name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${columns.join(', ')}, tokenize='${fts.tokenize.replaceAll("'", "''")}');`,
+          `CREATE TABLE ${ftsMappingTable(projection.name)} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE);`,
+        );
       } else {
         const columns = projection.columns.map(
           (column) =>
@@ -1811,18 +1809,6 @@ export function synthesizeDdl(ir: IrDocument): string {
           `CREATE TABLE ${name} (${FTS_SOURCE_ID_COLUMN} TEXT PRIMARY KEY, ${columns.join(', ')});`,
         );
       }
-    }
-    for (const index of fullText) {
-      const tokenize = index.tokenize.replaceAll("'", "''");
-      const name = table.ftsIndexes.some(
-        (builtIn) => builtIn.name === index.name,
-      )
-        ? index.name
-        : `"${index.name}"`;
-      lines.push(
-        `CREATE VIRTUAL TABLE ${name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
-        `CREATE TABLE ${ftsMappingTable(index.name)} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE);`,
-      );
     }
   }
   return lines.join('\n');
@@ -2103,11 +2089,7 @@ export function analyzeStatement(
   let described = analyze(sourceSql);
 
   const refs = scanTableRefs(sourceSql, ir);
-  const ftsOwner = new Map(
-    ir.tables.flatMap((table) =>
-      table.ftsIndexes.map((index) => [index.name, table.name] as const),
-    ),
-  );
+  const ftsOwner = builtInProjectionOwners(ir);
   const tableSet = new Set(
     refs.map((ref) => ftsOwner.get(ref.table) ?? ref.table),
   );

@@ -18,6 +18,7 @@ import {
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { compileLocalProjections } from '@syncular/client/projections';
 import {
   echoDigest,
   encodeMessage,
@@ -459,15 +460,25 @@ describe('CREATE INDEX subset — client local DDL', () => {
   test('image chunks keep their committed prefix and detach after a later failure', async () => {
     const db = new BunClientDatabase();
     const image = new BunClientDatabase();
-    const compiled = compileClientSchema({
-      ...SCHEMA,
-      tables: SCHEMA.tables.map((table) => ({
-        ...table,
-        ftsIndexes: [
-          { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
-        ],
-      })),
-    });
+    const compiled = compileClientSchema(
+      {
+        ...SCHEMA,
+        tables: SCHEMA.tables.map((table) => ({
+          ...table,
+          localProjections: [
+            {
+              name: 'tasks_fts',
+              generation: '1',
+              columns: [
+                { name: 'title', declaredType: 'string', source: 'title' },
+              ],
+              fts: { tokenize: 'unicode61', columns: ['title'] },
+            },
+          ],
+        })),
+      },
+      compileLocalProjections,
+    );
     const table = compiled.tables.get('tasks')!;
     try {
       ensureLocalSchema(db, compiled);
@@ -745,6 +756,145 @@ describe('CREATE INDEX subset — client local DDL', () => {
       'idx_tasks_project_title',
     ]);
     expect(indexSql(db, 'idx_tasks_project_title')).toMatch(/UNIQUE/);
+  });
+
+  test('declared indexes reconcile in place and leave app indexes alone', () => {
+    const db = new BunClientDatabase();
+    const withIndexes = (
+      indexes: NonNullable<ClientSchema['tables'][number]['indexes']>,
+    ) =>
+      compileClientSchema({
+        version: 1,
+        tables: [{ ...SCHEMA.tables[0]!, indexes }],
+      });
+    const record = () =>
+      db.query("SELECT value FROM _syncular_meta WHERE key='localIndexes'");
+    ensureLocalSchema(db, compileClientSchema(SCHEMA));
+    db.exec("INSERT INTO tasks(id,project_id,title) VALUES ('t1','p1','a')");
+    db.exec('CREATE INDEX app_tasks_title ON tasks(title)');
+    expect(record()).toEqual([
+      {
+        value: JSON.stringify({
+          tasks: ['idx_tasks_project', 'idx_tasks_project_title'],
+        }),
+      },
+    ]);
+    // Drop the plain index, turn the unique one into a plain index over
+    // other columns, and add a new one.
+    ensureLocalSchema(
+      db,
+      withIndexes([
+        {
+          name: 'idx_tasks_project_title',
+          columns: ['title', 'project_id'],
+          unique: false,
+        },
+        { name: 'idx_tasks_title', columns: ['title'], unique: true },
+      ]),
+    );
+    expect(indexNames(db)).toEqual([
+      'app_tasks_title',
+      'idx_tasks_project_title',
+      'idx_tasks_title',
+    ]);
+    expect(indexSql(db, 'idx_tasks_project_title')).not.toMatch(/UNIQUE/);
+    expect(indexSql(db, 'idx_tasks_project_title')).toMatch(
+      /"title".*"project_id"/,
+    );
+    expect(indexSql(db, 'idx_tasks_title')).toMatch(/UNIQUE/);
+    expect(record()).toEqual([
+      {
+        value: JSON.stringify({
+          tasks: ['idx_tasks_project_title', 'idx_tasks_title'],
+        }),
+      },
+    ]);
+    expect(db.query('SELECT id FROM tasks')).toEqual([{ id: 't1' }]);
+    // An index the schema stops declaring that Syncular never recorded stays.
+    db.exec("DELETE FROM _syncular_meta WHERE key='localIndexes'");
+    ensureLocalSchema(
+      db,
+      compileClientSchema({
+        ...SCHEMA,
+        tables: [{ ...SCHEMA.tables[0]!, indexes: [] }],
+      }),
+    );
+    expect(indexNames(db)).toEqual([
+      'app_tasks_title',
+      'idx_tasks_project_title',
+      'idx_tasks_title',
+    ]);
+    expect(record()).toEqual([{ value: '{}' }]);
+  });
+
+  test('a missing localIndexes record backfills the declared indexes that exist', () => {
+    const db = new BunClientDatabase();
+    const compiled = compileClientSchema(SCHEMA);
+    ensureLocalSchema(db, compiled);
+    db.exec('CREATE INDEX app_tasks_title ON tasks(title)');
+    db.exec("DELETE FROM _syncular_meta WHERE key='localIndexes'");
+    ensureLocalSchema(db, compiled);
+    expect(
+      db.query("SELECT value FROM _syncular_meta WHERE key='localIndexes'"),
+    ).toEqual([
+      {
+        value: JSON.stringify({
+          tasks: ['idx_tasks_project', 'idx_tasks_project_title'],
+        }),
+      },
+    ]);
+    // The backfilled names are now Syncular's to drop; the app index is not.
+    ensureLocalSchema(
+      db,
+      compileClientSchema({
+        ...SCHEMA,
+        tables: [{ ...SCHEMA.tables[0]!, indexes: [] }],
+      }),
+    );
+    expect(indexNames(db)).toEqual(['app_tasks_title']);
+  });
+
+  test('an index-only schema change keeps rows and units', async () => {
+    const database = new BunClientDatabase();
+    const schemaAt = (
+      version: number,
+      indexes: NonNullable<ClientSchema['tables'][number]['indexes']>,
+    ): ClientSchema => ({
+      version,
+      tables: [{ ...SCHEMA.tables[0]!, generation: 'g1', indexes }],
+    });
+    const open = async (schema: ClientSchema) => {
+      const client = new SyncClient({
+        schema,
+        database,
+        transport: async () => new Uint8Array(),
+      });
+      await client.start();
+      return client;
+    };
+    const first = await open(schemaAt(1, SCHEMA.tables[0]!.indexes!));
+    const unit = first.subscribe({ project_id: 'p1' });
+    database.exec(
+      "INSERT INTO tasks(id,project_id,title,_sync_version) VALUES ('t1','p1','a',3)",
+    );
+    await first.close();
+    const second = await open(
+      schemaAt(2, [
+        { name: 'idx_tasks_title', columns: ['title'], unique: false },
+      ]),
+    );
+    try {
+      expect(database.query('SELECT id,_sync_version FROM tasks')).toEqual([
+        { id: 't1', _sync_version: 3 },
+      ]);
+      expect(database.query('SELECT id FROM _syncular_units')).toEqual([
+        { id: unit },
+      ]);
+      expect(indexNames(database)).toEqual(['idx_tasks_title']);
+    } finally {
+      await second.close();
+      database.close();
+    }
   });
 
   test('an ineligible primary-key type fails at compile', () => {

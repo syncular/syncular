@@ -52,7 +52,9 @@ CREATE VIRTUAL TABLE patient_notes_fts USING fts5(
 );
 ```
 
-`content = patient_notes` declares ownership to Syncular and is not passed to SQLite as external-content mode. List only the owner table in `syncular.json.tables`. Typegen attaches the projection to that table in the neutral IR and in every generated client schema.
+`content = patient_notes` names the owner table. List only the owner table in `syncular.json.tables`. Typegen turns the declaration into a built-in projection in the owner table's `localProjections`: each column names its `source` column, and `fts` carries the tokenizer and the searched columns.
+
+On TypeScript, every projection runs in the projection implementation. Import `compileLocalProjections` from `@syncular/client/projections` and pass `{ createProjections: compileLocalProjections }` to the `SyncClient` constructor, or `startSyncWorker({ createProjections: compileLocalProjections })` in your worker entry. Without it, a schema with a projection fails at construction with `client.schema_invalid` and `{ reason: "projections_unavailable" }`. Rust, Tauri and the FFI hosts include it.
 
 ::checkpoint[`syncular generate` succeeds and the generated schema for `patient_notes` carries the projection.]
 :::
@@ -105,7 +107,7 @@ Arbitrary virtual-table modules, options, tokenizers, prefix definitions, and ha
 
 ## Lifecycle and encryption
 
-The client creates a contentful FTS table with a private stable source-id column and deterministic maintenance triggers. When a projection first appears, the client bulk-indexes the existing owner rows. Every open compares the projection's mapping row count with the owner table's row count and rebuilds a projection whose counts differ. Replicas the TypeScript client wrote with releases up to 0.78.1 lost the entries of rows that a SQLite image delivered again at their held version; the first open after an upgrade restores them. Rebuilding a 114,007-row projection took 4.2 s once; the check on later opens takes 7 ms (Apple M5 Pro, Bun).
+The client stores a built-in projection in the same external-content form as an app-filled one: the FTS5 table `patient_notes_fts`, its content table `_syncular_projection_patient_notes_fts`, and the source-id mapping `_syncular_fts_patient_notes_fts`. The owner table's triggers write the content row, its FTS entry and its mapping from the owner row in the same statement, and delete them with it. When a projection first appears, the client indexes the existing owner rows. Every open compares the mapping, index and content counts with the owner table's row count and rebuilds a projection whose counts differ. Rebuilding a 114,007-row projection took 4.2 s once with the earlier contentful storage; the check on later opens takes 7 ms (Apple M5 Pro, Bun). A projection has its own generation, so changing it rebuilds the projection and keeps the owner table's rows.
 
 An [encrypted column](/concepts-encryption/) is eligible when its declared application type is `string`, so `patient_notes.body` above can be encrypted and still searched. Encryption applies at the wire boundary: FTS indexes the decrypted value already in the protected local mirror, while the server and the commit log keep ciphertext. Revoking that local plaintext needs the same subscription gating and [authorized local purge](/concepts-local-data-purge/) as the owner row, and the purge removes both in one transaction.
 
