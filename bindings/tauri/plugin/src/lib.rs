@@ -1251,13 +1251,27 @@ impl SyncularState {
         } else {
             None
         };
+        // A refused create, shutdown or preflight leaves the core as it was, so
+        // the core's own lifecycle decides whether reads open again.
+        let restore_gate = || -> Result<(), String> {
+            let lifecycle =
+                self.command(json!({ "method": "securityLifecycle", "params": {} }), None)?;
+            if lifecycle.pointer("/result/state") == Some(&json!("active")) {
+                self.security_gate.activate()?;
+            }
+            Ok(())
+        };
         let mut database = None;
         if method == "create" {
             database =
                 match resolve_database(&self.config, command.get("params").unwrap_or(&Value::Null))
                 {
                     Ok(path) => path,
-                    Err(reply) => return Ok(reply),
+                    Err(reply) => {
+                        drop(reader);
+                        restore_gate()?;
+                        return Ok(reply);
+                    }
                 };
             if let Some(path) = &database {
                 match command.get_mut("params").and_then(Value::as_object_mut) {
@@ -1346,6 +1360,10 @@ impl SyncularState {
             }
         } else if succeeded && method == "activateSecurity" {
             self.security_gate.activate()?;
+        } else if !succeeded
+            && (method == "create" || method == "beginSecurityPreflight" || method == "shutdown")
+        {
+            restore_gate()?;
         }
         Ok(reply)
     }
@@ -2634,6 +2652,173 @@ mod tests {
             "sql": "SELECT count(*) AS n FROM todo"
         } }));
         assert_eq!(read["result"]["rows"][0]["n"], 1);
+    }
+
+    /// A host app with named actor databases and an in-memory signed-out slot.
+    fn actor_app(label: &str) -> (tauri::App<tauri::test::MockRuntime>, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("syncular-tauri-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = tauri::test::mock_builder()
+            .plugin(init(SyncularConfig {
+                db_path: Some(":memory:".to_owned()),
+                database_dir: Some(dir.to_string_lossy().into_owned()),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        (app, dir)
+    }
+
+    fn versioned(version: i64) -> Value {
+        json!({ "version": version, "tables": [{
+            "name": "todo", "primaryKey": "id",
+            "columns": [{ "name": "id", "type": "string", "nullable": false }],
+            "scopes": []
+        }] })
+    }
+
+    /// A refused create keeps the previous core, so the gate follows that
+    /// core's own lifecycle: open for an active core, shut for a preflight one.
+    #[test]
+    fn a_refused_create_restores_the_gate_of_the_kept_core() {
+        for preflight in [false, true] {
+            let (app, dir) = actor_app("gate");
+            let host = app.syncular();
+            let created = host.command(&json!({ "method": "create", "params": {
+                "schema": versioned(2), "database": "actor", "securityPreflight": preflight
+            } }));
+            assert!(created.get("error").is_none(), "{created}");
+            let refused = host.command(&json!({ "method": "create", "params": {
+                "schema": versioned(1), "database": "actor", "securityPreflight": preflight
+            } }));
+            assert_eq!(
+                refused["error"]["code"], "client.schema_downgrade",
+                "{refused}"
+            );
+            let read = count_from(&app, "main");
+            if preflight {
+                assert_eq!(
+                    read["error"]["code"],
+                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+                    "{read}"
+                );
+            } else {
+                assert_eq!(read["result"]["rows"][0]["n"], 0, "{read}");
+            }
+            host.command(&json!({ "method": "shutdown", "params": {} }));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Diego's schema bridge: the host keeps exclusive ownership through
+    /// host-owned in-memory interstitials while it probes an actor file.
+    #[test]
+    fn the_host_keeps_ownership_through_in_memory_interstitials() {
+        let (app, dir) = actor_app("bridge");
+        let host = app.syncular();
+        let file = dir.join("actor.db");
+        // The actor file persisted at version 2, with one row.
+        let seeded = host.command(&json!({ "method": "create", "params": {
+            "schema": versioned(2), "database": "actor"
+        } }));
+        assert!(seeded.get("error").is_none(), "{seeded}");
+        host.command(&json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "kept" }
+        }] } }));
+        let rows = || {
+            host.command(&json!({ "method": "query", "params": {
+                "sql": "SELECT count(*) AS n FROM todo"
+            } }))["result"]["rows"][0]["n"]
+                .clone()
+        };
+        // At every step the host still owns the client, and webview reads
+        // follow the live core's lifecycle.
+        let check = |step: &str| {
+            let webview_create = run_command_from(
+                app.handle(),
+                "main",
+                json!({ "method": "create", "params": { "schema": versioned(2) } }),
+            )
+            .unwrap();
+            assert_eq!(
+                webview_create["error"]["code"], "client.host_owned",
+                "{step}: {webview_create}"
+            );
+            let lifecycle = host.command(&json!({ "method": "securityLifecycle", "params": {} }));
+            let read = count_from(&app, "main");
+            match lifecycle["result"]["state"].as_str() {
+                Some("active") => assert!(read.get("error").is_none(), "{step}: {read}"),
+                _ => assert_eq!(
+                    read["error"]["code"],
+                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+                    "{step}: {read}"
+                ),
+            }
+        };
+        // 1. The in-memory slot, in preflight.
+        let memory = host.command(&json!({ "method": "create", "params": {
+            "schema": versioned(2), "securityPreflight": true
+        } }));
+        assert!(memory.get("error").is_none(), "{memory}");
+        check("memory in preflight");
+        // 2. A version-1 probe on the actor file is refused with both versions;
+        //    the memory core stays.
+        let probe = host.command(&json!({ "method": "create", "params": {
+            "schema": versioned(1), "database": "actor", "securityPreflight": true
+        } }));
+        assert_eq!(probe["error"]["code"], "client.schema_downgrade", "{probe}");
+        assert_eq!(
+            probe["error"]["details"],
+            json!({ "persistedVersion": 2, "requestedVersion": 1 })
+        );
+        assert_eq!(
+            host.command(&json!({ "method": "securityLifecycle", "params": {} }))["result"]
+                ["state"],
+            "preflight",
+            "the memory core is kept"
+        );
+        check("refused probe");
+        // 3. The persisted version opens the file; the memory core is gone.
+        let exact = host.command(&json!({ "method": "create", "params": {
+            "schema": versioned(2), "database": "actor", "securityPreflight": true
+        } }));
+        assert!(exact.get("error").is_none(), "{exact}");
+        check("persisted version in preflight");
+        host.command(&json!({ "method": "activateSecurity", "params": {} }));
+        assert_eq!(rows(), 1, "the actor file is open");
+        check("persisted version active");
+        // 4. Back to memory: the file connection and its reader are closed, so
+        //    a WAL file can leave WAL, which needs every other connection gone.
+        let memory =
+            host.command(&json!({ "method": "create", "params": { "schema": versioned(2) } }));
+        assert!(memory.get("error").is_none(), "{memory}");
+        check("memory again in preflight");
+        host.command(&json!({ "method": "activateSecurity", "params": {} }));
+        assert_eq!(rows(), 0, "the memory core is back");
+        let exclusive = rusqlite::Connection::open(&file).expect("reopen the actor file");
+        let mode: String = exclusive
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(mode, "delete", "no other connection holds the actor file");
+        let mode: String = exclusive
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .expect("journal mode");
+        assert_eq!(mode, "wal");
+        drop(exclusive);
+        check("memory again");
+        // 5. The target version opens the actor file.
+        let target = host.command(&json!({ "method": "create", "params": {
+            "schema": versioned(3), "database": "actor", "securityPreflight": true
+        } }));
+        assert!(target.get("error").is_none(), "{target}");
+        check("target version in preflight");
+        let activated = host.command(&json!({ "method": "activateSecurity", "params": {} }));
+        assert!(activated.get("error").is_none(), "{activated}");
+        check("target version active");
+        host.command(&json!({ "method": "shutdown", "params": {} }));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
