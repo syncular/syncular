@@ -28,29 +28,25 @@ import {
 import { LOCAL_SCHEMA_VERSION_KEY } from './schema';
 import { getMeta } from './state';
 
-/** @internal The client internals one replacement call uses. */
-export interface PendingCommitReplacementHost {
-  readonly client: SyncClient;
+/** @internal Called by the client with the internals one replacement uses. */
+export type PendingCommitReplacement = (
+  client: SyncClient,
   /** The client's clock. */
-  now(): number;
+  now: () => number,
   /** One round trip on the client's transport, outside any sync round. */
-  send(request: Uint8Array): Promise<Uint8Array>;
+  send: (request: Uint8Array) => Promise<Uint8Array>,
   /** The push-result path of a sync response, for a fence's stored result. */
-  receive(message: ResponseMessage, commit: OutboxCommit): Promise<unknown>;
+  receive: (message: ResponseMessage, commit: OutboxCommit) => Promise<unknown>,
   /**
    * Validate `mutations` as `mutate` does, roll `replacing` back and record
    * the replacement in its outbox position, with `within` in its transaction.
    */
-  append(
+  append: (
     clientCommitId: string,
     mutations: readonly MutationInput[],
     within: (batch: ChangeAccumulator) => void,
     replacing: OutboxCommit,
-  ): void;
-}
-
-export type PendingCommitReplacement = (
-  host: PendingCommitReplacementHost,
+  ) => void,
   clientCommitId: string,
   operations: readonly MutationInput[],
   replacementClientCommitId: string,
@@ -58,8 +54,16 @@ export type PendingCommitReplacement = (
 
 /** Enable `replacePendingCommit` (§7.2.3) on the client created with it. */
 export function definePendingCommitReplacement(): PendingCommitReplacement {
-  return async (host, clientCommitId, mutations, replacementClientCommitId) => {
-    const { client } = host;
+  return async (
+    client,
+    now,
+    send,
+    receive,
+    append,
+    clientCommitId,
+    mutations,
+    replacementClientCommitId,
+  ) => {
     const db = client.database;
     if (
       !replacementClientCommitId ||
@@ -111,7 +115,7 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
     // replacement transaction runs once and rolls back.
     const dryRun = new Error('dry run');
     try {
-      host.append(
+      append(
         replacementClientCommitId,
         mutations,
         () => {
@@ -126,7 +130,7 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
       if (client.transportGate() === 'closed')
         throw new ClientSyncError('sync.offline', 'transport gate is closed');
       const response = decodeFenceResponse(
-        await host.send(
+        await send(
           encodeFenceRequest(
             definedObject({
               type: 'REQ_HEADER',
@@ -160,7 +164,7 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
       if (answer?.type !== 'COMMIT_FENCED') {
         // The response header and the server's stored receipt of the original
         // run through the push-result path, as the push response it lost.
-        await host.receive(
+        await receive(
           {
             wireVersion: PROTOCOL_WIRE_VERSION,
             msgKind: 'response',
@@ -207,7 +211,7 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
     }
     // The commit as it stands now: a local purge can drop it during the fence.
     const original = pending();
-    host.append(
+    append(
       replacementClientCommitId,
       mutations,
       (batch) => {
@@ -242,12 +246,12 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
         ]);
         // §7.2.1: a decided rejection with one `client.commit_replaced`
         // result per operation, stored as a purge stores its drops.
-        const now = host.now();
+        const at = now();
         db.exec(
           `INSERT INTO ${OUTCOMES_TABLE}(client_commit_id,status,recorded_at_ms,results,resolution,resolved_at_ms,replacement_client_commit_id)VALUES(?,'rejected',?,?,'superseded',?,?)`,
           [
             clientCommitId,
-            now,
+            at,
             JSON.stringify(
               original.operations.map((_operation, opIndex) => ({
                 status: 'error',
@@ -260,7 +264,7 @@ export function definePendingCommitReplacement(): PendingCommitReplacement {
                 },
               })),
             ),
-            now,
+            at,
             replacementClientCommitId,
           ],
         );

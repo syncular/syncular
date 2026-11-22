@@ -21,10 +21,10 @@ import {
 } from './schema';
 import type { RowValue } from '@syncular/core';
 import type { RetainedCommitRow } from './outcomes';
-import type {
-  OutboxCommit,
-  OutboxBeforeImage,
-  OutboxOperation,
+import {
+  listOutboxBeforeImages,
+  type OutboxCommit,
+  type OutboxOperation,
 } from './outbox';
 import { deleteLocalRow, upsertLocalRow } from './apply';
 
@@ -119,11 +119,11 @@ export function retainedBaseWrite(
 export function retainFailedRows(
   db: ClientDatabase,
   commit: OutboxCommit,
-  images: readonly OutboxBeforeImage[],
   commitSeq?: number,
 ): void {
+  const images = listOutboxBeforeImages(db, commit.clientCommitId);
   for (const [index, operation] of commit.operations.entries()) {
-    const image = images.find((image) => image.opIndex === index);
+    const image = images.get(index);
     if (commitSeq !== undefined && (image?.deliverySeq ?? -1) >= commitSeq)
       continue;
     const initial =

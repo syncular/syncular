@@ -353,7 +353,7 @@ export class AuthorityReadPolicy {
             const images = listOutboxBeforeImages(db, commit.clientCommitId);
             for (const [idx, op] of commit.operations.entries()) {
               if (op.table !== name || bases.has(op.rowId)) continue;
-              const image = images.find((i) => i.opIndex === idx);
+              const image = images.get(idx);
               if (
                 !image ||
                 (image.existed &&

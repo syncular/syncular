@@ -3932,20 +3932,18 @@ export class SyncClient {
       );
     return this.#serialize(() =>
       replace(
-        {
-          client: this,
-          now: this.#now,
-          send: (request) => this.#roundTrip(request),
-          receive: (message, commit) =>
-            this.#processResponse(message, [commit], undefined, 'delta'),
-          append: (id, mutations, within, replacing) =>
-            this.#appendCommit(
-              id,
-              this.#outboxOperations(mutations),
-              within,
-              replacing,
-            ),
-        },
+        this,
+        this.#now,
+        (request) => this.#roundTrip(request),
+        (message, commit) =>
+          this.#processResponse(message, [commit], undefined, 'delta'),
+        (id, mutations, within, replacing) =>
+          this.#appendCommit(
+            id,
+            this.#outboxOperations(mutations),
+            within,
+            replacing,
+          ),
         clientCommitId,
         operations,
         replacementClientCommitId,
@@ -4121,10 +4119,9 @@ export class SyncClient {
           for (;;) {
             const caught = listOutbox(this.#db)
               .filter((commit) => {
-                const images = new Map(
-                  listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
-                    (image) => [image.opIndex, image],
-                  ),
+                const images = listOutboxBeforeImages(
+                  this.#db,
+                  commit.clientCommitId,
                 );
                 return commit.operations.some((operation, opIndex) => {
                   const targets = targetsByTable.get(operation.table);
@@ -4578,11 +4575,7 @@ export class SyncClient {
           (code === 'client.encrypt_failed' ||
             code === REPLACEMENT_REFUSED_CODE)
         )
-          retainFailedRows(
-            this.#db,
-            commit,
-            listOutboxBeforeImages(this.#db, commit.clientCommitId),
-          );
+          retainFailedRows(this.#db, commit);
         this.#rollbackFailedCommit(commit, batch, classifiedFailures);
         if (replay) this.#replayOutbox();
         // §7.2/§7.4.4: the journal holds the operation envelope only when its
@@ -6401,12 +6394,7 @@ export class SyncClient {
       // "already applied, you may have missed the ack".
       if (frame.commitSeq === undefined)
         throw invalidHostResponse('ACK lacks a commit sequence');
-      retainFailedRows(
-        this.#db,
-        commit,
-        listOutboxBeforeImages(this.#db, commit.clientCommitId),
-        frame.commitSeq,
-      );
+      retainFailedRows(this.#db, commit, frame.commitSeq);
       this.#setSyncNeeded(true);
       recordCommitOutcome(this.#db, {
         clientCommitId: frame.clientCommitId,
@@ -6499,12 +6487,7 @@ export class SyncClient {
     // validator-rejected updates even when the server emitted no new COMMIT;
     // later pending overlays are then replayed with rebased before-images.
     this.#db.transaction(() => {
-      if (this.#retainFailedCommits)
-        retainFailedRows(
-          this.#db,
-          commit,
-          listOutboxBeforeImages(this.#db, commit.clientCommitId),
-        );
+      if (this.#retainFailedCommits) retainFailedRows(this.#db, commit);
       this.#rollbackFailedCommit(commit, batch);
       // §7.2: rebasing a rejection reaches rows the same-row replay inside
       // `#rollbackFailedCommit` cannot: peers of a secondary UNIQUE index
@@ -7091,13 +7074,10 @@ export class SyncClient {
     replacement: readonly OutboxOperation[] = [],
     append?: () => void,
   ): void {
-    const imagesOf = (pending: OutboxCommit) =>
-      new Map(
-        listOutboxBeforeImages(this.#db, pending.clientCommitId).map(
-          (image) => [image.opIndex, image],
-        ),
-      );
-    const imageByIndex = imagesOf(commit);
+    const imageByIndex = listOutboxBeforeImages(
+      this.#db,
+      commit.clientCommitId,
+    );
     const complete = commit.operations.every((_, index) =>
       imageByIndex.has(index),
     );
@@ -7113,7 +7093,10 @@ export class SyncClient {
       const unrestored = new Set(affectedKeys);
       for (const pending of [commit, ...later]) {
         if (!unrestored.size) break;
-        const images = pending === commit ? imageByIndex : imagesOf(pending);
+        const images =
+          pending === commit
+            ? imageByIndex
+            : listOutboxBeforeImages(this.#db, pending.clientCommitId);
         pending.operations.forEach((operation, index) => {
           const image = images.get(index);
           if (unrestored.delete(rowKey(operation)) && image)

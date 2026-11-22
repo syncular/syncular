@@ -174,32 +174,38 @@ export function deleteOutboxCommit(
   ]);
 }
 
+/** A commit's before-images keyed by operation index. */
 export function listOutboxBeforeImages(
   db: ClientDatabase,
   clientCommitId: string,
-): OutboxBeforeImage[] {
-  return db
-    .query(
-      `SELECT op_index,existed,sync_version,values_json,delivery_seq FROM ${OUTBOX_IMAGES} WHERE client_commit_id=? ORDER BY op_index`,
-      [clientCommitId],
-    )
-    .map((row) => ({
-      opIndex: row.op_index as number,
-      existed: row.existed === 1,
-      ...(typeof row.delivery_seq === 'number'
-        ? { deliverySeq: row.delivery_seq }
-        : {}),
-      ...(typeof row.sync_version === 'number'
-        ? { syncVersion: row.sync_version }
-        : {}),
-      ...(typeof row.values_json === 'string'
-        ? {
-            values: JSON.parse(row.values_json) as Readonly<
-              Record<string, JsonRowValue>
-            >,
-          }
-        : {}),
-    }));
+): Map<number, OutboxBeforeImage> {
+  return new Map(
+    db
+      .query(
+        `SELECT op_index,existed,sync_version,values_json,delivery_seq FROM ${OUTBOX_IMAGES} WHERE client_commit_id=? ORDER BY op_index`,
+        [clientCommitId],
+      )
+      .map((row) => [
+        row.op_index as number,
+        {
+          opIndex: row.op_index as number,
+          existed: row.existed === 1,
+          ...(typeof row.delivery_seq === 'number'
+            ? { deliverySeq: row.delivery_seq }
+            : {}),
+          ...(typeof row.sync_version === 'number'
+            ? { syncVersion: row.sync_version }
+            : {}),
+          ...(typeof row.values_json === 'string'
+            ? {
+                values: JSON.parse(row.values_json) as Readonly<
+                  Record<string, JsonRowValue>
+                >,
+              }
+            : {}),
+        },
+      ]),
+  );
 }
 
 /** Each image carries its operation's row key, the index of every per-row outbox lookup. */

@@ -17,7 +17,7 @@ import {
 } from '@syncular/core';
 import { localStateCorrupt } from './errors';
 import type { CompiledClientSchema, CompiledClientTable } from './schema';
-import type { WindowBase } from './window';
+import { type WindowBase, windowUnitScopes } from './window';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
 
@@ -123,7 +123,7 @@ export function coverageCandidates(
   base: WindowBase,
   value: string,
 ): UnitRecord[] | true {
-  const entry: UnitScopes = { ...base.fixedScopes, [base.variable]: value };
+  const entry = windowUnitScopes(base, value);
   const found = units.filter(
     (unit) => covers(table, unit.scopes) && subsetScopes(unit.scopes, entry),
   );

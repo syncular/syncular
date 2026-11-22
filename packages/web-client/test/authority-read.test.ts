@@ -751,15 +751,9 @@ test('retained and acknowledged bases precede later pending edits; corrupt evide
     );
     client.patch('seals', 'one', { current: false });
     const { retainFailedRows } = await import('../src/failed-overlay');
-    const { listOutbox, listOutboxBeforeImages, deleteOutboxCommit } =
-      await import('../src/outbox');
+    const { listOutbox, deleteOutboxCommit } = await import('../src/outbox');
     const first = listOutbox(db)[0]!;
-    retainFailedRows(
-      db,
-      first,
-      listOutboxBeforeImages(db, first.clientCommitId),
-      8,
-    );
+    retainFailedRows(db, first, 8);
     deleteOutboxCommit(db, first.clientCommitId);
     client.patch('seals', 'one', { op_id: 'later' });
     await client.beginSecurityPreflight();
