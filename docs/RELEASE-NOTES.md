@@ -1,6 +1,6 @@
 # Syncular release notes
 
-## 0.103.3 release notes
+## 0.104.0 release notes
 
 ### A follower that wins the lock keeps its calls
 
@@ -27,6 +27,36 @@ that spans tables counts for each table it touches. An image of another table
 imports in bulk, and the pending rows stay visible and pending.
 
 [Bootstrap concepts](https://syncular.dev/concepts-bootstrap/)
+
+### The Rust client names both versions when it refuses a downgrade
+
+`client.schema_downgrade` carries `details: { persistedVersion,
+requestedVersion }` from the Rust core, as the TypeScript client already did. The
+command envelope passes the details on, so the FFI, Tauri and React Native hosts
+can read the persisted version and open that version next. A refused open or
+recreate writes neither the schema marker nor the descriptor.
+
+### A refused Tauri create keeps webview reads open
+
+A Tauri `create`, `shutdown` or `beginSecurityPreflight` closes the plugin's
+read gate while it runs. When the core refused it, for example a create that
+failed with `client.schema_downgrade`, the previous core stayed but the gate
+stayed shut, so webview reads failed with `client.security_preflight_required`.
+The plugin now reads the kept core's `securityLifecycle` and opens the gate
+again when that core is active; a core in preflight keeps reads shut.
+
+[Tauri specifics](https://syncular.dev/platform-tauri-specifics/)
+
+### Upgrading
+
+- `syncular-client`: `SyncClient::open_path`, `SyncClient::open_path_with_identity`
+  and `SyncClient::recreate_with_schema` return `ClientError` instead of
+  `String`. Read `error.code`, `error.details` and `error.retryable`;
+  `client.storage_busy` stays retryable.
+- Command and FFI hosts: an open or recreate error carries a static message, and
+  the rendered cause moves to `details.legacyCause`, the shape every other
+  command error already has. `client.schema_downgrade` carries
+  `persistedVersion` and `requestedVersion` instead.
 
 ## 0.103.2 release notes
 

@@ -54,6 +54,13 @@ startSyncWorker({
         true,
       );
     }
-    return new BunClientDatabase();
+    const options =
+      config.database.mode === 'custom' ? config.database.options : undefined;
+    // A test that needs a replica on disk passes its path.
+    return new BunClientDatabase(
+      typeof options === 'object' && options !== null && 'path' in options
+        ? String(options.path)
+        : undefined,
+    );
   },
 });

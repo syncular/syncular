@@ -1427,17 +1427,34 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       ]);
       const rows = await a.api.readRows('tasks');
       const subscription = await unitProgress(a, U1);
-      let code: unknown;
+      check(a.api.querySnapshot !== undefined, 'local snapshot reads');
+      const schemaRecords = async () =>
+        (
+          await a.api.querySnapshot!(
+            "SELECT key, value FROM _syncular_meta WHERE key IN ('localSchemaVersion', 'localSchemaDescriptor') ORDER BY key",
+          )
+        ).rows;
+      const records = await schemaRecords();
+      let refusal: { code?: unknown; details?: unknown } = {};
       try {
         await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_META);
       } catch (error) {
-        code =
-          error instanceof Error && 'code' in error ? error.code : undefined;
+        if (error instanceof Error)
+          refusal = {
+            code: 'code' in error ? error.code : undefined,
+            details: 'details' in error ? error.details : undefined,
+          };
       }
       checkEqual(
-        code,
-        'client.schema_downgrade',
-        '§7.4.2 refuses a v3 replica with a v2 schema',
+        refusal,
+        {
+          code: 'client.schema_downgrade',
+          details: {
+            persistedVersion: 3,
+            requestedVersion: FIXTURE_SCHEMA_V2_DROP_META.version,
+          },
+        },
+        '§7.4.2 refuses a v3 replica with a v2 schema and names both versions',
       );
       // Reopen with the compatible build. This also checks the TS driver,
       // whose recreation releases the old core before starting the new one.
@@ -1446,6 +1463,11 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         await a.api.upgrading?.(),
         false,
         '§7.4.2 refusal did not reset the marker',
+      );
+      checkEqual(
+        await schemaRecords(),
+        records,
+        '§7.4.2 refusal wrote neither the marker nor the descriptor',
       );
       checkEqual(
         await a.api.pendingCommitIds(),

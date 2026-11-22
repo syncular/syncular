@@ -131,10 +131,17 @@ fn schema_downgrade_refuses_all_opens_and_recreate_without_mutation() {
         crate::previous_version::PREVIOUS_VERSION_CONTAINER_SUFFIX
     );
     let context = std::fs::read(&container).expect("captured context");
-    assert!(client
+    let refused = client
         .recreate_with_schema(&older)
-        .expect_err("refuse recreate")
-        .starts_with("client.schema_downgrade:"));
+        .expect_err("refuse recreate");
+    assert_eq!(refused.code, "client.schema_downgrade");
+    assert_eq!(
+        refused.details,
+        Some(json!({
+            "persistedVersion": 3,
+            "requestedVersion": older["version"].as_i64().unwrap(),
+        }))
+    );
     assert_eq!(client.schema.version, 3);
     assert_eq!(client.conn.total_changes(), changes);
     assert_eq!(client.pending_commit_ids(), outbox);
@@ -175,11 +182,12 @@ fn schema_downgrade_refuses_all_opens_and_recreate_without_mutation() {
                 &older,
                 previous_version_limits(),
                 Connection::open(&path).expect("connection"),
-            ),
+            )
+            .map_err(ClientError::from),
         }
         .err()
         .expect("refuse open");
-        assert!(error.starts_with("client.schema_downgrade:"));
+        assert_eq!(error.code, "client.schema_downgrade");
         let conn = Connection::open(&path).expect("inspect");
         assert_eq!(
             conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
@@ -292,7 +300,7 @@ fn schema_marker_errors_refuse_open_and_recreate_without_mutation() {
         let error = client
             .recreate_with_schema(&previous_version_schema(4))
             .expect_err("refuse corrupt marker");
-        assert!(error.starts_with("sync.local_corrupt:"));
+        assert!(error.to_string().starts_with("sync.local_corrupt:"));
         assert_eq!(client.conn.total_changes(), changes);
         assert_eq!(client.schema.version, 3);
         assert_eq!(client.pending_commit_ids(), vec![commit]);
@@ -316,7 +324,7 @@ fn schema_marker_errors_refuse_open_and_recreate_without_mutation() {
         )
         .err()
         .expect("refuse unreadable marker");
-        assert!(error.starts_with("sync.local_corrupt:"));
+        assert!(error.to_string().starts_with("sync.local_corrupt:"));
         assert_eq!(std::fs::read(&path).expect("after"), before);
         std::fs::remove_file(path).expect("remove fixture");
     }
@@ -391,8 +399,9 @@ fn file_identity_constructor_refuses_a_file_that_cannot_enter_wal() {
     )
     .err()
     .expect("a memdb file cannot enter WAL mode");
+    assert_eq!(error.code, "sync.invalid_request");
     assert_eq!(
-        error,
+        error.details.expect("legacy cause")["legacyCause"],
         "sync.invalid_request: file-backed client requires WAL journal mode"
     );
 }
@@ -553,7 +562,7 @@ fn non_positive_generated_schema_versions_are_refused_before_storage() {
             .err()
             .expect("refuse before storage");
             assert!(
-                error.starts_with("sync.invalid_request:"),
+                error.to_string().starts_with("sync.invalid_request:"),
                 "{version}: {error}"
             );
             assert!(
@@ -599,7 +608,10 @@ fn a_duplicated_schema_marker_is_refused_without_a_reset() {
     )
     .err()
     .expect("refuse a duplicated marker");
-    assert!(error.starts_with("sync.local_corrupt:"), "{error}");
+    assert!(
+        error.to_string().starts_with("sync.local_corrupt:"),
+        "{error}"
+    );
     let probe = Connection::open(path_str).expect("probe");
     assert_eq!(
         probe
@@ -656,7 +668,10 @@ fn a_refused_open_does_not_persist_wal_or_mutate_the_replica() {
     )
     .err()
     .expect("refuse the identity mismatch");
-    assert!(error.starts_with("client.identity_mismatch:"), "{error}");
+    assert!(
+        error.to_string().starts_with("client.identity_mismatch:"),
+        "{error}"
+    );
     let probe = Connection::open(path_str).expect("probe");
     assert_eq!(
         journal_mode(&probe),
@@ -754,7 +769,10 @@ fn a_concurrent_marker_upgrade_refuses_a_stale_recreate() {
     let error = client
         .recreate_with_schema(&previous_version_schema(1))
         .expect_err("a concurrent upgrade must refuse the stale recreate");
-    assert!(error.starts_with("client.schema_downgrade:"), "{error}");
+    assert!(
+        error.to_string().starts_with("client.schema_downgrade:"),
+        "{error}"
+    );
     assert_eq!(client.schema.version, 1, "the compiled schema is restored");
     assert_eq!(
         client.pending_commit_ids(),
@@ -879,7 +897,9 @@ fn a_failed_outer_commit_restores_every_reset_side_effect() {
     let error = client
         .recreate_with_schema(&dropped)
         .expect_err("a blocked COMMIT must refuse the recreation");
-    assert!(error.starts_with("client.storage_busy:"), "{error}");
+    // The typed recreate error keeps the String boundary's retryable rule.
+    assert_eq!(error.code, "client.storage_busy", "{error}");
+    assert!(error.retryable);
     assert!(
         client.overlay_rebuild_count.get() > rebuilds,
         "the reset ran to its overlay rebuild inside the transaction"

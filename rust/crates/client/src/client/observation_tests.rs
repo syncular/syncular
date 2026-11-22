@@ -3226,10 +3226,12 @@ fn open_path_rejects_invalid_push_limits_before_storage() {
         } else {
             SyncClient::open_path("bad-limits".into(), &schema, limits, path.to_str().unwrap())
         }
-        .err();
+        .err()
+        .expect("refuse bad limits");
+        assert_eq!(error.code, "sync.invalid_request");
         assert_eq!(
-            error.as_deref(),
-            Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
+            error.details.expect("cause")["legacyCause"],
+            "sync.invalid_request: push limit must be an integer in 1..=4294967295"
         );
         assert!(
             !path.exists(),
@@ -6617,7 +6619,10 @@ fn overlay_replay_trigger_refuses_reopen_and_preserves_durable_intent() {
     )
     .err()
     .expect("reopen must fail");
-    assert!(error.contains("replay failed"));
+    assert!(error.details.expect("cause")["legacyCause"]
+        .as_str()
+        .unwrap()
+        .contains("replay failed"));
     let conn = Connection::open(&path).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM tasks", [], |row| row.get::<_, i64>(0))
@@ -10369,7 +10374,8 @@ fn a_failed_value_recovery_commit_restores_every_side_effect() {
     let error = client
         .recreate_with_schema(&schema)
         .expect_err("a blocked COMMIT must refuse the recovery");
-    assert!(error.starts_with("client.storage_busy:"), "{error}");
+    assert_eq!(error.code, "client.storage_busy", "{error}");
+    assert!(error.retryable);
     assert!(client.conn.is_autocommit(), "the transaction is released");
     assert_eq!(client.local_revision().unwrap(), revision);
     assert_eq!(client.pending_commit_ids(), prior_outbox);
@@ -10551,7 +10557,10 @@ fn schema_marker_read_keeps_storage_classification() {
     let reader = Connection::open(&path).expect("reader connection");
     reader.busy_timeout(std::time::Duration::ZERO).unwrap();
     let locked = read_local_schema_version(&reader, 1).expect_err("locked marker read");
-    assert!(locked.starts_with("client.storage_busy:"), "{locked}");
+    assert!(
+        locked.to_string().starts_with("client.storage_busy:"),
+        "{locked}"
+    );
     locker.execute_batch("ROLLBACK").unwrap();
     assert_eq!(read_local_schema_version(&reader, 1).unwrap(), Some(1));
     let rows = setup

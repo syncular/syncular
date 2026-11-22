@@ -1546,7 +1546,10 @@ fn a_version_3_pending_eviction_that_cannot_be_carried_fails_loudly_before_any_w
     )
     .err()
     .expect("the upgrade refuses");
-    assert!(error.starts_with("sync.local_corrupt"), "{error}");
+    assert!(
+        error.to_string().starts_with("sync.local_corrupt"),
+        "{error}"
+    );
     let conn = Connection::open(&path).unwrap();
     let kept: bool = conn
         .query_row(
@@ -1979,7 +1982,10 @@ fn a_corrupt_generation_record_refuses_the_bump_before_mutation() {
     )
     .err()
     .expect("a corrupt generation record refuses the bump");
-    assert!(error.starts_with("sync.local_corrupt"), "{error}");
+    assert!(
+        error.to_string().starts_with("sync.local_corrupt"),
+        "{error}"
+    );
     let client = SyncClient::open_path(
         "units-client".into(),
         &generated(1, Some("t1"), Some("n1")),

@@ -30,6 +30,11 @@ import {
   workerStartupError,
 } from '@syncular/client';
 import { handleSyncRequest } from '@syncular/server';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { BunClientDatabase } from '../src/bun-database';
+import { SyncClient } from '../src/client';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
@@ -2129,5 +2134,39 @@ test('a host drive through the worker handle holds its idle-confirming round for
   } finally {
     if (allowed === undefined) delete server.allowed['actor-1'];
     else server.allowed['actor-1'] = allowed;
+  }
+});
+
+test('a worker handle on a newer replica rejects with client.schema_downgrade and both versions', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-rpc-downgrade-'));
+  const path = join(directory, 'replica.db');
+  try {
+    const newer = new SyncClient({
+      database: new BunClientDatabase(path),
+      schema: { ...CLIENT_SCHEMA, version: CLIENT_SCHEMA.version + 2 },
+      transport: async () => new Uint8Array(),
+    });
+    await newer.start();
+    await newer.close();
+    const opening = createSyncClientHandle({
+      leaderLock: singleOwnerLock(),
+      worker: () => new Worker(WORKER_URL),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom', options: { path } },
+      endpoints: { syncUrl: 'https://invalid.test/sync' },
+      autoSync: false,
+      multiTab: false,
+    });
+    const error = await opening.then(
+      () => undefined,
+      (failure: unknown) => failure as { code?: string; details?: unknown },
+    );
+    expect(error?.code).toBe('client.schema_downgrade');
+    expect(error?.details).toEqual({
+      persistedVersion: CLIENT_SCHEMA.version + 2,
+      requestedVersion: CLIENT_SCHEMA.version,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

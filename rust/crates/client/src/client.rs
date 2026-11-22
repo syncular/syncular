@@ -2190,7 +2190,10 @@ fn validate_client_limits(limits: &crate::api::ClientLimits) -> Result<(), Strin
     Ok(())
 }
 
-fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option<i32>, String> {
+fn read_local_schema_version(
+    conn: &Connection,
+    requested: i32,
+) -> Result<Option<i32>, ClientError> {
     let corrupt =
         || "sync.local_corrupt: persisted local schema marker is unreadable or invalid".to_owned();
     let table_type: Option<String> = conn
@@ -2205,7 +2208,7 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
         return Ok(None);
     };
     if table_type != "table" {
-        return Err(corrupt());
+        return Err(corrupt().into());
     }
     // §7.4.2: a duplicated marker cannot be resolved. `query_row` would take
     // whichever row SQLite returns first, and an older one would drive a
@@ -2223,7 +2226,7 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
         .transpose()
         .map_err(schema_marker_read_failure)?;
     if rows.next().map_err(schema_marker_read_failure)?.is_some() {
-        return Err(corrupt());
+        return Err(corrupt().into());
     }
     let Some(value) = value else {
         let has_descriptor = conn
@@ -2236,23 +2239,32 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
             .map_err(schema_marker_read_failure)?
             .is_some();
         if has_descriptor {
-            return Err(corrupt());
+            return Err(corrupt().into());
         }
         return Ok(None);
     };
     if !matches!(value.as_bytes().first(), Some(b'1'..=b'9'))
         || !value.bytes().all(|b| b.is_ascii_digit())
     {
-        return Err(corrupt());
+        return Err(corrupt().into());
     }
     let version = value.parse::<i32>().map_err(|_| corrupt())?;
     if version > requested {
-        return Err(
-            "client.schema_downgrade: persisted local schema is newer than the requested schema"
-                .to_owned(),
-        );
+        return Err(ClientError {
+            code: "client.schema_downgrade".to_owned(),
+            message: "persisted local schema is newer than the requested schema".to_owned(),
+            details: Some(json!({ "persistedVersion": version, "requestedVersion": requested })),
+            retryable: false,
+        });
     }
     Ok(Some(version))
+}
+
+/// The open and recreate constructors' error: a converted core error keeps
+/// `retryable` for `client.storage_busy` exactly as the String boundary did.
+fn open_failure(mut error: ClientError) -> ClientError {
+    error.retryable = error.code == "client.storage_busy";
+    error
 }
 
 /// Open a replica file. On a browser worker the file must recover a hot
@@ -2308,11 +2320,14 @@ impl SyncClient {
         schema_json: &Value,
         limits: ClientLimits,
         path: &str,
-    ) -> Result<Self, String> {
-        validate_client_limits(&limits)?;
-        parse_schema_json(schema_json)?;
-        let conn = open_replica(path)?;
-        Self::with_connection(client_id, schema_json, limits, conn)
+    ) -> Result<Self, ClientError> {
+        (|| {
+            validate_client_limits(&limits)?;
+            parse_schema_json(schema_json)?;
+            let conn = open_replica(path)?;
+            Self::with_connection_identity(Some(client_id), schema_json, limits, conn)
+        })()
+        .map_err(open_failure)
     }
 
     /// Open a file replica and resolve its client id. Native targets require
@@ -2325,7 +2340,7 @@ impl SyncClient {
         schema_json: &Value,
         limits: ClientLimits,
         path: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ClientError> {
         Self::open_path_with_identity_journal(
             client_id,
             schema_json,
@@ -2335,6 +2350,7 @@ impl SyncClient {
                 && !path.is_empty()
                 && path != ":memory:",
         )
+        .map_err(open_failure)
     }
 
     fn open_path_with_identity_journal(
@@ -2343,7 +2359,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
         require_wal: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ClientError> {
         validate_client_limits(&limits)?;
         // §7.4.2: an invalid requested version is refused before the replica is
         // even created, so a rejected constructor leaves no file behind.
@@ -2375,7 +2391,9 @@ impl SyncClient {
                 .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
             if journal_mode != "wal" {
                 return Err(
-                    "sync.invalid_request: file-backed client requires WAL journal mode".to_owned(),
+                    "sync.invalid_request: file-backed client requires WAL journal mode"
+                        .to_owned()
+                        .into(),
                 );
             }
         }
@@ -2460,7 +2478,12 @@ impl SyncClient {
         limits: ClientLimits,
         conn: Connection,
     ) -> Result<Self, String> {
-        Self::with_connection_identity(Some(client_id), schema_json, limits, conn)
+        Self::with_connection_identity(Some(client_id), schema_json, limits, conn).map_err(
+            |error| match error.details.as_ref().and_then(|d| d.get("legacyCause")) {
+                Some(Value::String(cause)) => cause.clone(),
+                _ => error.to_string(),
+            },
+        )
     }
 
     /// [`Self::with_connection`] for `open_path_with_identity`: no requested id
@@ -2470,7 +2493,7 @@ impl SyncClient {
         schema_json: &Value,
         limits: ClientLimits,
         conn: Connection,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, ClientError> {
         validate_client_limits(&limits)?;
         let schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&schema, &limits.authority_reads)
@@ -2563,7 +2586,7 @@ impl SyncClient {
             .conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
-        let startup = (|| -> Result<(), String> {
+        let startup = (|| -> Result<(), ClientError> {
             // The marker guard runs inside the write transaction, so the version
             // it validates is the version every write below commits under.
             let marker = read_local_schema_version(&client.conn, client.schema.version)?;
@@ -2575,7 +2598,8 @@ impl SyncClient {
                     Some(requested) if existing != requested => {
                         return Err(format!(
                             "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {requested:?}"
-                        ))
+                        )
+                        .into())
                     }
                     _ => client.client_id = existing,
                 },
@@ -2660,7 +2684,7 @@ impl SyncClient {
                         // Keep a failed rollback's typed storage classification.
                         let _ = Self::sqlite_failure(&client.storage_failure, rollback);
                     }
-                    Err(failure)
+                    Err(failure.into())
                 }
             },
             Err(error) => {
@@ -4395,93 +4419,96 @@ impl SyncClient {
     /// a durable replica, holds the guard and every write it authorizes under
     /// one write transaction, and preserves the current client (compiled
     /// schema, outbox, tables) on refusal.
-    pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
-        let new_schema = parse_schema_json(schema_json)?;
-        validate_authority_reads(&new_schema, &self.limits.authority_reads)
-            .map_err(|error| error.to_string())?;
-        // §3.3: a reopened client remembers no re-armed window unit.
-        self.window_armed.clear();
-        self.conn
-            .execute_batch("BEGIN IMMEDIATE")
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        self.opening_replica = true;
-        let prior_schema = std::mem::replace(&mut self.schema, new_schema);
-        // §7.4.3/§7.4.4: a reset inside this transaction mutates in-memory
-        // state (dropped outbox commits, rejections, upgrade and floor flags,
-        // overlay dirtiness) and appends change/intent batches. A COMMIT that
-        // fails after the reset succeeded rolls the database back, so every
-        // one of those fields is captured here and restored with it.
-        let rollback = self.capture();
-        let guarded = (|| -> Result<(), String> {
-            // §7.4.2: the marker is re-read under the write lock the caller
-            // holds, so a replica another process upgraded meanwhile refuses
-            // this recreation instead of having its marker and tables
-            // downgraded.
-            let marker = read_local_schema_version(&self.conn, self.schema.version)?;
-            self.create_bookkeeping_tables()?;
-            match marker {
-                Some(version) if version < self.schema.version => self.run_schema_reset()?,
-                None => {
-                    self.detach_projections(None)?;
-                    self.create_synced_tables()?;
-                    self.persist_schema_version()?;
+    pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), ClientError> {
+        (|| -> Result<(), ClientError> {
+            let new_schema = parse_schema_json(schema_json)?;
+            validate_authority_reads(&new_schema, &self.limits.authority_reads)
+                .map_err(|error| error.to_string())?;
+            // §3.3: a reopened client remembers no re-armed window unit.
+            self.window_armed.clear();
+            self.conn
+                .execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.opening_replica = true;
+            let prior_schema = std::mem::replace(&mut self.schema, new_schema);
+            // §7.4.3/§7.4.4: a reset inside this transaction mutates in-memory
+            // state (dropped outbox commits, rejections, upgrade and floor flags,
+            // overlay dirtiness) and appends change/intent batches. A COMMIT that
+            // fails after the reset succeeded rolls the database back, so every
+            // one of those fields is captured here and restored with it.
+            let rollback = self.capture();
+            let guarded = (|| -> Result<(), ClientError> {
+                // §7.4.2: the marker is re-read under the write lock the caller
+                // holds, so a replica another process upgraded meanwhile refuses
+                // this recreation instead of having its marker and tables
+                // downgraded.
+                let marker = read_local_schema_version(&self.conn, self.schema.version)?;
+                self.create_bookkeeping_tables()?;
+                match marker {
+                    Some(version) if version < self.schema.version => self.run_schema_reset()?,
+                    None => {
+                        self.detach_projections(None)?;
+                        self.create_synced_tables()?;
+                        self.persist_schema_version()?;
+                    }
+                    Some(_) => {
+                        self.detach_projections(None)?;
+                        self.create_synced_tables()?;
+                    }
                 }
-                Some(_) => {
-                    self.detach_projections(None)?;
-                    self.create_synced_tables()?;
+                // §7.4.2: recreation IS the boot for the in-memory core, so reload the
+                // durable outbox the same-version path is about to replay. Only the
+                // outbox is reloaded: the recovery below reads it, and the caller's
+                // rollback snapshot already covers this field.
+                self.outbox = self.load_outbox()?.into();
+                // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
+                // this guarded boundary once the schema and marker agree. A bump went
+                // through `run_schema_reset`, which performs the same recovery after
+                // it creates the new physical tables and before its final replay.
+                self.drop_unencodable_outbox(false, None)?;
+                if marker == Some(self.schema.version)
+                    && (!self.outbox.is_empty()
+                        || !self.failed_commits.is_empty()
+                        || self.has_acknowledged_rows()?)
+                {
+                    self.overlay_dirty.set(true);
+                    self.rebuild_overlay()?;
                 }
+                self.prune_unknown_units(false)?;
+                self.save_unit_scope_schema()?;
+                // The conformance recreate is the in-memory equivalent of reopening
+                // a durable client. Apply the same startup catch-up contract even
+                // when the schema itself did not change.
+                self.enqueue_startup_sync_if_needed()?;
+                self.projection_pending_queue
+                    .extend(self.collect_projection_pending()?);
+                Ok(())
+            })();
+            self.opening_replica = false;
+            let outcome = match guarded {
+                Ok(()) => self
+                    .conn
+                    .execute_batch("COMMIT")
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error).into()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = outcome {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    // Keep a failed rollback's typed storage classification.
+                    let _ = Self::sqlite_failure(&self.storage_failure, rollback);
+                }
+                self.schema = prior_schema;
+                self.restore(rollback);
+                // Prepared insert statements were derived from the reverted schema.
+                self.insert_sql.borrow_mut().clear();
+                return Err(error);
             }
-            // §7.4.2: recreation IS the boot for the in-memory core, so reload the
-            // durable outbox the same-version path is about to replay. Only the
-            // outbox is reloaded: the recovery below reads it, and the caller's
-            // rollback snapshot already covers this field.
-            self.outbox = self.load_outbox()?.into();
-            // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
-            // this guarded boundary once the schema and marker agree. A bump went
-            // through `run_schema_reset`, which performs the same recovery after
-            // it creates the new physical tables and before its final replay.
-            self.drop_unencodable_outbox(false, None)?;
-            if marker == Some(self.schema.version)
-                && (!self.outbox.is_empty()
-                    || !self.failed_commits.is_empty()
-                    || self.has_acknowledged_rows()?)
-            {
-                self.overlay_dirty.set(true);
-                self.rebuild_overlay()?;
+            if !self.security_preflight {
+                self.drain_pending_evictions()?;
             }
-            self.prune_unknown_units(false)?;
-            self.save_unit_scope_schema()?;
-            // The conformance recreate is the in-memory equivalent of reopening
-            // a durable client. Apply the same startup catch-up contract even
-            // when the schema itself did not change.
-            self.enqueue_startup_sync_if_needed()?;
-            self.projection_pending_queue
-                .extend(self.collect_projection_pending()?);
             Ok(())
-        })();
-        self.opening_replica = false;
-        let outcome = match guarded {
-            Ok(()) => self
-                .conn
-                .execute_batch("COMMIT")
-                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error)),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = outcome {
-            if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                // Keep a failed rollback's typed storage classification.
-                let _ = Self::sqlite_failure(&self.storage_failure, rollback);
-            }
-            self.schema = prior_schema;
-            self.restore(rollback);
-            // Prepared insert statements were derived from the reverted schema.
-            self.insert_sql.borrow_mut().clear();
-            return Err(error);
-        }
-        if !self.security_preflight {
-            self.drain_pending_evictions()?;
-        }
-        Ok(())
+        })()
+        .map_err(open_failure)
     }
 
     fn enqueue_startup_sync_if_needed(&mut self) -> Result<(), String> {
@@ -4640,7 +4667,8 @@ impl SyncClient {
         // under this reset's transaction: a replica another process upgraded
         // meanwhile refuses here instead of being reset to this client's
         // older schema.
-        read_local_schema_version(&self.conn, self.schema.version)?;
+        read_local_schema_version(&self.conn, self.schema.version)
+            .map_err(|error| error.to_string())?;
         // §7.4.3: a schema bump keeps every table whose generation equals the
         // persisted one; the log-epoch reset keeps nothing. The previous
         // declaration evidence decides which units cover only kept tables.

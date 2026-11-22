@@ -7124,8 +7124,9 @@ converge on the identical wipe-re-bootstrap-replay:
 
    Every replica constructor, open, and recreation MUST refuse a persisted
    marker newer than the requested generated version with the non-retryable
-   typed error `client.schema_downgrade`. The error message is static; versions
-   belong in structured details when the error surface supports them. Refusal
+   typed error `client.schema_downgrade`. The error message is static; the
+   details carry `persistedVersion` and `requestedVersion` as integers on every
+   host, so a caller can open the persisted version next. Refusal
    MUST precede bookkeeping writes, schema replacement, previous-version
    container cleanup or capture, and outbox replay. The
    database, outbox, and an existing client remain unchanged.

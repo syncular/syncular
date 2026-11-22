@@ -876,7 +876,7 @@ pub fn dispatch<T: Transport>(
             // restarts; absent it, the default in-memory core (the shim's mode).
             let mut instance = match db_path {
                 Some(path) => SyncClient::open_path_with_identity(client_id, schema, limits, path)
-                    .map_err(client_err)?,
+                    .map_err(CommandError::from_client)?,
                 None => {
                     SyncClient::new_with_identity(client_id, schema, limits).map_err(client_err)?
                 }
@@ -1732,7 +1732,7 @@ pub fn dispatch<T: Transport>(
                 .ok_or_else(|| client_err("recreateWithSchema missing schema".to_owned()))?;
             need_client(client)?
                 .recreate_with_schema(schema)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             Ok(json!({}))
         }
         "localAuthorityState" => Ok(json!({ "state": transport.local_authority_state() })),
@@ -2204,8 +2204,13 @@ mod tests {
         assert_eq!(error.code, "client.schema_downgrade");
         assert_eq!(
             error.message,
-            "client.schema_downgrade: persisted local schema is newer than the requested schema"
+            "persisted local schema is newer than the requested schema"
         );
+        assert_eq!(
+            error.details,
+            Some(json!({ "persistedVersion": 3, "requestedVersion": 2 }))
+        );
+        assert!(!error.retryable);
         dispatch(
             &mut transport,
             &mut client,
@@ -2223,6 +2228,32 @@ mod tests {
         )
         .expect_err("refuse open");
         assert_eq!(error.code, "client.schema_downgrade");
+        assert_eq!(
+            error.message,
+            "persisted local schema is newer than the requested schema"
+        );
+        assert_eq!(
+            error.details,
+            Some(json!({ "persistedVersion": 3, "requestedVersion": 2 }))
+        );
+        assert!(client.is_none());
+        // Every other open error has the shape of any other command error: a
+        // static message and the rendered cause in details.legacyCause.
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": newer, "dbPath": path, "clientId": "another-client" }),
+        )
+        .expect_err("refuse another identity");
+        assert_eq!(error.code, "client.identity_mismatch");
+        assert!(!error.message.contains("another-client"));
+        assert!(error.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .starts_with("client.identity_mismatch: this database belongs to"));
+        assert!(!error.retryable);
         assert!(client.is_none());
         dispatch(
             &mut transport,
