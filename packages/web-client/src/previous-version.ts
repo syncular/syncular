@@ -32,7 +32,7 @@
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError, localStateCorrupt } from './errors';
-import { INVALID_HOST_RESPONSE_CODE } from './local-rebootstrap';
+import { INVALID_HOST_RESPONSE_CODE, isCount } from './local-rebootstrap';
 import {
   bytesToHex,
   type CompiledClientSchema,
@@ -206,10 +206,6 @@ export interface PreviousVersionSnapshot {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function invalidHostResponse(method: string): never {

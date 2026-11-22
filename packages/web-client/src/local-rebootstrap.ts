@@ -41,7 +41,8 @@ function invalidHostResponse(): never {
   );
 }
 
-function isCount(value: unknown): value is number {
+/** A non-negative safe integer. */
+export function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 

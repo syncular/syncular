@@ -79,7 +79,9 @@ import {
   applySqliteSegment,
   deleteLocalRow,
   deleteScopedRows,
+  dropRetainedThrough,
   localScopePredicate,
+  retainsRows,
   ownsLocalRow,
   evictScopedRows,
   yieldToHost,
@@ -2724,17 +2726,11 @@ export class SyncClient {
         if (transport.fetchUrl === undefined) {
           throw invalidRequest('blob transport has no URL fetcher');
         }
-        if (
-          response.urlExpiresAtMs !== undefined &&
-          response.urlExpiresAtMs <= this.#now()
-        ) {
-          // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
-          throw new ClientSyncError(
-            'sync.segment_expired',
-            'blob url expired before fetch',
-            true,
-          );
-        }
+        // §5.9.5: re-requesting the URL recovers.
+        this.#refuseExpired(
+          response.urlExpiresAtMs,
+          'blob url expired before fetch',
+        );
         bytes = await transport.fetchUrl(response.url, ref?.byteLength);
       } else {
         bytes = response.bytes;
@@ -6770,10 +6766,8 @@ export class SyncClient {
         effective,
         () =>
           (owners ??=
-            this.#db.query(
-              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`,
-              [table.name],
-            ).length > 0 || this.#scopedRowsExist(table, effective, [])
+            retainsRows(this.#db, table) ||
+            this.#scopedRowsExist(table, effective, [])
               ? unitOwners(loadUnits(this.#db), table, unit.id)
               : []),
       );
@@ -6800,6 +6794,12 @@ export class SyncClient {
       });
       summary.failed.push(unit.id);
     }
+  }
+
+  /** §5.4/§5.9.5: MUST NOT start a fetch at or past a URL's expiry. */
+  #refuseExpired(expiresAtMs: number | undefined, message: string): void {
+    if (expiresAtMs !== undefined && expiresAtMs <= this.#now())
+      throw new ClientSyncError('sync.segment_expired', message, true);
   }
 
   async #downloadSegment(
@@ -6829,17 +6829,10 @@ export class SyncClient {
       ) {
         throw invalidRequest('a signed segment URL requires accept bit 3');
       }
-      if (
-        frame.urlExpiresAtMs !== undefined &&
-        frame.urlExpiresAtMs <= this.#now()
-      ) {
-        // §5.4: MUST NOT start a fetch at/past expiry.
-        throw new ClientSyncError(
-          'sync.segment_expired',
-          `segment download grant expired; pull again (§5.4)`,
-          true,
-        );
-      }
+      this.#refuseExpired(
+        frame.urlExpiresAtMs,
+        `segment download grant expired; pull again (§5.4)`,
+      );
       bytes = await fetchUrl(frame.url, onProgress, signal, frame.byteLength);
     } else {
       bytes = await downloader({
@@ -6994,9 +6987,11 @@ export class SyncClient {
         );
         restoreFailedBases(this.#db, this.#schema, scope);
         for (const row of covered)
-          this.#db.exec(
-            `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
-            [table.name, String(row.id), end.nextCursor],
+          dropRetainedThrough(
+            this.#db,
+            table.name,
+            String(row.id),
+            end.nextCursor,
           );
         batch.table(table.name);
         this.#replayOutbox(scope, false);

@@ -1,4 +1,5 @@
 import { localStateCorrupt } from './errors';
+import { isCount } from './local-rebootstrap';
 
 const LEGACY_MARKER = 'v1';
 const RECEIPT_VERSION = 2;
@@ -15,10 +16,6 @@ export interface LocalDataRebootstrapReceipt {
 
 function invalidReceipt(): never {
   throw localStateCorrupt('persisted local rebootstrap receipt is invalid');
-}
-
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** Encode only the bounded counts that are safe to replay outside the core. */

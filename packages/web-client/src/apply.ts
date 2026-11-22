@@ -228,10 +228,7 @@ export async function applyCommitFrame(
             commit.seq,
           ]);
       }
-      db.exec(
-        `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
-        [change.table.name, rowId, frame.commitSeq],
-      );
+      dropRetainedThrough(db, change.table.name, rowId, frame.commitSeq);
       if (!land) continue;
       if (change.op === 'delete') deleteLocalRow(db, change.table, rowId);
       else {
@@ -360,8 +357,24 @@ export function ownsLocalRow(
   );
 }
 
+/** Drop the acknowledged retained rows of one row through `commitSeq`. */
+export function dropRetainedThrough(
+  db: ClientDatabase,
+  table: string,
+  rowId: string,
+  commitSeq: number,
+): void {
+  db.exec(
+    `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
+    [table, rowId, commitSeq],
+  );
+}
+
 /** Whether the failed overlay (§7.4.4) retains rows of `table`. */
-function retainsRows(db: ClientDatabase, table: CompiledClientTable): boolean {
+export function retainsRows(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+): boolean {
   return (
     db.query(`SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`, [table.name])
       .length > 0
