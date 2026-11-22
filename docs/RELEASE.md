@@ -1,7 +1,7 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.104.0** (`v0.104.0`). All artifacts use Apache-2.0, except
+current release is **0.105.0** (`v0.105.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 Per-version release notes live in [`RELEASE-NOTES.md`](RELEASE-NOTES.md), newest first. `scripts/version.ts release-notes` reads the section for the root version from that file.
@@ -167,7 +167,7 @@ older releases wrote.
 - `packages/typegen/src/generation-0101.ts` and the `named0101` set in
   `packages/typegen/src/sql.ts` compute the table generations `typegen`
   0.101.0 and earlier emitted, for `equivalentGenerations` (SPEC §7.4.3,
-  since 0.104.1). With them gone, the first bump after an upgrade from a
+  since 0.105.0). With them gone, the first bump after an upgrade from a
   0.101.0 replica resets every table with a declared index or FTS5
   projection. The client lookup can stay: a schema without the key keeps
   the generation rule alone.

@@ -1,6 +1,6 @@
 # Syncular release notes
 
-## 0.104.1 release notes
+## 0.105.0 release notes
 
 ### A bump keeps the unchanged tables of a 0.101.0 replica
 
@@ -21,7 +21,7 @@ from before that version and keeps it on one from after.
 
 ### Upgrading
 
-- Upgrade `@syncular/typegen` and the client packages to 0.104.1 and run
+- Upgrade `@syncular/typegen` and the client packages to 0.105.0 and run
   `syncular generate`. The manifest, the migrations and the migration lock do
   not change. No app-side bridge is needed; remove any code that rewrote
   `localTableGenerations`.
@@ -33,10 +33,15 @@ from before that version and keeps it on one from after.
   wire-shape comparison strips it with `generation` and `localProjections`.
 - Both clients refuse to compile a schema whose `equivalentGenerations` is not
   an array of strings.
+- Rust: `syncular_client::schema::TableIr` and `TableSchema` gain the public
+  field `equivalent_generations: Vec<String>`. Code that builds either struct
+  with a struct literal adds `equivalent_generations: Vec::new()`; code that
+  parses or compiles a schema needs no change. This is why the release is
+  0.105.0 and not a patch.
 - The multi-tab protocol moves to 14, because the worker init configuration
   carries the schema and its tables gain `equivalentGenerations`. A 0.104.0
-  tab and a 0.104.1 tab refuse each other's link until every tab runs
-  0.104.1. The first 0.104.1 tab takes the lock from a 0.104.0 leader, and
+  tab and a 0.105.0 tab refuse each other's link until every tab runs
+  0.105.0. The first 0.105.0 tab takes the lock from a 0.104.0 leader, and
   each 0.104.0 tab stays `blocked` with reason `leader-incompatible` and
   `leader: 'newer'`, its calls rejecting with `client.leader_incompatible`,
   until it reloads. Reload older tabs after deploying.
@@ -335,7 +340,7 @@ drops an index the app created.
   0.101.0 generations, so every table that has an index or FTS, or that a
   migration names only in a `CREATE INDEX`, `DROP INDEX` or fts5
   `CREATE VIRTUAL TABLE` statement, resets once, bootstraps again and replays
-  the outbox on top. Since 0.104.1, `typegen` lists the 0.101.0 generations of
+  the outbox on top. Since 0.105.0, `typegen` lists the 0.101.0 generations of
   unchanged tables, and such a bump keeps them.
 - **TypeScript apps with FTS add the projection implementation.** FTS search is
   a projection, so a schema with FTS needs it, like app-filled projections:
