@@ -4954,9 +4954,11 @@ impl SyncClient {
     /// its optimistic projection, and raise a client-local
     /// `sync.outbox_incompatible` rejection.
     fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
+        // §8.8: only the commits this round pushes; a held commit waits.
         let incompatible = self
             .outbox
             .iter()
+            .take(self.pushable_commits())
             .filter(|commit| {
                 first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some()
             })
@@ -7234,7 +7236,8 @@ impl SyncClient {
     /// (an envelope or a type an earlier version accepted). `with_encryption`
     /// additionally drops commits whose §5.11 encryption cannot resolve a key;
     /// the startup boundary leaves those to the send seam, where hosts configure
-    /// keys after open.
+    /// keys after open. The send path checks only the commits this round pushes
+    /// (§8.8): a held commit is never encoded or dropped before it is due.
     /// Recovery runs as one observation. An enclosing observation (the guarded
     /// schema reset) passes its `batch`, so the rejection, outcome, and table
     /// domains join that change event instead of publishing a second one.
@@ -7244,7 +7247,12 @@ impl SyncClient {
         batch: Option<&mut ChangeAccumulator>,
     ) -> Result<bool, String> {
         let mut failures = Vec::new();
-        for commit in self.outbox.iter() {
+        let due = if with_encryption {
+            self.pushable_commits()
+        } else {
+            self.outbox.len()
+        };
+        for commit in self.outbox.iter().take(due) {
             for op in &commit.ops {
                 let Some(table) = self.schema.table(&op.table).filter(|_| op.upsert) else {
                     continue;

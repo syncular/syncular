@@ -367,6 +367,70 @@ fn subscribe_many_registers_all_or_nothing() {
 
 #[cfg(feature = "e2ee")]
 #[test]
+fn the_send_seam_encodes_only_the_commits_the_gate_lets_this_round_push() {
+    let schema = json!({
+        "version": 1,
+        "tables": [{
+            "name": "notes",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "key_id", "type": "string", "nullable": true },
+                { "name": "body", "type": "bytes", "nullable": true,
+                  "encrypted": true, "declaredType": "string" }
+            ],
+            "scopes": []
+        }]
+    });
+    let mut client = SyncClient::new("held-prefix".into(), &schema, ClientLimits::default())
+        .expect("test client");
+    let keys = |names: &[&str]| {
+        let mut config = crate::values::EncryptionConfig::default();
+        for name in names {
+            config.keys.insert((*name).to_owned(), vec![name.as_bytes()[0]; 32]);
+        }
+        config.key_id_columns.insert("notes".to_owned(), "key_id".to_owned());
+        config
+    };
+    client.set_encryption(keys(&["A", "B"]));
+    let queue = |client: &mut SyncClient, id: &str, key: &str| {
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "notes".into(),
+                values: Map::from_iter([
+                    ("id".to_owned(), json!(id)),
+                    ("key_id".to_owned(), json!(key)),
+                    ("body".to_owned(), json!("note")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap()
+    };
+    let ordinary = queue(&mut client, "ordinary", "A");
+    let foreign = queue(&mut client, "foreign", "B");
+    // Key B is not loaded now: only the foreign commit cannot encode.
+    client.set_encryption(keys(&["A"]));
+    let pending = vec![ordinary.clone(), foreign.clone()];
+    // §8.8: a `pull` round pushes nothing, so it encodes and drops nothing.
+    client.transport_gate = crate::TransportGate::Pull;
+    assert!(!client.drop_unencodable_outbox(true, None).unwrap());
+    // A `through` round checks only its prefix; the foreign tail waits.
+    client.transport_gate = crate::TransportGate::Through(ordinary.clone());
+    assert!(!client.drop_unencodable_outbox(true, None).unwrap());
+    assert_eq!(client.pending_commit_ids(), pending);
+    assert!(client.rejections().is_empty());
+    // Once the foreign commit is due, it fails to encode and drops as before.
+    client.transport_gate = crate::TransportGate::Open;
+    assert!(client.drop_unencodable_outbox(true, None).unwrap());
+    assert_eq!(client.pending_commit_ids(), vec![ordinary]);
+    let rejections = client.rejections();
+    assert_eq!(rejections.len(), 1);
+    assert_eq!(rejections[0].code, "client.encrypt_failed");
+    assert_eq!(rejections[0].client_commit_id, foreign);
+}
+
+#[cfg(feature = "e2ee")]
+#[test]
 fn an_unresolvable_key_id_becomes_a_durable_rejection_at_the_push_seam() {
     let schema = json!({
         "version": 1,

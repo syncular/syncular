@@ -1292,6 +1292,102 @@ export const encryptionScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §5.11/§8.8: the send seam encodes only the commits the gate lets a
+    // round push. A held commit whose key is not loaded keeps its place and
+    // has no outcome until it is due; a due one that cannot encode drops.
+    name: 'encryption/a-held-commit-without-its-key-waits-until-due',
+    specRefs: ['§5.11', '§8.8'],
+    server: SELECTED_SERVER,
+    async run(ctx: ScenarioContext) {
+      const keyOf = (name: string) => ({ $bytes: name.repeat(64) });
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-held-prefix',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        transportGate: 'pull',
+        encryption: {
+          keys: { 'key-a': keyOf('a') },
+          keyIdColumns: { secrets: 'encryption_key_id' },
+        },
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      const pushed = () =>
+        a.sentRequests.flatMap((bytes) =>
+          decodeMessage(bytes).frames.flatMap((frame) =>
+            frame.type === 'PUSH_COMMIT' ? [frame.clientCommitId] : [],
+          ),
+        );
+      const queue = (id: string, keyId: string) =>
+        a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'secrets',
+            values: {
+              id,
+              project_id: 'p1',
+              encryption_key_id: keyId,
+              note: id,
+            },
+          },
+        ]);
+      const settled = async () =>
+        Object.fromEntries(
+          (await a.api.commitOutcomes()).map((outcome) => [
+            outcome.clientCommitId,
+            outcome.status,
+          ]),
+        );
+      const ordinary = await queue('ordinary', 'key-a');
+      const foreign = await queue('foreign', 'key-b');
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [ordinary, foreign],
+        'a pull round leaves both commits pending',
+      );
+      checkEqual(await settled(), {}, 'a pull round settles nothing');
+      await a.api.setTransportGate({ through: ordinary });
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [foreign],
+        'the bounded prefix settles and the foreign tail waits',
+      );
+      checkEqual(
+        await settled(),
+        { [ordinary]: 'applied' },
+        'the foreign tail has no outcome',
+      );
+      checkEqual(pushed(), [ordinary], 'only the prefix is pushed');
+      await a.api.addEncryptionKeys({ 'key-b': keyOf('b') });
+      await a.api.setTransportGate('open');
+      await syncIdle(a);
+      checkEqual(
+        await settled(),
+        { [ordinary]: 'applied', [foreign]: 'applied' },
+        'the foreign commit settles once its key is loaded and it is due',
+      );
+      checkEqual(pushed(), [ordinary, foreign], 'each commit is pushed once');
+      const eligible = await queue('eligible', 'key-c');
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.rejections()).map((rejection) => [
+          rejection.clientCommitId,
+          rejection.code,
+        ]),
+        [[eligible, 'client.encrypt_failed']],
+        'a due commit that cannot encode still drops',
+      );
+      checkEqual(
+        pushed(),
+        [ordinary, foreign],
+        'the dropped commit is never pushed',
+      );
+    },
+  },
+  {
     // §7.1 + §5.11: the push byte budget counts the encrypted frame. A cap one
     // byte below the real encrypted request fails with the full encoded size,
     // and the request on the wire carries ciphertext, never the plaintext.

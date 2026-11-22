@@ -4624,7 +4624,11 @@ while a present NULL never does (absent is not NULL). A missing, encrypted,
 empty, or non-string selector with no usable stored value fails locally with
 `client.encrypt_failed`; it never falls back to another key. An encode-time
 selection or unknown-key failure is a durable client-local rejection for that
-commit and never aborts the round.
+commit and never aborts the round. The client encodes, and so rejects, only the
+commits the round pushes under its transport gate (§8.8): a commit a `closed`
+or `pull` gate holds, or one after a `through` boundary, stays pending with
+no outcome until a round pushes it, and the same holds for a persisted value
+the current codec refuses.
 On encode the client resolves `keyId`, embeds it in the envelope, and encrypts
 with the keyring's key for that `keyId`. On apply the client reads `keyId`
 **from the envelope** and decrypts with the keyring's key for it, so key

@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.105.1 release notes
+
+### A held commit without its key waits until it is due
+
+Before every round the Rust client checked every outbox commit against the
+current keyring and codec, whatever the transport gate let that round send. A
+commit held behind `pull` or after a `through` boundary whose key was not
+loaded was dropped with `client.encrypt_failed`: its rows were undone and a
+rejection was journaled for a commit no round had tried to send. The Rust
+client now checks only the commits the round pushes: none under `closed` or
+`pull`, the prefix through the boundary under `through`, the whole outbox
+under `open`. The same scoping covers the drop of a persisted value the
+current codec refuses and of a commit the current schema cannot encode. A held
+commit keeps its place, its attempt marker and its rows, and has no outcome.
+Once its key is loaded and a round pushes it, it settles once. A commit the
+round pushes that cannot encode still drops with `client.encrypt_failed`, as
+before. The TypeScript client already encoded only the commits a round pushes.
+Open-time recovery of codec-refused values still covers the whole outbox in
+both clients.
+
+[Encryption keys](https://syncular.dev/concepts-encryption/#encryption-keys)
+
 ## 0.105.0 release notes
 
 ### A bump keeps the unchanged tables of a 0.101.0 replica
