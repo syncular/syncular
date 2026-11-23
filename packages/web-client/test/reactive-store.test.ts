@@ -2082,6 +2082,46 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     store.dispose();
   });
 
+  test('a resolved outcome and its conflicts publish after the query reads of their batch (§7.8)', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const query = store.query<Row>(querySpec());
+    const order: string[] = [];
+    const offQuery = query.subscribe(() => order.push('query'));
+    const offOutcomes = store.outcomes.subscribe(() => order.push('outcomes'));
+    await drainMicrotasks();
+    const calls = client.outcomeCalls;
+    const conflictCalls = client.conflictCalls;
+    let answer!: (snapshot: QuerySnapshot<object>) => void;
+    client.snapshots.push(new Promise((resolve) => (answer = resolve)));
+    order.length = 0;
+    // Keeping the server row restores it and resolves the outcome at once.
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+        outcomesChanged: true,
+        conflictsChanged: true,
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(client.outcomeCalls).toBe(calls);
+    expect(client.conflictCalls).toBe(conflictCalls);
+    answer({
+      revision: 2n,
+      rows: [{ id: 't1', title: 'server' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks(24);
+    expect(client.outcomeCalls).toBe(calls + 1);
+    expect(client.conflictCalls).toBe(conflictCalls + 1);
+    expect(order[0]).toBe('query');
+    offQuery();
+    offOutcomes();
+    store.dispose();
+  });
+
   test('a window snapshot says whether it has read the core', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);

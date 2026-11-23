@@ -8380,6 +8380,9 @@ query that is reading has answered at the batch's revision or stopped. A batch
 that changes a window starts the reads that an import deferred. A completed
 unit therefore never reaches a render before the query answers that include
 the unit's rows, whether they arrived in the same batch or an earlier one.
+Conflict and commit-outcome observers read after the same query reads, so a
+resolution never reaches a render before the query answers that show the row
+it restored.
 A query without coverage ([SYQL.md §13.1](./SYQL.md#131-ordinary-query)), whose completeness the application
 takes from a window, depends on this order.
 

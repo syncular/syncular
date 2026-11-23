@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title: 'useCommitOutcomes updates after the queries show the restored row',
+    body: 'Keeping the server row of a conflict restores the row and resolves the outcome in one change. The reactive store read the journal and the queries of that change at the same time, so `useCommitOutcomes` and `useConflicts` could drop the conflict while a query still showed the local row. Both now read after the queries that change made read again have answered, the order `useWindow` keeps since 0.105.8.',
+    links: [
+      {
+        href: '/guide-concurrency-correction/',
+        label: 'Concurrency correction',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title: 'Image imports amortize the journal cost of secondary indexes',
     body: 'The rollback journal copies every page a transaction changes, so a transaction into a table with secondary indexes over spread keys journals most of their pages, whatever its row count. Image import sized each transaction from its whole write time and shrank to 1,024 rows, which repeated that cost per transaction: 33 transactions and 131 s of writing for a 42,752-row relations image on slowed storage. Both cores now split write time into a per-row and a fixed part from two transactions of different size, and grow a transaction until its per-row time matches the fixed part or its commit.',
     links: [

@@ -1,5 +1,18 @@
 # Syncular release notes
 
+## 0.105.10 release notes
+
+Conflict and commit-outcome observers of the reactive store (`useConflicts`,
+`useCommitOutcomes`) now read after the query reads of the same change, the
+order window observers keep since 0.105.8. `resolveCommitOutcome` with
+`resolved_keep_server` restores the server row and resolves the outcome in one
+change; the store read the journal at once, so an outcome list could drop the
+conflict while a subscribed query still showed the local row. A web app's
+plan showed its own 09:00 entry for 116 ms after the resolution before the
+query answered with the winning 09:05 (SPEC §7.8). An app that marks an outcome
+resolved from the value `resolveCommitOutcome` returns bypasses this order;
+read the resolution from `useCommitOutcomes` instead. No API changes.
+
 ## 0.105.9 release notes
 
 Image import no longer shrinks its transactions to 1,024 rows when write time

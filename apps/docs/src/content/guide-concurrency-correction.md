@@ -494,7 +494,12 @@ an unannounced last-write-wins overwrite.
 ::::step{title="Render and restore the correction inbox" time="5 min"}
 `useCommitOutcomes()` observes the durable journal. Filter on `resolution` and
 failure status, and derive correction state from the journal instead of from
-transient toast state:
+transient toast state. For a change that resolves an outcome, the hook reads
+the journal only after the queries that change made read again have answered,
+so a resolved conflict leaves the inbox no earlier than the rows it restored
+reach those queries. Marking an outcome resolved from the value
+`resolveCommitOutcome` returns skips that order and can show the local row for
+a moment:
 
 ```tsx
 import type { SyncClientHandle } from '@syncular/client';

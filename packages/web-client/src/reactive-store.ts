@@ -1490,7 +1490,8 @@ export class ReactiveClientStore {
         this.#activate();
     });
     this.#offChange = this.client.onChange((batch) => {
-      this.#windows.onChange(batch, this.#queries.onChange(batch));
+      const reads = this.#queries.onChange(batch);
+      this.#windows.onChange(batch, reads);
       if (batch.status !== undefined) {
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
@@ -1499,10 +1500,11 @@ export class ReactiveClientStore {
           isLoading: false,
         });
       }
-      if (batch.conflictsChanged || batch.rejectionsChanged) {
-        this.conflicts.refresh();
-      }
-      if (batch.outcomesChanged) this.outcomes.refresh();
+      // SPEC §7.8: like a window, a conflict or outcome reads after the
+      // query reads of its batch.
+      if (batch.conflictsChanged || batch.rejectionsChanged)
+        void reads.then(() => this.conflicts.refresh());
+      if (batch.outcomesChanged) void reads.then(() => this.outcomes.refresh());
     });
     const roundFailure = this.roundFailure as ValueEntry<
       SyncRoundFailedError | undefined
