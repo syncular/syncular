@@ -2,7 +2,11 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SyncClient, type ClientSchema } from '@syncular/client';
+import {
+  ReactiveClientStore,
+  SyncClient,
+  type ClientSchema,
+} from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import {
   handleSyncRequest,
@@ -338,4 +342,64 @@ test('the conflict snapshot stays fixed and a keep-server decision replays durab
   await s.reopen();
   expect(outcomeOf(s.reader.commitDelivery(id))).toEqual(kept);
   expect(s.reader.query('SELECT body FROM notes')).toEqual([{ body: 'later' }]);
+});
+
+test('keep server never renders the local row after the conflict leaves the outcomes', async () => {
+  const s = await setup();
+  // A worker answers reads over RPC: the query answer arrives late.
+  let held: Promise<void> | undefined;
+  const reader = s.reader;
+  const port = new Proxy(reader, {
+    get: (target, key) =>
+      key === 'querySnapshot'
+        ? async (...args: Parameters<SyncClient['querySnapshot']>) => {
+            const snapshot = target.querySnapshot(...args);
+            await held;
+            return snapshot;
+          }
+        : (() => {
+            const value: unknown = Reflect.get(target, key, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          })(),
+  });
+  const store = new ReactiveClientStore(port);
+  store.start();
+  const query = store.query<{ body: string }>({
+    id: 'notes:body',
+    sql: 'SELECT body FROM notes WHERE id = ?',
+    params: ['n1'],
+    dependencies: [{ table: 'notes' }],
+  });
+  const frames: { body: string | undefined; active: boolean }[] = [];
+  const frame = () =>
+    frames.push({
+      body: query.getSnapshot().rows[0]?.body,
+      active: store.outcomes
+        .getSnapshot()
+        .outcomes.some(
+          (outcome) =>
+            outcome.clientCommitId === s.outcome.clientCommitId &&
+            outcome.resolution === 'active',
+        ),
+    });
+  const offQuery = query.subscribe(frame);
+  const offOutcomes = store.outcomes.subscribe(frame);
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  expect(frames.at(-1)).toEqual({ body: 'mine', active: true });
+  let release!: () => void;
+  held = new Promise((resolve) => (release = resolve));
+  reader.resolveCommitOutcome({
+    clientCommitId: s.outcome.clientCommitId,
+    resolution: 'resolved_keep_server',
+  });
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  release();
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+  expect(frames.at(-1)).toEqual({ body: 'peer', active: false });
+  expect(frames.filter((seen) => seen.body === 'mine' && !seen.active)).toEqual(
+    [],
+  );
+  offQuery();
+  offOutcomes();
+  store.dispose();
 });
