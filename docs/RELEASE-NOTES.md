@@ -9,9 +9,13 @@ the import writes rows of units that are still bootstrapping. A keep-server
 resolution restores the server row in such a batch, so a query deferred it and
 kept the local row until the import ended, while `useCommitOutcomes` (ordered
 after the query reads in flight since 0.105.10) found no read to wait for and
-dropped the conflict. A web app's plan showed the local time with no conflict
-marker after a reopened conflict was resolved during the reopen's first sync
-(SYNCULAR-OUTCOME-QUERY-HANDOFF-001, follow-up; SPEC §7.8). No API changes.
+dropped the conflict. A web app's mounted tests on the real 0.105.10 store
+fail in all four of its planning variants when a statusless resolution arrives
+while progress reports a running import, and pass on 0.105.11
+(SYNCULAR-OUTCOME-QUERY-HANDOFF-001, follow-up; SPEC §7.8). The app's real
+worker trace of the same flow had finished its import before the click and
+showed the correct order, so this change is not yet proven to explain every
+earlier failure of that flow. No API changes.
 
 ## 0.105.10 release notes
 
