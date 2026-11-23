@@ -295,3 +295,47 @@ test('a registration change during the drive keeps the decision pending', async 
     'applied',
   );
 });
+
+test('the conflict snapshot stays fixed and a keep-server decision replays durably', async () => {
+  const s = await setup();
+  const id = s.outcome.clientCommitId;
+  const [result] = s.outcome.results;
+  expect(result).toMatchObject({
+    status: 'conflict',
+    conflict: { serverRow: { body: 'peer' } },
+  });
+  const snapshot = result?.status === 'conflict' ? result.conflict : undefined;
+  // A later server version advances the retained base, never the snapshot.
+  s.peer.patch('notes', 'n1', { body: 'later' });
+  await s.peer.syncUntilIdle();
+  await s.reader.syncUntilIdle();
+  await s.reopen();
+  const reopened = outcomeOf(s.reader.commitDelivery(id))!;
+  expect(reopened.resolution).toBe('active');
+  expect(reopened.results[0]).toEqual({
+    status: 'conflict',
+    conflict: snapshot!,
+  });
+  expect(reopened.retainedRows![0]).toMatchObject({
+    serverRow: { body: 'later' },
+    serverVersion: s.version(),
+  });
+  expect(s.version()).toBeGreaterThan(snapshot!.serverVersion);
+
+  const kept = s.reader.resolveCommitOutcome({
+    clientCommitId: id,
+    resolution: 'resolved_keep_server',
+  });
+  expect(kept.resolution).toBe('resolved_keep_server');
+  // A repeated decision returns the recorded one, also after a restart.
+  expect(
+    s.reader.resolveCommitOutcome({
+      clientCommitId: id,
+      resolution: 'superseded',
+      replacementClientCommitId: 'other',
+    }),
+  ).toEqual(kept);
+  await s.reopen();
+  expect(outcomeOf(s.reader.commitDelivery(id))).toEqual(kept);
+  expect(s.reader.query('SELECT body FROM notes')).toEqual([{ body: 'later' }]);
+});

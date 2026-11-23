@@ -222,6 +222,12 @@ Security purge and scope revocation remove whole retained aggregates; retained i
 
 When a sparse conflict loses its server base, its operation and conflict evidence stay readable. The client leaves the local row absent and does not build a complete row from the saved before-image. The application must restore an authorized base or write a complete row before it retries that intent.
 
+### Verify a winner before keeping the server row
+
+The conflict record in an outcome's `results` holds the server row and `serverVersion` that won when the server answered. The client writes it once and never refreshes it, while `retainedRows` advances to each later delivered server version. Two events empty the record: a local data purge or a scope revocation that removes the row (see above). An application that must check the winner before it keeps it, for example two devices that each encrypted the same original, verifies `results[i].conflict.serverRow` and `serverVersion`. A version that arrives during the check changes `retainedRows` and leaves the checked record as it was. An emptied record has nothing to verify, so leave the outcome `active`.
+
+The outcome stays `active` across restarts until a resolution is recorded, so an interrupted check runs again on the same record. `resolveCommitOutcome` records the resolution in one local transaction and returns it; a later call for the same outcome returns the recorded resolution unchanged, also after a restart. `resolved_keep_server` drops the local intent and accepts no particular later version: a server version after the checked one is a later edit of that row. Both cores behave the same (`packages/web-client/test/replace-outcome.test.ts`, `rust/crates/client/src/client/replace_outcome_tests.rs`).
+
 ### Unique-index collisions
 
 A failed insert can collide with a different server primary key through a secondary unique index. The intended row stays in the journal while physical reads show the server winner. `retainedRows[].uniqueConflicts` lists the matching `index`, `columns`, competing `rowId`, and authorized `serverRow` and `serverVersion`. The same-ID `serverRow` stays null when that primary key has no server base. NULL values follow SQLite's unique-index semantics and do not collide.

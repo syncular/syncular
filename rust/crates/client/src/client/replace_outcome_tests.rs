@@ -580,3 +580,55 @@ fn a_bootstrap_covers_a_patch_acknowledged_after_a_schema_bump_reset() {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[test]
+fn the_conflict_snapshot_stays_fixed_and_a_keep_server_decision_replays_durably() {
+    let mut s = setup();
+    let id = s.outcome.client_commit_id.clone();
+    let snapshot = serde_json::to_value(&s.outcome.results).unwrap();
+    assert_eq!(snapshot[0]["conflict"]["serverRow"]["body"], json!("peer"));
+    // A later server version advances the retained base, never the snapshot.
+    patch(&mut s.peer, "body", "later", None);
+    idle(&mut s.peer, &mut s.server);
+    idle(&mut s.reader, &mut s.server);
+    s.reader = SyncClient::new("placeholder".into(), &schema(), ClientLimits::default()).unwrap();
+    s.reader = open_reader(&s.path);
+    let reopened = s.reader.commit_outcome(&id).unwrap().unwrap();
+    assert_eq!(reopened.resolution, CommitOutcomeResolution::Active);
+    assert_eq!(serde_json::to_value(&reopened.results).unwrap(), snapshot);
+    let retained = &reopened.retained_rows.unwrap()[0];
+    assert_eq!(
+        retained.server_row.as_ref().unwrap()["body"],
+        json!("later")
+    );
+    assert_eq!(retained.server_version, Some(row(&s.reader).0));
+    assert!(row(&s.reader).0 > snapshot[0]["conflict"]["serverVersion"].as_i64().unwrap());
+
+    let kept = s
+        .reader
+        .resolve_commit_outcome(ResolveCommitOutcomeInput {
+            client_commit_id: id.clone(),
+            resolution: CommitOutcomeResolution::ResolvedKeepServer,
+            replacement_client_commit_id: None,
+        })
+        .unwrap();
+    assert_eq!(kept.resolution, CommitOutcomeResolution::ResolvedKeepServer);
+    // A repeated decision returns the recorded one, also after a restart.
+    let repeated = s
+        .reader
+        .resolve_commit_outcome(ResolveCommitOutcomeInput {
+            client_commit_id: id.clone(),
+            resolution: CommitOutcomeResolution::Superseded,
+            replacement_client_commit_id: Some("other".into()),
+        })
+        .unwrap();
+    let json = |outcome: &CommitOutcome| serde_json::to_value(outcome).unwrap();
+    assert_eq!(json(&repeated), json(&kept));
+    s.reader = SyncClient::new("placeholder".into(), &schema(), ClientLimits::default()).unwrap();
+    s.reader = open_reader(&s.path);
+    assert_eq!(
+        json(&s.reader.commit_outcome(&id).unwrap().unwrap()),
+        json(&kept)
+    );
+    assert_eq!(row(&s.reader).2, json!("later"));
+}
