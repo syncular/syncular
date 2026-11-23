@@ -16,9 +16,17 @@ import type { SyncProgress } from '../../packages/web-client/src/progress';
 import { openPersistentWasmDatabase } from '../../packages/web-client/src/wasm-database';
 import { IMAGE_SCHEMA } from './image-import-fixture';
 
+type VfsStage = {
+  writeMs: number;
+  writeCalls: number;
+  writeBytes: number;
+  syncMs: number;
+  syncCalls: number;
+};
+
 const scope = globalThis as typeof globalThis & {
   __sqlite3?: { wasm: { heap8u(): Uint8Array } };
-  __vfs?: { syncMs: number; syncCalls: number };
+  __vfs?: { commit: boolean; inCommit: VfsStage; outside: VfsStage };
   postMessage(message: unknown): void;
 };
 
@@ -66,6 +74,25 @@ scope.onmessage = async (event: MessageEvent) => {
       })),
     };
     const database = await openPersistentWasmDatabase('image-range-lane');
+    // Import transactions: time from BEGIN to COMMIT and inside COMMIT. A
+    // transaction counts when the import's post-callback time grows after it.
+    const transactions = { count: 0, bodyMs: 0, commitMs: 0 };
+    let begun = 0;
+    let last = { bodyMs: 0, commitMs: 0 };
+    const exec = database.exec.bind(database);
+    database.exec = (sql, params) => {
+      if (current?.phase !== 'import') return exec(sql, params);
+      if (sql === 'BEGIN') begun = performance.now();
+      if (sql !== 'COMMIT') return exec(sql, params);
+      const at = performance.now();
+      scope.__vfs!.commit = true;
+      try {
+        return exec(sql, params);
+      } finally {
+        scope.__vfs!.commit = false;
+        last = { bodyMs: at - begun, commitMs: performance.now() - at };
+      }
+    };
     let rounds = 0;
     // Timeline of the import: one entry per pull round, and the intervals of
     // segment downloads and of image applies inside it.
@@ -158,6 +185,11 @@ scope.onmessage = async (event: MessageEvent) => {
         });
       const image = perImage.get(progress.segmentId)!;
       image.writeMs = progress.importWriteMs ?? 0;
+      if ((progress.importCommitMs ?? 0) !== image.commitMs) {
+        transactions.count++;
+        transactions.bodyMs += last.bodyMs;
+        transactions.commitMs += last.commitMs;
+      }
       image.commitMs = progress.importCommitMs ?? 0;
       const apply = applies.get(progress.segmentId);
       const spent =
@@ -184,7 +216,8 @@ scope.onmessage = async (event: MessageEvent) => {
     let sink = 0;
     for (let i = 0; i < 2e7; i++) sink = (sink + i * 7) % 1_000_003;
     probe = performance.now() - probe + (sink < 0 ? 1 : 0);
-    const vfsBefore = { ...(scope.__vfs ?? { syncMs: 0, syncCalls: 0 }) };
+    const vfsBefore = structuredClone(scope.__vfs!);
+    transactions.count = transactions.bodyMs = transactions.commitMs = 0;
     for (const table of Object.keys(images)) delete images[table];
     scope.postMessage({ t: 'phase', phase: 'import' });
     const started = performance.now();
@@ -246,7 +279,23 @@ scope.onmessage = async (event: MessageEvent) => {
       ]),
     );
     await client.close();
-    const vfs = scope.__vfs ?? { syncMs: 0, syncCalls: 0 };
+    const vfs = scope.__vfs!;
+    const delta = (stage: 'inCommit' | 'outside') =>
+      Object.fromEntries(
+        Object.entries(vfs[stage]).map(([key, value]) => [
+          key,
+          Math.round(value - vfsBefore[stage][key as keyof VfsStage]),
+        ]),
+      );
+    const writeMs = [...perImage.values()].reduce(
+      (sum, i) => sum + i.writeMs,
+      0,
+    );
+    const postMs = [...perImage.values()].reduce(
+      (sum, i) => sum + i.commitMs,
+      0,
+    );
+    const bookkeepingMs = transactions.bodyMs - writeMs;
     scope.postMessage({
       t: 'done',
       value: {
@@ -259,9 +308,16 @@ scope.onmessage = async (event: MessageEvent) => {
         firstUnitMs,
         readLagMs,
         cpuProbeMs: Math.round(probe),
-        vfs: {
-          syncCalls: vfs.syncCalls - vfsBefore.syncCalls,
-          syncMs: Math.round(vfs.syncMs - vfsBefore.syncMs),
+        vfs: { inCommit: delta('inCommit'), outside: delta('outside') },
+        stages: {
+          transactions: transactions.count,
+          writeMs: Math.round(writeMs),
+          postCallbackMs: Math.round(postMs),
+          bookkeepingMs: Math.round(bookkeepingMs),
+          commitMs: Math.round(transactions.commitMs),
+          publicationMs: Math.round(
+            postMs - bookkeepingMs - transactions.commitMs,
+          ),
         },
         perImage: [...perImage].map(([segmentId, image]) => ({
           table: image.table,

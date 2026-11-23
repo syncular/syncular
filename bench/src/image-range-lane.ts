@@ -8,7 +8,7 @@
  *
  *   bun run --cwd bench bench:image-range [--config before|after] [--runs 2] [--scale 1]
  *     [--units 7] [--fts] [--ephemeral] [--max-pages 1]
- *     [--browser firefox] [--cpu-throttle 6] [--sync-delay-ms 200]
+ *     [--browser firefox] [--cpu-throttle 6] [--sync-delay-ms 200] [--write-delay-ms 2]
  *
  * `before` lifts `maxImageSegmentBytes` to 4 GiB (one image per table), `after`
  * keeps the 32 MiB default.
@@ -20,11 +20,15 @@
  * `--browser` picks Chromium (default) or Firefox. `--cpu-throttle` slows
  * the renderer processes by that factor (persistent Chromium only). `--sync-delay-ms` holds every VFS `xSync` (a
  * `FileSystemSyncAccessHandle.flush()`) that long on top of its own time, the
- * way a slow disk or a scanning antivirus stretches a flush.
+ * way a slow disk or a scanning antivirus stretches a flush. `--write-delay-ms`
+ * holds every VFS `xWrite` that long, the way such a disk stretches each write.
  * `perImage` lists each image apply: rows, chunks, the largest chunk, the
- * write and commit time of its chunks, its wall time from the first progress
+ * write and post-callback time of its chunks, its wall time from the first progress
  * to the last chunk, the time between chunk commits outside them, and the
- * download time of its segment; `vfs` totals the `xSync` calls.
+ * download time of its segment; `vfs` totals the `xWrite` and `xSync` calls
+ * inside `COMMIT` and outside it. `stages` splits the post-callback time
+ * into bookkeeping (from the callback's end to `COMMIT`), `COMMIT`, and
+ * publication (after `COMMIT`), summed over the import's transactions.
  * The first run builds the images; later runs find them in the segment store,
  * so `serverSyncMs` shows the build cost.
  * Memory, sampled during the import only (`measureUserAgentSpecificMemory`
@@ -64,6 +68,7 @@ const { values } = parseArgs({
     browser: { type: 'string', default: 'chromium' },
     'cpu-throttle': { type: 'string', default: '1' },
     'sync-delay-ms': { type: 'string', default: '0' },
+    'write-delay-ms': { type: 'string', default: '0' },
   },
 });
 if (values.config !== 'before' && values.config !== 'after')
@@ -73,6 +78,7 @@ if (values.browser !== 'chromium' && values.browser !== 'firefox')
 const engine = values.browser === 'firefox' ? firefox : chromium;
 const cpuThrottle = Number(values['cpu-throttle']);
 const syncDelayMs = Number(values['sync-delay-ms']);
+const writeDelayMs = Number(values['write-delay-ms']);
 if (cpuThrottle !== 1 && (values.browser !== 'chromium' || values.ephemeral))
   throw new Error('--cpu-throttle needs a persistent Chromium context');
 const scale = Number(values.scale);
@@ -201,28 +207,42 @@ const vendor = dirname(
   ),
 );
 // Exposes the module so the worker can read the wasm heap size, and wraps
-// the xSync of every VFS file (replica and journal) to count it and to hold
-// it ${syncDelayMs} ms longer.
+// the xWrite and xSync of every VFS file (replica and journal) to count them
+// per stage and to hold them writeDelayMs and syncDelayMs longer.
 const shim = `
 import realInit from '/vendor/index.mjs';
 export default async function init(config) {
   const sqlite3 = await realInit(config);
   globalThis.__sqlite3 = sqlite3;
-  const totals = (globalThis.__vfs = { syncMs: 0, syncCalls: 0 });
+  const stage = () => ({ writeMs: 0, writeCalls: 0, writeBytes: 0, syncMs: 0, syncCalls: 0 });
+  const totals = (globalThis.__vfs = { commit: false, inCommit: stage(), outside: stage() });
   const Methods = sqlite3.capi.sqlite3_io_methods;
   const wrapped = new Set();
   sqlite3.capi.sqlite3_io_methods = function (pointer) {
     const methods = new Methods(pointer);
     if (wrapped.has(pointer)) return methods;
     wrapped.add(pointer);
+    const write = sqlite3.wasm.functionEntry(methods.$xWrite);
     const sync = sqlite3.wasm.functionEntry(methods.$xSync);
+    methods.installMethod('xWrite', (file, source, bytes, offset) => {
+      const started = performance.now();
+      try { return write(file, source, bytes, offset); }
+      finally {
+        while (performance.now() - started < ${writeDelayMs});
+        const into = totals.commit ? totals.inCommit : totals.outside;
+        into.writeMs += performance.now() - started;
+        into.writeCalls++;
+        into.writeBytes += bytes;
+      }
+    });
     methods.installMethod('xSync', (file, flags) => {
       const started = performance.now();
       try { return sync(file, flags); }
       finally {
         while (performance.now() - started < ${syncDelayMs});
-        totals.syncMs += performance.now() - started;
-        totals.syncCalls++;
+        const into = totals.commit ? totals.inCommit : totals.outside;
+        into.syncMs += performance.now() - started;
+        into.syncCalls++;
       }
     });
     return methods;
@@ -369,6 +389,7 @@ console.log(
       browser: values.browser,
       cpuThrottle,
       syncDelayMs,
+      writeDelayMs,
       units,
       ephemeral: values.ephemeral,
       fts: values.fts,
