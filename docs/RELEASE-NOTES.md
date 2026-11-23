@@ -45,7 +45,15 @@ it. The TypeScript test checks that a retry of the applied plan runs no
 that a container that still exists fails the purge with no record. The Rust
 test checks the retry by its effect: a probe value written and deleted after
 the erasure stays in the file while the record exists and leaves once it is
-gone.
+gone. A Rust test puts a directory at the container path, which cannot be
+removed as a file: the purge fails with `client.storage_failure` and no
+record, and a retry after the directory is gone records the erasure.
+
+A migration test in each core builds a pre-0.105.5 replica: rows removed from
+the full-text index and the tables, `VACUUM` without a merge, a purge plan
+recorded and no repair record, with the token still in the file. Reopening it
+with 0.105.5 leaves the token in no file, keeps the remaining row searchable
+and records the repair. Both tests fail without the repair.
 
 **Upgrading.** No API changes. The first open of a replica that applied a
 purge before 0.105.5 takes one rewrite (its cost grows with the replica size).

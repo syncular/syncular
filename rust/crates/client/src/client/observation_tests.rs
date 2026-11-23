@@ -12620,7 +12620,11 @@ fn the_first_open_repairs_a_replica_purged_before_the_index_merge() {
         .expect("file client")
     };
     let mut client = open();
-    for (id, title) in [("t1", "legacymarker one"), ("t2", "legacymarker two"), ("kept", "kept original")] {
+    for (id, title) in [
+        ("t1", "legacymarker one"),
+        ("t2", "legacymarker two"),
+        ("kept", "kept original"),
+    ] {
         client
             .conn
             .execute(
@@ -12635,7 +12639,9 @@ fn the_first_open_repairs_a_replica_purged_before_the_index_merge() {
     // VACUUM runs, and a purge plan is recorded with no erasure record.
     let mapping: Vec<i64> = client
         .conn
-        .prepare("SELECT id FROM \"_syncular_fts_patient_notes_fts\" WHERE source_id IN ('t1', 't2')")
+        .prepare(
+            "SELECT id FROM \"_syncular_fts_patient_notes_fts\" WHERE source_id IN ('t1', 't2')",
+        )
         .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
         .expect("index rows");
     assert_eq!(mapping.len(), 2);
@@ -12648,23 +12654,36 @@ fn the_first_open_repairs_a_replica_purged_before_the_index_merge() {
     client
         .conn
         .execute_batch(
-            "VACUUM; INSERT INTO _syncular_meta(key, value) VALUES('localPurge:legacy-001', '{}'); DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:erased'; PRAGMA wal_checkpoint(TRUNCATE);",
+            "DELETE FROM \"_syncular_fts_patient_notes_fts\" WHERE source_id IN ('t1', 't2'); DELETE FROM _syncular_base_patient_notes WHERE id IN ('t1', 't2'); DELETE FROM patient_notes WHERE id IN ('t1', 't2'); VACUUM; INSERT INTO _syncular_meta(key, value) VALUES('localPurge:legacy-001', '{}'); DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:erased'; PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("legacy erasure");
-    assert!(file_contains(&path, "legacymarker"), "the remnant is in the file");
+    assert!(
+        file_contains(&path, "legacymarker"),
+        "the remnant is in the file"
+    );
     drop(client);
 
     let client = open();
-    assert!(client.get_meta("localPurgeRepair:erased").expect("meta").is_some());
+    assert!(client
+        .get_meta("localPurgeRepair:erased")
+        .expect("meta")
+        .is_some());
     let kept: i64 = client
         .conn
-        .query_row("SELECT count(*) FROM patient_notes_fts WHERE patient_notes_fts MATCH 'kept'", [], |row| row.get(0))
+        .query_row(
+            "SELECT count(*) FROM patient_notes_fts WHERE patient_notes_fts MATCH 'kept'",
+            [],
+            |row| row.get(0),
+        )
         .expect("search kept");
     assert_eq!(kept, 1);
     drop(client);
     for entry in std::fs::read_dir(&dir).expect("read replica dir") {
         let file = entry.expect("dir entry").path();
-        assert!(!file_contains(&file, "legacymarker"), "remnant left in {file:?}");
+        assert!(
+            !file_contains(&file, "legacymarker"),
+            "remnant left in {file:?}"
+        );
     }
     std::fs::remove_dir_all(&dir).expect("remove replica dir");
 }
@@ -12696,14 +12715,21 @@ fn a_previous_version_container_that_survives_fails_the_purge_erasure() {
             )]),
         }],
     };
-    let refused = client.purge_local_data(&input).expect_err("surviving container");
+    let refused = client
+        .purge_local_data(&input)
+        .expect_err("surviving container");
     assert_eq!(refused.code, "client.storage_failure");
     assert!(client
         .get_meta("localPurge:purge-container:erased")
         .expect("meta")
         .is_none());
     std::fs::remove_dir_all(&container).expect("remove stuck container");
-    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(
+        client
+            .purge_local_data(&input)
+            .expect("retry")
+            .already_applied
+    );
     assert!(client
         .get_meta("localPurge:purge-container:erased")
         .expect("meta")
