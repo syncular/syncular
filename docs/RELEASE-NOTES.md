@@ -1,5 +1,18 @@
 # Syncular release notes
 
+## 0.105.7 release notes
+
+`useWindow` and every other window observer of the reactive store now report
+a unit complete only after the queries that the same change made read again
+have answered. The store read both at once, and the window read could answer
+first: a query without coverage still held its answer from before the unit's
+rows arrived while the window already said complete. A web app that took
+relation rows from a server answer until the relation window completed
+rendered `ready` with zero rows in between (SYNCULAR-QUERY-WINDOW-HANDOFF-001).
+Its reproduction, which holds the query answers after the change, fails on
+0.105.6 and passes on 0.105.7 (SPEC §7.8). A slow query read now delays the
+window state of the same change by that read. No API changes.
+
 ## 0.105.6 release notes
 
 An image import now commits less often when its commits are slow. Both cores

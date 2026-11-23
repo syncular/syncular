@@ -1932,6 +1932,53 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     expect(client.setWindowCalls.at(-1)).toEqual({ base: BASE, units: ['r1'] });
   });
 
+  test('a window completes after the query reads of its batch (§7.8)', async () => {
+    // A query without coverage reads the rows the import of the unit wrote;
+    // its answer is held, and the window waits for it.
+    let pending = ['p1'];
+    const client = new (class extends FakeReactiveClient {
+      override windowState(): WindowState {
+        return { units: ['p1'], pending, revoked: [] };
+      }
+    })();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const window = store.window(BASE);
+    const query = store.query<Row>(querySpec());
+    const order: string[] = [];
+    const offWindow = window.subscribe(() => order.push('window'));
+    const offQuery = query.subscribe(() => order.push('query'));
+    await drainMicrotasks();
+    expect(window.getSnapshot().pending).toEqual(['p1']);
+    expect(query.getSnapshot()).toMatchObject({ phase: 'ready', rows: [] });
+    let answer!: (snapshot: QuerySnapshot<object>) => void;
+    client.snapshots.push(new Promise((resolve) => (answer = resolve)));
+    pending = [];
+    order.length = 0;
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+        windows: [{ baseKey: 'project_id\0{}', units: new Set(['p1']) }],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(window.getSnapshot().pending).toEqual(['p1']);
+    expect(query.getSnapshot().rows).toEqual([]);
+    answer({
+      revision: 2n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks(24);
+    expect(query.getSnapshot().rows).toEqual([{ id: 't1', title: 'first' }]);
+    expect(window.getSnapshot().pending).toEqual([]);
+    expect(order).toEqual(['query', 'window']);
+    offWindow();
+    offQuery();
+    store.dispose();
+  });
+
   test('a window snapshot says whether it has read the core', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);

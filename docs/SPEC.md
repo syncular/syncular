@@ -8348,7 +8348,22 @@ the base. It MUST keep every unit registered at that read until one of its claim
 names the unit; from then on the unit leaves the window when no claim names it.
 Disposal releases the claimed units and keeps the rest. A window observer reports
 whether its first read of the window state has returned (`loaded`); before it,
-its empty unit list says nothing about the window.
+its empty unit list says nothing about the window. A window observer reads the
+window state for a change batch that names its base only after every observed
+query the same batch made read has finished that read, so a completed unit
+never reaches a render before the query answers that include the unit's rows.
+A query without coverage ([SYQL.md §13.1](./SYQL.md#131-ordinary-query)), whose completeness the application
+takes from a window, depends on this order.
+
+DECISION (2026-11-23): the reactive store orders a batch's window read after
+its query reads. It read both at once, and the window read could answer first.
+A web app takes the rows of a cross-release relation read from a server answer
+until the relation window completes, then from the local query; it rendered
+`ready` with zero rows while the query's re-read of the imported rows was in
+flight. The query cannot claim coverage, because it reads every retained
+release, and a comparison of revisions in the application would be a second
+readiness gate. A slow query read now delays the window state of the same batch
+by that read.
 
 DECISION (2026-11-17): a claim never evicts a unit the window held before the
 coordinator's first edit. After a reload, a web app's query claimed its one

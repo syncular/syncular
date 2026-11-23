@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title:
+      'useWindow reports a unit complete after the queries have read its rows',
+    body: "The reactive store read the window state and the queries of a change at the same time, so `useWindow` could report a unit complete while a query without coverage still showed its answer from before the unit's rows arrived. An app that switched to the local query on completion rendered an empty `ready` list for a moment. The store now reads the window state of a change after the query reads that change started.",
+    links: [
+      {
+        href: '/concepts-windowing/',
+        label: 'Windowing',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title: 'Image imports commit less often when commits are slow',
     body: 'An image import sized each transaction from its write time only, so on storage with slow writes the client kept transactions near 1,024 rows and paid for many slow commits. When a commit takes longer than 250 ms, both cores now let the next transaction write for as long as that commit took. With every OPFS write held 6 ms longer, a 154,569-row catalogue imports in 56.9 s and 21 transactions instead of 279.8 s and 135.',
     links: [

@@ -331,7 +331,12 @@ function reconcileRows<Row>(
 }
 
 interface CachedObservation {
-  onChange(batch: ClientChangeBatch): void;
+  /** A query returns the end of the read the batch started; a window waits
+   * for the reads of its batch before it reads (SPEC §7.8). */
+  onChange(
+    batch: ClientChangeBatch,
+    reads?: Promise<unknown>,
+  ): Promise<void> | undefined;
   /** Claim again after a rejected claim. */
   reclaim?(): void;
   /** A leader serves this tab again (it leads or follows a bound leader). */
@@ -376,8 +381,13 @@ class ObservationCache {
       entry.reset();
     });
   }
-  onChange(batch: ClientChangeBatch): void {
-    for (const entry of this.#active) entry.onChange(batch);
+  onChange(
+    batch: ClientChangeBatch,
+    reads?: Promise<unknown>,
+  ): Promise<unknown> {
+    return Promise.all(
+      [...this.#active].map((entry) => entry.onChange(batch, reads)),
+    );
   }
   reclaim(): void {
     for (const entry of this.#active) entry.reclaim?.();
@@ -463,6 +473,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   /** Units window changes named since the running read started. */
   #named = new Set<string>();
   #deferred = false;
+  /** Resolved when the read loop next stops. */
+  #stopped: (() => void)[] = [];
   #claimError: Error | undefined;
   #claimPending = false;
   #claimGated = false;
@@ -577,6 +589,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#scheduled = false;
     this.#running = false;
     this.#requested = false;
+    for (const resolve of this.#stopped.splice(0)) resolve();
     this.#desiredRevision = 0n;
     this.#currentRevision = 0n;
     this.#liveRevision = 0n;
@@ -623,8 +636,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#requestRead();
   }
 
-  onChange(batch: ClientChangeBatch): void {
-    if (!batchMatches(batch, this.spec)) return;
+  onChange(batch: ClientChangeBatch): Promise<void> | undefined {
+    if (!batchMatches(batch, this.spec)) return undefined;
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
@@ -649,7 +662,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       this.#currentRevision = batch.revision;
     if (!imported && batch.revision > this.#liveRevision)
       this.#liveRevision = batch.revision;
-    if (this.#listeners.size === 0) return;
+    if (this.#listeners.size === 0) return undefined;
     // A committed row change of a dependency claims again; a window-only
     // batch, which a failed window edit can itself produce, does not.
     const rowChange = batch.tables.some((change) =>
@@ -661,6 +674,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     else if (lag) this.#deferred ||= !this.#running;
     // A running read reads again only when its snapshot predates the batch.
     else if (!this.#running) this.#requestRead();
+    return this.#scheduled || this.#running
+      ? new Promise((resolve) => this.#stopped.push(resolve))
+      : undefined;
   }
 
   #publish(next: LiveQueryResult<Row>): void {
@@ -784,7 +800,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   async #readLoop(): Promise<void> {
-    if (this.#running || this.#listeners.size === 0) return;
+    if (this.#running) return;
+    if (this.#listeners.size === 0) {
+      for (const resolve of this.#stopped.splice(0)) resolve();
+      return;
+    }
     const generation = this.#generation;
     this.#running = true;
     let asked = this.#desiredRevision;
@@ -920,6 +940,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       if (generation === this.#generation) {
         this.#running = false;
         if (this.#requested && this.#listeners.size > 0) this.#requestRead();
+        else for (const resolve of this.#stopped.splice(0)) resolve();
       }
     }
   }
@@ -1052,13 +1073,12 @@ class WindowEntry implements ExternalStoreEntry<
   reread(): void {
     this.refresh();
   }
-  onChange(batch: ClientChangeBatch): void {
-    if (
-      batch.windows.some((change) => change.baseKey === this.baseKey) &&
-      this.#listeners.size > 0
-    ) {
-      this.refresh();
-    }
+  onChange(batch: ClientChangeBatch, reads?: Promise<unknown>): undefined {
+    // SPEC §7.8: a window completion publishes after the query reads of the
+    // same batch, so a query never renders behind the window it completed.
+    if (batch.windows.some((change) => change.baseKey === this.baseKey))
+      void reads?.then(() => this.refresh());
+    return undefined;
   }
   async #readLoop(): Promise<void> {
     const generation = this.#generation;
@@ -1456,8 +1476,7 @@ export class ReactiveClientStore {
         this.#activate();
     });
     this.#offChange = this.client.onChange((batch) => {
-      this.#queries.onChange(batch);
-      this.#windows.onChange(batch);
+      this.#windows.onChange(batch, this.#queries.onChange(batch));
       if (batch.status !== undefined) {
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
