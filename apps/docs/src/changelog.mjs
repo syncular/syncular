@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title: 'A conflict resolved during a sync shows the server row at once',
+    body: "While a sync attempt imports, live queries defer the import's own row writes. A keep-server resolution restores the row in a change that carries no status, so a query deferred it too and showed the local row until the import ended, after `useCommitOutcomes` had already dropped the conflict. A change to conflicts, rejections or outcomes now counts as a local write, so its queries read at once and the outcome observers wait for them.",
+    links: [
+      {
+        href: '/guide-concurrency-correction/',
+        label: 'Concurrency correction',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title: 'useCommitOutcomes updates after the queries show the restored row',
     body: 'Keeping the server row of a conflict restores the row and resolves the outcome in one change. The reactive store read the journal and the queries of that change at the same time, so `useCommitOutcomes` and `useConflicts` could drop the conflict while a query still showed the local row. Both now read after the queries that change made read again have answered, the order `useWindow` keeps since 0.105.8.',
     links: [

@@ -648,14 +648,20 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     }
     // SPEC §7.8: while an attempt imports, every answer waits for the
     // import's own row writes. An incomplete answer also waits for server
-    // COMMITs, unless the batch carries status (a local write) or names the
-    // last of its incomplete units.
+    // COMMITs, unless the batch is a local write (it carries status or
+    // changes conflicts, rejections or outcomes) or names the last of its
+    // incomplete units.
     for (const change of batch.windows)
       for (const unit of change.units) {
         this.#waiting.delete(`${change.baseKey}\0${unit}`);
         this.#named.add(`${change.baseKey}\0${unit}`);
       }
-    const importing = this.store.importing && batch.status === undefined;
+    const importing =
+      this.store.importing &&
+      batch.status === undefined &&
+      !batch.conflictsChanged &&
+      !batch.rejectionsChanged &&
+      !batch.outcomesChanged;
     const imported =
       importing &&
       batch.windows.length === 0 &&

@@ -8438,13 +8438,18 @@ transaction across an await.
 While the latest sync attempt's progress (§7.7) is `running` in phase
 `download` or `import`, a reactive observation does not read again for the
 import's own row writes. A matching change batch that carries no status
-snapshot, names no window value and applies no server COMMIT (no
-`appliedCommits`) starts no read for any observation. The client core emits
+snapshot, changes no conflict, rejection or commit outcome, names no window
+value and applies no server COMMIT (no `appliedCommits`) starts no read for
+any observation. A batch that changes conflicts, rejections or outcomes is a
+local write like one with status: `resolveCommitOutcome` with
+`resolved_keep_server` restores the server row in a batch without status, and
+a query that deferred it rendered the local row after the outcome observer had
+dropped the conflict, until the import ended (0.105.11). The client core emits
 such batches for bootstrap rows blocks and image chunks, whose rows belong to
 units that are still bootstrapping, and for the other table-only writes
 (evicting a departed unit's rows, revealing sealed rows under a key that
 arrived). An observation whose latest successful read has incomplete coverage
-also starts no read for a matching batch that carries no status snapshot and
+also starts no read for a matching batch that is no local write and
 either names no window value or leaves a unit unnamed that the last read
 reported pending or missing, so it waits on server COMMITs of the round too.
 An observation reads again when progress leaves those phases (phase `request`,

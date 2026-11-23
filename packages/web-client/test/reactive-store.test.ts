@@ -2122,6 +2122,50 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     store.dispose();
   });
 
+  test('a resolution during an import reads its queries before the outcomes (§7.8)', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const query = store.query<Row>(querySpec());
+    const order: string[] = [];
+    const offQuery = query.subscribe(() => order.push('query'));
+    const offOutcomes = store.outcomes.subscribe(() => order.push('outcomes'));
+    await drainMicrotasks();
+    client.progress.emit({
+      epoch: 'e1',
+      attempt: 1,
+      state: 'running',
+      phase: 'import',
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    const calls = client.outcomeCalls;
+    let answer!: (snapshot: QuerySnapshot<object>) => void;
+    client.snapshots.push(new Promise((resolve) => (answer = resolve)));
+    order.length = 0;
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+        outcomesChanged: true,
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(client.reads).toHaveLength(2);
+    expect(client.outcomeCalls).toBe(calls);
+    answer({
+      revision: 2n,
+      rows: [{ id: 't1', title: 'server' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks(24);
+    expect(client.outcomeCalls).toBe(calls + 1);
+    expect(order[0]).toBe('query');
+    offQuery();
+    offOutcomes();
+    store.dispose();
+  });
+
   test('a window snapshot says whether it has read the core', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);

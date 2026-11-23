@@ -1,5 +1,18 @@
 # Syncular release notes
 
+## 0.105.11 release notes
+
+A change batch that changes conflicts, rejections or commit outcomes now counts
+as a local write for the reactive store's import rule. While a sync attempt
+imports, a live query does not read again for batches without status, because
+the import writes rows of units that are still bootstrapping. A keep-server
+resolution restores the server row in such a batch, so a query deferred it and
+kept the local row until the import ended, while `useCommitOutcomes` (ordered
+after the query reads in flight since 0.105.10) found no read to wait for and
+dropped the conflict. A web app's plan showed the local time with no conflict
+marker after a reopened conflict was resolved during the reopen's first sync
+(SYNCULAR-OUTCOME-QUERY-HANDOFF-001, follow-up; SPEC §7.8). No API changes.
+
 ## 0.105.10 release notes
 
 Conflict and commit-outcome observers of the reactive store (`useConflicts`,
