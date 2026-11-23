@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.105.4 release notes
+
+`useRetainedWindow` no longer commits a content-equal state after a claim
+replacement that is ready at once (SYNCULAR-RETAINED-WINDOW-EQUAL-RENDER-001).
+On a unit change the effect set a pending state and the resolved
+`retention.ready` set a fresh `{ isPending: false, error: undefined }` object.
+When the browser batched both updates, the component committed again with the
+same content, which a render-trace budget counts as a redundant commit. The
+hook now holds one frozen object for pending and one for ready, so
+pending-then-ready ends on the object the component already rendered and React
+finds no change. A pending state that renders on its own and every error stay
+observable.
+
+A React test replaces a ready claim with one that resolves at once and checks
+that the completed state keeps its identity and that no content-equal state of
+a new identity renders; it fails on 0.105.3. The test `act` environment
+commits the pending update on its own, so the test checks identity rather than
+the batched browser commit, which the consumer's render trace checks.
+
+**Upgrading.** No API changes.
+
 ## 0.105.3 release notes
 
 A native `create` with `authorityReads` and a host ceiling

@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title:
+      'useRetainedWindow keeps its state when a claim replacement is ready at once',
+    body: 'When the units of `useRetainedWindow` changed and the new claim was ready at once, the hook set a pending state and then a fresh `{ isPending: false }` object. A browser that batched both updates committed the component again with equal content. The hook now uses one object per outcome, so that sequence ends on the state it started with and React has nothing new to commit. A real pending or error transition still renders.',
+    links: [
+      {
+        href: '/platform-react-specifics/',
+        label: 'React specifics',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title: 'A native authority create builds its replica once',
     body: 'A native `create` with authority declarations and a host ceiling built a second, in-memory client of the whole schema to run the ceiling check, then opened the real replica. The check now prepares the declared statements on the replica `create` opens. With a 116-table schema and 7 declarations, a reopened file replica took 204 to 237 ms in a debug build and now takes 64 to 71 ms; refusal codes and details are unchanged.',
     links: [

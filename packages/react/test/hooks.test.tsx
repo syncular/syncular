@@ -743,6 +743,38 @@ function Bare(): ReactNode {
 describe('useWindow (§4.8 completeness oracle, I3)', () => {
   const base = { variable: 'project_id' } as const;
 
+  test('an immediately ready claim replacement commits no equal retained state', async () => {
+    const client = new FakeClient();
+    const seen: { isPending: boolean; error: Error | undefined }[] = [];
+    function Retained({ units }: { readonly units: readonly string[] }) {
+      seen.push(useRetainedWindow(base, units));
+      return null;
+    }
+    const { rerender } = render(<Retained units={['p1']} />, {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(seen.at(-1)?.isPending).toBe(false));
+    const done = seen.at(-1);
+    const before = seen.length;
+    rerender(<Retained units={['p1', 'p2']} />);
+    await flushEffects();
+    await flushEffects();
+    const after = seen.slice(before);
+    // The prop change renders once with the completed state. A pending state
+    // may follow; a content-equal state of a new identity may not, and the
+    // completion keeps the earlier completed state's identity, so a browser
+    // that batches pending and ready into one update commits nothing.
+    expect(after[0]).toBe(done);
+    expect(after.at(-1)).toBe(done);
+    for (let i = 1; i < after.length; i += 1) {
+      const same =
+        after[i]!.isPending === after[i - 1]!.isPending &&
+        after[i]!.error === after[i - 1]!.error;
+      expect(same && after[i] !== after[i - 1]).toBe(false);
+    }
+    expect(after.at(-1)).toEqual({ isPending: false, error: undefined });
+  });
+
   test('retains a declarative working set and releases only its claim', async () => {
     const client = new FakeClient();
     const { result, unmount } = renderHook(

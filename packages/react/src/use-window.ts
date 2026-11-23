@@ -38,6 +38,17 @@ export interface UseRetainedWindowResult {
  * composes with generated query coverage and other owners; cleanup releases
  * only this hook's claim. Ordinary selected queries still claim themselves.
  */
+/** One object per outcome, so a claim replacement that ends where it started
+ * (pending, then an immediate ready) keeps the state identity React compares. */
+const RETAINED_PENDING: UseRetainedWindowResult = Object.freeze({
+  isPending: true,
+  error: undefined,
+});
+const RETAINED_READY: UseRetainedWindowResult = Object.freeze({
+  isPending: false,
+  error: undefined,
+});
+
 export function useRetainedWindow(
   base: WindowBase,
   units: readonly string[],
@@ -53,22 +64,16 @@ export function useRetainedWindow(
     [unitsIdentity],
   );
   // oxlint-enable react-hooks/exhaustive-deps
-  const [state, setState] = useState<UseRetainedWindowResult>({
-    isPending: true,
-    error: undefined,
-  });
+  const [state, setState] =
+    useState<UseRetainedWindowResult>(RETAINED_PENDING);
 
   useEffect(() => {
     let active = true;
-    setState((current) =>
-      current.isPending && current.error === undefined
-        ? current
-        : { isPending: true, error: undefined },
-    );
+    setState(RETAINED_PENDING);
     const retention = store.retainWindow(stableBase, stableUnits);
     void retention.ready.then(
       () => {
-        if (active) setState({ isPending: false, error: undefined });
+        if (active) setState(RETAINED_READY);
       },
       (caught: unknown) => {
         if (!active) return;
