@@ -26,7 +26,13 @@ These figures are from the Mac, not the iPhone; the in-memory client was
 118 to 132 ms of the debug create and the ceiling check under 1 ms. A
 regression test refuses a declaration on a file replica, checks the refusal
 details and that no client remains, then creates within the ceiling on the
-same file and runs an authority read.
+same file and runs an authority read. A Tauri plugin test does the same through a host-created
+client in security preflight with the transport gate closed: after the
+refusal a webview `attach` is refused and its `authorityRead` and `query` find
+no client; the next host `create` within the ceiling opens the file, attaches
+in `preflight` and serves the authority read. The client is not reachable
+until the ceiling check passes, because the command stores it only after the
+check.
 
 **Upgrading.** No API changes. Tauri and FFI hosts pick the change up through
 the `syncular-command` crate.

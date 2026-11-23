@@ -2608,6 +2608,99 @@ mod tests {
     }
 
     #[test]
+    fn a_ceiling_refused_host_create_on_a_file_leaves_nothing_to_attach_or_read() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        let path = std::env::temp_dir().join(format!(
+            "syncular-ceiling-refusal-{}.db",
+            std::process::id()
+        ));
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                db_path: Some(path.to_string_lossy().into_owned()),
+                authority_columns: [(
+                    "authority".into(),
+                    vec!["id".into(), "actor_id".into(), "role".into()],
+                )]
+                .into(),
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let host = app.syncular();
+        let from =
+            |label: &str, command: Value| run_command_from(app.handle(), label, command).unwrap();
+        let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id",
+            "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false},
+            {"name": "actor_id", "type": "string", "nullable": false},
+            {"name": "role", "type": "string", "nullable": false},
+            {"name": "secret", "type": "string", "nullable": true}
+        ]}]});
+        let create = |sql: &str, columns: Value| {
+            host.command(&json!({"method": "create", "params": {
+                "schema": schema, "securityPreflight": true, "transportGate": "closed",
+                "authorityReads": [{
+                    "name": "roleOf",
+                    "sql": sql,
+                    "bind": ["actorId"],
+                    "params": [{"name": "actorId", "type": "string", "nullable": false}],
+                    "coverage": [{"table": "authority", "variable": "actor_id", "units": ["actorId"]}],
+                    "reads": {"authority": columns},
+                    "resultColumns": [{"name": "role", "type": "string", "nullable": false}]
+                }]
+            }}))
+        };
+        let read = json!({"method": "authorityRead", "params": {"requests": [
+            {"query": "roleOf", "params": {"actorId": "a"}}
+        ]}});
+        let attach = json!({ "method": "attach", "params": { "events": "__CHANNEL__:1" } });
+
+        // The statement reads `secret`, outside the host ceiling, whatever
+        // `reads` claims.
+        let refused = create(
+            "SELECT secret AS role FROM authority WHERE actor_id = ?",
+            json!(["actor_id"]),
+        );
+        assert_eq!(refused["error"]["code"], "client.authority_read_forbidden");
+        assert_eq!(
+            refused["error"]["details"],
+            json!({"query": "roleOf", "reason": "ceiling", "table": "authority", "column": "secret"})
+        );
+        assert!(path.exists(), "the refused create opened the file");
+        assert_eq!(
+            from("main", attach.clone())["error"]["code"],
+            "sync.invalid_request"
+        );
+        for command in [
+            read.clone(),
+            json!({"method": "query", "params": {"sql": "SELECT id FROM authority"}}),
+        ] {
+            let reply = from("main", command.clone());
+            assert!(reply.get("result").is_none(), "{command}: {reply}");
+        }
+
+        // A declaration within the ceiling opens the same file.
+        let created = create(
+            "SELECT role FROM authority WHERE actor_id = ?",
+            json!(["actor_id", "role"]),
+        );
+        assert!(created.get("error").is_none(), "{created}");
+        assert_eq!(
+            from("main", attach),
+            json!({ "result": { "state": "preflight" } })
+        );
+        let served = from("main", read);
+        assert_eq!(
+            served["result"]["results"][0]["rows"],
+            json!([]),
+            "{served}"
+        );
+        drop(app);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_host_created_client_refuses_webview_creates_and_serves_webview_queries_and_commands() {
         let (app, schema) = host_owned_app();
         let host = app.syncular();
