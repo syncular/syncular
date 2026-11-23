@@ -2,15 +2,17 @@
 
 ## 0.105.5 release notes
 
-A local data purge now removes a purged row's words from the full-text index
-of the replica file. FTS5 keeps a deleted document's tokens in its index
-segments until a merge, and `VACUUM` copies those segments unchanged, so
-since 0.70.2 a purged row of a table with a full-text index left its words,
-lowercased and split, readable in the raw file. The 0.70.x marker tests missed
+A local data purge in the TypeScript core now removes a purged row's words
+from the full-text index of the replica file. FTS5 keeps a deleted document's
+tokens in its index segments until a merge, and `VACUUM` copies those
+segments unchanged, so since 0.70.2 a purged row of a table with a full-text
+projection left its words, lowercased and split, readable in the raw file of
+the browser worker and of Bun and Node replicas. The 0.70.x marker tests missed
 it because they searched for the mixed-case marker, which the index stores
-only as lowercase tokens. Both cores now merge every FTS5 index (`'optimize'`)
-before the rewrite (SPEC §5.11, "Purge erasure"). Found while assessing
-SYNCULAR-PURGE-CLEAN-001.
+only as lowercase tokens. The Rust core rebuilds the projection after a purge,
+so its index held no purged token; its test passes with and without the merge.
+Both cores now merge every FTS5 index (`'optimize'`) before the rewrite
+(SPEC §5.11, "Purge erasure"). Found while assessing SYNCULAR-PURGE-CLEAN-001.
 
 A retry of an applied purge plan no longer repeats a finished rewrite. The
 client records the erasure as complete after a truncating checkpoint that no

@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-11-23',
     title: 'A purge removes the purged words from the full-text index',
-    body: "FTS5 kept a purged row's words in its index segments, and VACUUM copied them, so the raw replica file still held them in lowercase. `purgeLocalData` now merges every full-text index before it rewrites the file. A retry of an applied plan no longer repeats a finished rewrite, and a previous-version container the client could not delete fails the purge with `client.storage_failure`.",
+    body: "In the browser worker and Bun and Node replicas, FTS5 kept a purged row's words in its index segments, and VACUUM copied them, so the raw replica file still held them in lowercase. `purgeLocalData` now merges every full-text index before it rewrites the file, in both cores. A retry of an applied plan no longer repeats a finished rewrite, and a previous-version container the client could not delete fails the purge with `client.storage_failure`.",
     links: [
       {
         href: '/concepts-local-data-purge/#what-the-purge-does',

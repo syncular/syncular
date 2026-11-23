@@ -12251,11 +12251,9 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
                 { "name": "title", "type": "string", "nullable": false }
             ],
             "scopes": [{ "pattern": "practice:{practice_id}" }],
-            "ftsIndexes": [{
-                "name": "patient_notes_fts",
-                "columns": ["title"],
-                "tokenize": "unicode61 remove_diacritics 2"
-            }]
+            "localProjections": [{"name": "patient_notes_fts", "generation": "1",
+                "columns": [{"name": "title", "declaredType": "string", "source": "title"}],
+                "fts": {"tokenize": "unicode61", "columns": ["title"]}}]
         }]
     });
     let marker = "PURGEMARKER-RUST-9d41";
@@ -12380,13 +12378,26 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
             "INSERT INTO _syncular_meta(key, value) VALUES('probe', '{probe}'); DELETE FROM _syncular_meta WHERE key = 'probe'; PRAGMA wal_checkpoint(TRUNCATE);"
         ))
         .expect("probe");
-    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(
+        client
+            .purge_local_data(&input)
+            .expect("retry")
+            .already_applied
+    );
     assert!(contains(&path, probe), "a finished rewrite is not repeated");
     client
         .conn
-        .execute("DELETE FROM _syncular_meta WHERE key = 'localPurge:purge-file:erased'", [])
+        .execute(
+            "DELETE FROM _syncular_meta WHERE key = 'localPurge:purge-file:erased'",
+            [],
+        )
         .expect("drop marker");
-    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(
+        client
+            .purge_local_data(&input)
+            .expect("retry")
+            .already_applied
+    );
     assert!(!contains(&path, probe), "an unfinished rewrite runs again");
     let (results_json, operations_json): (String, Option<String>) = client
         .conn
