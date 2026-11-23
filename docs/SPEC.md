@@ -3226,10 +3226,17 @@ chunk of a table's first range image holds 1,024 rows, and the first chunk of a
 later range image of the table holds the size the rule below gave the previous
 range's next chunk, when the client still knows it (1,024 rows otherwise).
 Each later chunk holds at least 1,024 rows, at most
-twice the rows of the chunk before, at most 65,536 rows, and at most the rows
-the chunk before wrote per the larger of 250 ms and its commit time. Both
-times are measured on a monotonic clock: the write time from the chunk's start
-to the start of its `COMMIT`, the commit time from there until its
+twice the rows of the chunk before, and at most 65,536 rows. The second chunk
+of an image holds twice the rows of the first. The two latest chunks of the
+image whose row counts differ by at least half the smaller count split the
+write time into a per-row part (the difference of their write times divided by
+the difference of their row counts) and a fixed part (the rest of the latest
+chunk's write time, at least 0); while row counts repeat, the latest split's
+per-row part stays. A later chunk then holds the rows whose per-row time fills
+the larger of 250 ms, the commit time of the chunk before and its fixed part;
+without a positive per-row part it holds twice the rows of the chunk before.
+Both times are measured on a monotonic clock: the write time from the chunk's
+start to the start of its `COMMIT`, the commit time from there until its
 transaction returns. While local writes
 to the table need replay (§7.1), a chunk holds at most 1,024 rows. When the image is
 the table's first page (§5.6), the fresh-bootstrap clear runs in its first
@@ -3410,6 +3417,25 @@ in 36. A read waits up to one chunk's write time plus its commit: the longest
 wait of the 50 ms reader timer grew from 6.0 s to 7.6 s at 6 ms per write,
 while the median fell from 3.2 s to 5 ms. A commit below 250 ms leaves the
 2026-11-19 rule unchanged.
+
+DECISION (2026-11-23, 0.105.9): the write time splits into a per-row and a
+fixed part. In the rollback journal, the first change of a page in a
+transaction copies the page into the journal during the transaction, so each
+transaction journals every index page it touches once. A web app's relations
+table has three secondary indexes that lead with set, availability and a code
+id, so every chunk touches pages across all of them. Its production catalogue
+(eight SQLite images, 67,372 codes and 87,442 relations), imported on 0.105.8
+with every `FileSystemSyncAccessHandle` write held 2 ms and every flush
+50 ms longer, journaled 335, 357 and 370 index pages and wrote for 3.1, 3.3
+and 3.3 s in chunks of 3,860, 1,931 and 1,024 rows of its last 42,752-row
+image. The write time did not fall with the rows, so the rule shrank the
+chunks to 1,024 rows and the image took 33 transactions, 131.4 s of writing
+and 55.7 s of `COMMIT`; it held no page spill and wrote no main-file page
+outside `COMMIT` (`sqlite3_db_status` and per-file VFS counters). Sized by
+the per-row part, a chunk's fixed cost counts as overhead to amortize: the
+chunk grows until its per-row time matches the larger of its fixed part and
+its `COMMIT`. When write time is all per-row, the split gives the 2026-11-19
+rule; the second chunk of an image doubles so that a split exists.
 
 A client whose replica lives in OPFS creates a new database with 64 KiB pages:
 the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it

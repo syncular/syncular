@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title: 'Image imports amortize the journal cost of secondary indexes',
+    body: 'The rollback journal copies every page a transaction changes, so a transaction into a table with secondary indexes over spread keys journals most of their pages, whatever its row count. Image import sized each transaction from its whole write time and shrank to 1,024 rows, which repeated that cost per transaction: 33 transactions and 131 s of writing for a 42,752-row relations image on slowed storage. Both cores now split write time into a per-row and a fixed part from two transactions of different size, and grow a transaction until its per-row time matches the fixed part or its commit.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#reading-during-import',
+        label: 'Reading during import',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title: 'useWindow also waits for reads of rows imported in earlier changes',
     body: "0.105.7 ordered a window's completion after the query reads of the same change. An import writes rows in earlier changes, and the client defers query reads while it imports, so a later change that only completed the window still reported it complete before those reads. A change to a window now starts the deferred reads, and the window waits for every query read in flight.",
     links: [

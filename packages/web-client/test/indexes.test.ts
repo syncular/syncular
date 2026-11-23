@@ -315,25 +315,26 @@ describe('CREATE INDEX subset — client local DDL', () => {
   });
 
   test.each([
-    // 1,024 rows, then 1,024 × 250 / 128 = 2,000 and 2,000 × 250 / 128 = 3,906.
-    [128, 0, 8000, [1024, 3024, 6930, 8000]],
-    // 1,024 × 250 / 400 = 640 rows stays at the 1,024-row floor.
-    [400, 0, 3000, [1024, 2048, 3000]],
-    // A 500 ms COMMIT budgets 500 ms of writing: 1,024 × 500 / 400 = 1,280,
-    // then 1,600 and 2,000 rows.
-    [400, 500, 8000, [1024, 2304, 3904, 5904, 8000]],
+    // 0.125 ms a row: the second chunk doubles, then 250 / 0.125 = 2,000.
+    [0, 0.125, 0, 8000, [1024, 3072, 5072, 7072, 8000]],
+    // 400 ms per 1,024 rows: 250 ms holds 640 rows, so the floor.
+    [0, 400 / 1024, 0, 4000, [1024, 3072, 4000]],
+    // 3 s of journal per chunk at 0.1 ms a row and a 1.5 s COMMIT: the fixed
+    // 3 s budgets 30,000 rows, so the chunks keep doubling.
+    [3000, 0.1, 1500, 20_000, [1024, 3072, 7168, 15_360, 20_000]],
     // A 1 s COMMIT (four slow flushes) leaves the doubling.
-    [10, 1000, 8000, [1024, 3072, 7168, 8000]],
+    [0, 10 / 1024, 1000, 8000, [1024, 3072, 7168, 8000]],
     // Doubling stops at 65,536 rows.
     [
-      1,
+      0,
+      1 / 1024,
       1000,
       200_000,
       [1024, 3072, 7168, 15_360, 31_744, 64_512, 130_048, 195_584, 200_000],
     ],
   ])(
-    'image chunks writing %i ms and committing %i ms size the next one by the rows written per the larger of 250 ms and the commit',
-    async (writeMs, commitMs, total, expected) => {
+    'image chunks writing %d ms plus %d ms a row and committing %i ms size the next one by their per-row time',
+    async (fixedMs, rowMs, commitMs, total, expected) => {
       const db = new BunClientDatabase();
       const image = new BunClientDatabase();
       const compiled = compileClientSchema(SCHEMA);
@@ -369,11 +370,12 @@ describe('CREATE INDEX subset — client local DDL', () => {
               clearFirst: true,
               effective: { project_id: ['p1'] },
               owners: () => [],
+              // The chunk's writes end at onChunk; its COMMIT follows.
+              onChunk: (applied) => {
+                clock += fixedMs + rowMs * (applied - (committed.at(-1) ?? 0));
+              },
               transaction: (fn) => {
-                const result = db.transaction(() => {
-                  clock += writeMs;
-                  return fn();
-                });
+                const result = db.transaction(fn);
                 clock += commitMs;
                 committed.push(
                   Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
@@ -400,8 +402,8 @@ describe('CREATE INDEX subset — client local DDL', () => {
     let clock = 0;
     try {
       ensureLocalSchema(db, compiled);
-      // 128 ms a chunk: the first range runs 1,024 then 2,000 rows; the
-      // second starts at 2,000 instead of 1,024.
+      // The first range runs 1,024 rows, then the second chunk's 2,048; the
+      // second range starts at 2,048 instead of 1,024.
       for (const [clearFirst, from, to] of [
         [true, 1, 3000],
         [false, 3001, 8000],
@@ -454,7 +456,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
           image.close();
         }
       }
-      expect(committed).toEqual([1024, 3000, 5000, 8000]);
+      expect(committed).toEqual([1024, 3000, 5048, 8000]);
     } finally {
       db.close();
     }

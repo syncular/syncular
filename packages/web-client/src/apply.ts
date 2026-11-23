@@ -669,10 +669,17 @@ export async function applySqliteSegment(
     let applied = resumed;
     // §5.3: a table's first chunk holds 1,024 rows; a later range image
     // starts at the size its previous range reached. A later chunk holds at least
-    // 1,024 rows, at most twice the rows of the one before, at most 65,536,
-    // and at most the rows the one before wrote in the larger of 250 ms and
-    // its time from the end of its writes to the return of its transaction
-    // (COMMIT); a replaying chunk holds one statement.
+    // 1,024 rows, at most twice the rows of the one before and at most 65,536.
+    // The second chunk of an image holds twice the rows of the first. The two
+    // latest chunks whose row counts differ by at least half the smaller
+    // split write time into a per-row and a fixed part; while sizes repeat,
+    // the last split's per-row time holds. A later chunk then holds the rows
+    // whose per-row time fills the larger of 250 ms, the COMMIT of the chunk
+    // before (from the end of its writes to the return of its transaction)
+    // and the fixed part. A replaying chunk holds one statement.
+    let model:
+      | { rows: number; write: number; perRow: number | undefined }
+      | undefined;
     for (
       let size =
         (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
@@ -761,12 +768,22 @@ export async function applySqliteSegment(
       const committed = now() - written;
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
+      const write = written - started;
+      const perRow =
+        model !== undefined &&
+        2 * Math.abs(chunk - model.rows) >= Math.min(chunk, model.rows)
+          ? (write - model.write) / (chunk - model.rows)
+          : model?.perRow;
+      model = { rows: chunk, write, perRow };
+      const fixed = Math.max(0, write - (perRow ?? 0) * chunk);
       size = Math.max(
         1024,
         Math.min(
           2 * chunk,
           65_536,
-          Math.floor((chunk * Math.max(250, committed)) / (written - started)),
+          perRow !== undefined && perRow > 0
+            ? Math.floor(Math.max(250, committed, fixed) / perRow)
+            : Infinity,
         ),
       );
       options.chunkRows?.set(table.name, size);

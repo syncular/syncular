@@ -8679,7 +8679,7 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
 #[test]
 fn image_chunks_double_and_roll_back_whole_on_failure() {
     let mut client = client();
-    client.image_chunk_ms.set(Some((0.0, 0.0)));
+    client.image_chunk_ms.set(Some((0.0, 0.0, 0.0)));
     let image = Connection::open_in_memory().unwrap();
     // Row 5000 lies in the second 1,024 rows of the third chunk.
     image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
@@ -8728,18 +8728,18 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
 
 #[test]
 fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
-    // 1,024 rows, then 1,024 × 250 / 128 = 2,000 and 2,000 × 250 / 128 =
-    // 3,906; at 400 ms, 1,024 × 250 / 400 = 640 rows stays at the floor.
-    for (chunk_ms, total, expected) in [
+    // 0.125 ms a row: the second chunk doubles, then 250 / 0.125 = 2,000;
+    // at 400 ms per 1,024 rows, 250 ms holds 640 rows, so the floor.
+    for (row_ms, total, expected) in [
         (
-            128.0,
+            0.125,
             8000,
-            vec![0, 1024, 2048, 3024, 4048, 5072, 6096, 6930, 7954, 8000],
+            vec![0, 1024, 2048, 3072, 4096, 5072, 6096, 7072, 8000],
         ),
-        (400.0, 3000, vec![0, 1024, 2048, 3000]),
+        (400.0 / 1024.0, 3000, vec![0, 1024, 2048, 3000]),
     ] {
         let mut client = client();
-        client.image_chunk_ms.set(Some((chunk_ms, 0.0)));
+        client.image_chunk_ms.set(Some((0.0, row_ms, 0.0)));
         let image = Connection::open_in_memory().unwrap();
         image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
@@ -8764,18 +8764,21 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
 
 #[test]
 fn a_slow_image_commit_budgets_the_next_chunk() {
-    // §5.3: a 1 s COMMIT (four slow flushes) after 10 ms of writing doubles
-    // the chunks: 1,024, 2,048, 4,096 and the last 832 rows. With 1 ms of
-    // writing the doubling stops at 65,536 rows. A 500 ms COMMIT after 400 ms
-    // of writing budgets 500 ms of writing: 1,024, 1,280, 1,600, 2,000 and
-    // the last 2,096 rows.
-    for (write_ms, commit_ms, total, chunks, next) in [
-        (10.0, 1000.0, 8000, 4, 8192),
-        (1.0, 1000.0, 200_000, 9, 65_536),
-        (400.0, 500.0, 8000, 5, 2500),
+    // §5.3: a 1 s COMMIT (four slow flushes) after 10 ms of writing per
+    // 1,024 rows doubles the chunks: 1,024, 2,048, 4,096 and the last 832
+    // rows. With 1 ms per 1,024 rows the doubling stops at 65,536 rows. A
+    // fixed 3 s of writing per chunk (its journal) at 0.1 ms a row budgets
+    // 30,000 rows, so the chunks keep doubling: 1,024, 2,048, 4,096, 8,192
+    // and the last 4,640 rows.
+    for (fixed_ms, row_ms, commit_ms, total, chunks, next) in [
+        (0.0, 10.0 / 1024.0, 1000.0, 8000, 4, 8192),
+        (0.0, 1.0 / 1024.0, 1000.0, 200_000, 9, 65_536),
+        (3000.0, 0.1, 1500.0, 20_000, 5, 16_384),
     ] {
         let mut client = client();
-        client.image_chunk_ms.set(Some((write_ms, commit_ms)));
+        client
+            .image_chunk_ms
+            .set(Some((fixed_ms, row_ms, commit_ms)));
         let image = Connection::open_in_memory().unwrap();
         image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
@@ -12489,10 +12492,10 @@ fn security_preflight_and_activation_each_emit_the_status_lifecycle() {
 
 #[test]
 fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
-    // §5.3: the first range runs 1,024 then 2,000 rows at 128 ms a chunk;
-    // the second range of the table starts at 2,000 instead of 1,024.
+    // §5.3: the first range runs 1,024 rows, then the second chunk's 2,048;
+    // the second range of the table starts at 2,048 instead of 1,024.
     let mut client = client();
-    client.image_chunk_ms.set(Some((128.0, 0.0)));
+    client.image_chunk_ms.set(Some((128.0, 0.0, 0.0)));
     let table = client.schema.table("tasks").unwrap().clone();
     let scopes = vec![("project_id".into(), vec!["p1".into()])];
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -12515,7 +12518,7 @@ fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
             Ok(applied) if i64::from(applied) == total
         ));
     }
-    assert_eq!(*seen.lock().unwrap(), vec![1024, 2000, 3024, 4048, 5000]);
+    assert_eq!(*seen.lock().unwrap(), vec![1024, 2048, 3072, 4096, 5000]);
 }
 
 #[test]

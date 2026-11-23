@@ -651,9 +651,10 @@ pub struct SyncClient {
     /// once per response rather than once per acknowledgement.
     #[cfg(test)]
     outcome_prune_count: Cell<usize>,
-    /// Test-only pinned write and commit time of every §5.3 image chunk, in ms.
+    /// Test-only pinned time of every §5.3 image chunk, in ms: fixed write
+    /// time, write time per row, and commit time.
     #[cfg(test)]
-    image_chunk_ms: Cell<Option<(f64, f64)>>,
+    image_chunk_ms: Cell<Option<(f64, f64, f64)>>,
     /// Exact observer-transaction output drained by command/FFI hosts.
     progress: ProgressObserver,
     /// §7.6: random per core instance, never persisted or sent.
@@ -12572,6 +12573,8 @@ impl SyncClient {
                 .unwrap_or(1024)
         };
         let (mut write, mut commit) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        // Rows, write ms and per-row write ms of the chunk before.
+        let mut model: Option<(u32, f64, Option<f64>)> = None;
         loop {
             let clear = applied == 0 && first_fresh_page;
             let rollback = self.capture();
@@ -12583,10 +12586,15 @@ impl SyncClient {
             let mirror_visible = !protected && !reconcile_pending;
             // §5.3: a table's first chunk holds 1,024 rows; a later range image
             // starts at the size its previous range reached. A later chunk holds at
-            // least 1,024 rows, at most twice the rows of the one before, at
-            // most 65,536, and at most the rows the one before wrote in the
-            // larger of 250 ms and its time from the end of its writes through
-            // COMMIT; a chunk that replays local writes holds at most 1,024.
+            // least 1,024 rows, at most twice the rows of the one before and at
+            // most 65,536. The second chunk of an image holds twice the rows of
+            // the first. The two latest chunks whose row counts differ by at
+            // least half the smaller split write time into a per-row and a
+            // fixed part; while sizes repeat, the last split's per-row time
+            // holds. A later chunk then holds the rows whose per-row time fills
+            // the larger of 250 ms, the time from the end of the writes of the
+            // chunk before through its COMMIT, and the fixed part. A chunk that
+            // replays local writes holds at most 1,024.
             let chunk = if pending || protected {
                 limit.min(1024)
             } else {
@@ -12711,12 +12719,17 @@ impl SyncClient {
             }
             let spent = (written - started, written.elapsed());
             #[cfg(test)]
-            let spent = self.image_chunk_ms.get().map_or(spent, |(write, commit)| {
-                (
-                    std::time::Duration::from_secs_f64(write / 1000.0),
-                    std::time::Duration::from_secs_f64(commit / 1000.0),
-                )
-            });
+            let spent = self
+                .image_chunk_ms
+                .get()
+                .map_or(spent, |(fixed, row, commit)| {
+                    (
+                        std::time::Duration::from_secs_f64(
+                            (fixed + row * f64::from(processed)) / 1000.0,
+                        ),
+                        std::time::Duration::from_secs_f64(commit / 1000.0),
+                    )
+                });
             write += spent.0;
             commit += spent.1;
             applied += processed;
@@ -12736,16 +12749,28 @@ impl SyncClient {
                 p.import_write_ms = u64::try_from(write.as_millis()).ok();
                 p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
             });
-            let duration = spent.0.as_secs_f64() * 1000.0;
-            let budget = (spent.1.as_secs_f64() * 1000.0).max(250.0);
+            let write_ms = spent.0.as_secs_f64() * 1000.0;
+            let per_row = match model {
+                Some((rows, before, _)) if 2 * processed.abs_diff(rows) >= processed.min(rows) => {
+                    Some((write_ms - before) / (f64::from(processed) - f64::from(rows)))
+                }
+                Some((_, _, per_row)) => per_row,
+                None => None,
+            };
+            model = Some((processed, write_ms, per_row));
+            let fixed = (write_ms - per_row.unwrap_or(0.0) * f64::from(processed)).max(0.0);
+            let budget = (spent.1.as_secs_f64() * 1000.0).max(250.0).max(fixed);
             std::thread::yield_now();
             if last {
                 break;
             }
-            // A zero duration saturates the cast and leaves the doubling.
+            // Without a positive per-row time the chunk doubles.
             limit = (processed * 2)
                 .min(65_536)
-                .min((f64::from(processed) * budget / duration) as u32)
+                .min(match per_row {
+                    Some(per_row) if per_row > 0.0 => (budget / per_row) as u32,
+                    _ => u32::MAX,
+                })
                 .max(1024);
             self.image_chunk_rows.insert(table.name.clone(), limit);
         }

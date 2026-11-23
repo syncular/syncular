@@ -1,5 +1,26 @@
 # Syncular release notes
 
+## 0.105.9 release notes
+
+Image import no longer shrinks its transactions to 1,024 rows when write time
+does not fall with the row count. In the rollback journal, a transaction copies
+each page it changes into the journal once, so a transaction into a table with
+secondary indexes over spread keys journals most of their pages whatever its
+size. A web app's production catalogue on 0.105.8, with every storage write
+held 2 ms and every flush 50 ms longer, wrote for 3.1 to 3.3 s in chunks of
+3,860, 1,931 and 1,024 rows of its last 42,752-row relations image (335 to
+370 journal pages each, no cache spill), and the sizer shrank it to 33
+transactions with 131.4 s of writing and 55.7 s of `COMMIT`
+(SYNCULAR-BROWSER-IMPORT-TAIL-001, follow-up). Both cores now split a chunk's
+write time into a per-row and a fixed part from the two latest chunks whose
+row counts differ by at least half the smaller, and size the next chunk to the
+rows whose per-row time fills the larger of 250 ms, the previous `COMMIT` and
+the fixed part (SPEC §5.3). The second chunk of an image doubles, so a split
+exists. When write time is all per row, the sizes equal 0.105.8's. A
+transaction that amortizes a large fixed cost runs longer, so a local read
+during such an import waits up to about its fixed cost, its per-row time and
+its commit. No API changes.
+
 ## 0.105.8 release notes
 
 A window observer now also waits for query reads of rows that earlier changes
