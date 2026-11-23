@@ -8444,7 +8444,10 @@ any observation. A batch that changes conflicts, rejections or outcomes is a
 local write like one with status: `resolveCommitOutcome` with
 `resolved_keep_server` restores the server row in a batch without status, and
 a query that deferred it rendered the local row after the outcome observer had
-dropped the conflict, until the import ended (0.105.11). The client core emits
+dropped the conflict, until the import ended (0.105.11). A local batch that
+matches no observation, such as an outcome-only batch after the restored row
+arrived in a batch of its own, ends that observation's deferral like a batch
+that names a window value (0.105.12). The client core emits
 such batches for bootstrap rows blocks and image chunks, whose rows belong to
 units that are still bootstrapping, and for the other table-only writes
 (evicting a departed unit's rows, revealing sealed rows under a key that

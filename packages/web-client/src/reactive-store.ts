@@ -638,9 +638,15 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   onChange(batch: ClientChangeBatch): Promise<void> | undefined {
+    const local =
+      batch.status !== undefined ||
+      batch.conflictsChanged ||
+      batch.rejectionsChanged ||
+      batch.outcomesChanged;
     if (!batchMatches(batch, this.spec)) {
-      // A unit change ends the wait of a read deferred behind the import.
-      if (batch.windows.length > 0) this.imported();
+      // A unit change or a local outcome change ends the wait of a read
+      // deferred behind the import.
+      if (batch.windows.length > 0 || local) this.imported();
       return this.#answered(batch.revision);
     }
     if (batch.revision > this.#desiredRevision) {
@@ -656,12 +662,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         this.#waiting.delete(`${change.baseKey}\0${unit}`);
         this.#named.add(`${change.baseKey}\0${unit}`);
       }
-    const importing =
-      this.store.importing &&
-      batch.status === undefined &&
-      !batch.conflictsChanged &&
-      !batch.rejectionsChanged &&
-      !batch.outcomesChanged;
+    const importing = this.store.importing && !local;
     const imported =
       importing &&
       batch.windows.length === 0 &&

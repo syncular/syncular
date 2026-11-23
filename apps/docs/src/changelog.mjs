@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-11-23',
     title: 'A conflict resolved during a sync shows the server row at once',
-    body: "While a sync attempt imports, live queries defer the import's own row writes. A keep-server resolution restores the row in a change that carries no status, so a query deferred it too and showed the local row until the import ended, after `useCommitOutcomes` had already dropped the conflict. A change to conflicts, rejections or outcomes now counts as a local write, so its queries read at once and the outcome observers wait for them.",
+    body: "0.105.12 covers the restored row and the resolved outcome arriving in separate changes. While a sync attempt imports, live queries defer the import's own row writes. A keep-server resolution restores the row in a change that carries no status, so a query deferred it too and showed the local row until the import ended, after `useCommitOutcomes` had already dropped the conflict. A change to conflicts, rejections or outcomes now counts as a local write, so its queries read at once and the outcome observers wait for them.",
     links: [
       {
         href: '/guide-concurrency-correction/',

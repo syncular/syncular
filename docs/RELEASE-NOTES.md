@@ -1,5 +1,19 @@
 # Syncular release notes
 
+## 0.105.12 release notes
+
+0.105.11 counted a batch that changes conflicts, rejections or outcomes as a
+local write only when it also changed a table a query reads. When the restored
+row arrived in a table-only batch during an import and the resolved outcome in
+a later batch of its own, the query still deferred the row, the outcome batch
+matched no query, and `useCommitOutcomes` dropped the conflict while the query
+showed the local row. Such a local batch now ends the deferral of every
+observation, like a batch that names a window value. A web app's nine mounted
+cases on the real store (resolve and dismiss, combined and separate batches,
+with and without a running import, and a rejection) pass on 0.105.12; on
+0.105.11 the two separate-batch import cases fail, on 0.105.10 all four import
+cases (SYNCULAR-OUTCOME-QUERY-HANDOFF-001; SPEC §7.8). No API changes.
+
 ## 0.105.11 release notes
 
 A change batch that changes conflicts, rejections or commit outcomes now counts
