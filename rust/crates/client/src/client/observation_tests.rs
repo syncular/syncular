@@ -8792,7 +8792,10 @@ fn a_slow_image_commit_budgets_the_next_chunk() {
         assert_eq!(client.drain_change_batches().len(), chunks);
         assert_eq!(client.image_chunk_rows.get("tasks"), Some(&next));
         let progress = client.progress.snapshot().unwrap();
-        assert_eq!(progress.import_commit_ms, Some(commit_ms as u64 * chunks as u64));
+        assert_eq!(
+            progress.import_commit_ms,
+            Some(commit_ms as u64 * chunks as u64)
+        );
     }
 }
 
