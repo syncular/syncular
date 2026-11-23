@@ -222,7 +222,9 @@ At `create` the native host prepares each declared statement under a SQLite
 authorizer and refuses it with `client.authority_read_forbidden` (details
 `{ query, reason: "ceiling", table, column }`) when the statement reads a
 column outside the ceiling. The check runs on the statement itself, so a
-webview that understates the read set gains nothing. A request naming an
+webview that understates the read set gains nothing. It prepares the
+statements on the replica `create` opens; a refused `create` leaves no client,
+and the next `create` opens the same file. A request naming an
 undeclared query fails with `client.authority_query_unknown`, and a missing,
 extra or mistyped parameter with `sync.invalid_request` and the details
 `{ query, param }`. Ordinary `query`, `querySnapshot`, and writes still fail

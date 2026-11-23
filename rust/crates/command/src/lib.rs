@@ -855,17 +855,7 @@ pub fn dispatch<T: Transport>(
                 )
                 .map_err(CommandError::from_client)?;
             }
-            // §5.11: the native ceiling prepares each authored statement on an
-            // in-memory replica of the schema, so a refused declaration never
-            // opens the host's database.
-            if let Some(ceiling) = &effects.authority_ceiling {
-                if !limits.authority_reads.is_empty() {
-                    SyncClient::new_with_identity(None, schema, limits.clone())
-                        .map_err(client_err)?
-                        .check_authority_ceiling(ceiling)
-                        .map_err(CommandError::from_client)?;
-                }
-            }
+            let declared = !limits.authority_reads.is_empty();
             // §12: a host-configured local authority opens with the client's
             // schema before the client, as the browser worker opens it.
             transport
@@ -881,6 +871,15 @@ pub fn dispatch<T: Transport>(
                     SyncClient::new_with_identity(client_id, schema, limits).map_err(client_err)?
                 }
             };
+            // §5.11: the native ceiling prepares each authored statement on the
+            // opened replica; a refused declaration drops the client unserved.
+            if let Some(ceiling) = &effects.authority_ceiling {
+                if declared {
+                    instance
+                        .check_authority_ceiling(ceiling)
+                        .map_err(CommandError::from_client)?;
+                }
+            }
             instance
                 .set_retain_failed_commits(
                     optional(
@@ -2379,6 +2378,68 @@ mod tests {
                 .expect_err("a unit names a non-wildcard value per covered variable");
             assert_eq!(error.code, "sync.invalid_subscription", "{scopes}");
         }
+    }
+
+    #[test]
+    fn a_ceiling_refusal_on_a_file_replica_leaves_no_client_and_the_file_reusable() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let dir = std::env::temp_dir().join(format!("syncular-ceiling-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("replica dir");
+        let path = dir.join("client.db");
+        let query = json!({
+            "name": "listOf",
+            "sql": "SELECT id FROM todos WHERE list_id = ?",
+            "bind": ["listId"],
+            "params": [{"name": "listId", "type": "string", "nullable": false}],
+            "coverage": [{"table": "todos", "variable": "list_id", "units": ["listId"]}],
+            "reads": {"todos": ["id", "list_id"]},
+            "resultColumns": [{"name": "id", "type": "string", "nullable": false}]
+        });
+        let mut create = |client: &mut Option<SyncClient>, effects: &mut CreateEffects| {
+            dispatch(
+                &mut transport,
+                client,
+                effects,
+                "create",
+                &json!({
+                    "schema": schema(),
+                    "dbPath": path.to_str().expect("utf-8 path"),
+                    "securityPreflight": true,
+                    "authorityReads": [query],
+                }),
+            )
+        };
+        effects.authority_ceiling = Some([("todos".to_owned(), vec!["id".to_owned()])].into());
+        let refused = create(&mut client, &mut effects).unwrap_err();
+        assert_eq!(refused.code, "client.authority_read_forbidden");
+        assert_eq!(
+            refused.details,
+            Some(
+                json!({"query": "listOf", "reason": "ceiling", "table": "todos", "column": "list_id"})
+            )
+        );
+        assert!(client.is_none());
+        effects.authority_ceiling = Some(
+            [(
+                "todos".to_owned(),
+                vec!["id".to_owned(), "list_id".to_owned()],
+            )]
+            .into(),
+        );
+        create(&mut client, &mut effects).expect("create within the ceiling");
+        let read = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "authorityRead",
+            &json!({ "requests": [{ "query": "listOf", "params": { "listId": "l1" } }] }),
+        )
+        .expect("authority read on the reopened file");
+        assert_eq!(read["results"][0]["rows"], json!([]));
+        drop(client);
+        std::fs::remove_dir_all(&dir).expect("remove replica dir");
     }
 
     #[test]

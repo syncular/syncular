@@ -1,5 +1,36 @@
 # Syncular release notes
 
+## 0.105.3 release notes
+
+A native `create` with `authorityReads` and a host ceiling
+(`SyncularConfig.authority_columns`) no longer builds the schema twice
+(SYNCULAR-NATIVE-CREATE-CEILING-COST-001). The command built a disposable
+in-memory `SyncClient` of the whole schema to prepare the declared statements
+under the ceiling authorizer, then opened the file replica. It now opens the
+replica and runs the same check on that connection; a refusal drops the client,
+so no client remains, and the file opens again on the next `create`
+(SPEC §5.11). Refusal codes and details are unchanged.
+
+Measured on an Apple M5 Pro Mac, the command crate dispatching `create` with
+an application's 116-table schema, 7 authority queries and a ceiling over every
+column, six creates on one file (the first on a fresh file):
+
+| Build | Before | After |
+|---|---|---|
+| debug, reopened file | 204 to 237 ms | 64 to 71 ms |
+| debug, fresh file | 291 ms | 145 ms |
+| release, reopened file | 80 to 86 ms | 28 to 32 ms |
+| release, fresh file | 106 ms | 61 ms |
+
+These figures are from the Mac, not the iPhone; the in-memory client was
+118 to 132 ms of the debug create and the ceiling check under 1 ms. A
+regression test refuses a declaration on a file replica, checks the refusal
+details and that no client remains, then creates within the ceiling on the
+same file and runs an authority read.
+
+**Upgrading.** No API changes. Tauri and FFI hosts pick the change up through
+the `syncular-command` crate.
+
 ## 0.105.2 release notes
 
 ### Blob uploads follow the transport gate

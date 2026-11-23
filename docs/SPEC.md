@@ -4755,10 +4755,12 @@ is otherwise malformed (`reason: "shape"`). Applications MUST declare only
 authority columns, excluding clinical data and credentials. Tauri
 additionally requires a Rust-host `SyncularConfig.authority_columns` ceiling,
 and the native host does not trust the webview's read set: at `create` it
-prepares each authored statement on its own connection under a SQLite
-authorizer and refuses the declaration with `reason: "ceiling"` when any read
+prepares each authored statement on the replica connection it opens, under a
+SQLite authorizer, and refuses the declaration with `reason: "ceiling"` when any read
 names a table or column outside the ceiling, or when the statement performs
-any action other than `SELECT`, a read, or a deterministic core function. The
+any action other than `SELECT`, a read, or a deterministic core function. A
+refused `create` leaves no client; the opened file stays a valid replica for
+the next `create`. The
 declared set is fixed at creation; a read MUST NOT redefine or extend it.
 
 **Host-created Tauri clients.** When the Rust host sends `create` through

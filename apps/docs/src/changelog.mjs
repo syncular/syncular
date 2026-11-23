@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-23',
+    title: 'A native authority create builds its replica once',
+    body: "A native `create` with authority declarations and a host ceiling built a second, in-memory client of the whole schema to run the ceiling check, then opened the real replica. The check now prepares the declared statements on the replica `create` opens. With a 116-table schema and 7 declarations, a reopened file replica took 204 to 237 ms in a debug build and now takes 64 to 71 ms; refusal codes and details are unchanged.",
+    links: [
+      {
+        href: '/platform-tauri-specifics/#authority-evidence-before-activation',
+        label: 'Authority evidence before activation',
+      },
+    ],
+  },
+  {
     date: '2026-11-22',
     title: 'A bump keeps the unchanged tables of a 0.101.0 replica',
     body: "typegen emits equivalentGenerations on each table whose index or FTS projection changed its generation in 0.102.0: the generations typegen 0.101.0 gave the table at earlier versions where it equals today's. At a schema bump both clients keep a table whose persisted generation is in that list, with its rows, units and FTS. Regenerate after upgrading; the field never goes on the wire.",
