@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-23',
+    title: 'useWindow also waits for reads of rows imported in earlier changes',
+    body: "0.105.7 ordered a window's completion after the query reads of the same change. An import writes rows in earlier changes, and the client defers query reads while it imports, so a later change that only completed the window still reported it complete before those reads. A change to a window now starts the deferred reads, and the window waits for every query read in flight.",
+    links: [
+      {
+        href: '/concepts-windowing/',
+        label: 'Windowing',
+      },
+    ],
+  },
+  {
+    date: '2026-11-23',
     title:
       'useWindow reports a unit complete after the queries have read its rows',
     body: "The reactive store read the window state and the queries of a change at the same time, so `useWindow` could report a unit complete while a query without coverage still showed its answer from before the unit's rows arrived. An app that switched to the local query on completion rendered an empty `ready` list for a moment. The store now reads the window state of a change after the query reads that change started.",

@@ -1,5 +1,18 @@
 # Syncular release notes
 
+## 0.105.8 release notes
+
+A window observer now also waits for query reads of rows that earlier changes
+wrote. 0.105.7 ordered the window read after the reads that the completing
+change itself started. During an import the client writes rows in table
+changes and defers the query reads behind the import, and the unit completes
+in a later change that names only the window. That change matched no query,
+so the window still read first: a web app rendered 160 of 162 relations for
+about 120 ms (SYNCULAR-QUERY-WINDOW-HANDOFF-001, reopened). A change to a
+window now starts the deferred reads, and the window waits until every query
+read in flight has answered at that change's revision or stopped (SPEC §7.8).
+No API changes.
+
 ## 0.105.7 release notes
 
 `useWindow` and every other window observer of the reactive store now report

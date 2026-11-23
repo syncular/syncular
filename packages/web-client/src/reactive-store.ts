@@ -331,8 +331,8 @@ function reconcileRows<Row>(
 }
 
 interface CachedObservation {
-  /** A query returns the end of the read the batch started; a window waits
-   * for the reads of its batch before it reads (SPEC §7.8). */
+  /** A reading query returns when it has answered at the batch's revision
+   * or stopped; a window waits for those reads before it reads (SPEC §7.8). */
   onChange(
     batch: ClientChangeBatch,
     reads?: Promise<unknown>,
@@ -473,8 +473,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   /** Units window changes named since the running read started. */
   #named = new Set<string>();
   #deferred = false;
-  /** Resolved when the read loop next stops. */
-  #stopped: (() => void)[] = [];
+  /** Waiters for an answer at their revision, resolved by it or by the
+   * read loop's stop. */
+  #stopped: [bigint, () => void][] = [];
   #claimError: Error | undefined;
   #claimPending = false;
   #claimGated = false;
@@ -589,7 +590,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#scheduled = false;
     this.#running = false;
     this.#requested = false;
-    for (const resolve of this.#stopped.splice(0)) resolve();
+    for (const [, resolve] of this.#stopped.splice(0)) resolve();
     this.#desiredRevision = 0n;
     this.#currentRevision = 0n;
     this.#liveRevision = 0n;
@@ -637,7 +638,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   onChange(batch: ClientChangeBatch): Promise<void> | undefined {
-    if (!batchMatches(batch, this.spec)) return undefined;
+    if (!batchMatches(batch, this.spec)) {
+      // A unit change ends the wait of a read deferred behind the import.
+      if (batch.windows.length > 0) this.imported();
+      return this.#answered(batch.revision);
+    }
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
@@ -674,8 +679,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     else if (lag) this.#deferred ||= !this.#running;
     // A running read reads again only when its snapshot predates the batch.
     else if (!this.#running) this.#requestRead();
+    return this.#answered(batch.revision);
+  }
+
+  #answered(revision: bigint): Promise<void> | undefined {
     return this.#scheduled || this.#running
-      ? new Promise((resolve) => this.#stopped.push(resolve))
+      ? new Promise((resolve) => this.#stopped.push([revision, resolve]))
       : undefined;
   }
 
@@ -802,7 +811,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   async #readLoop(): Promise<void> {
     if (this.#running) return;
     if (this.#listeners.size === 0) {
-      for (const resolve of this.#stopped.splice(0)) resolve();
+      for (const [, resolve] of this.#stopped.splice(0)) resolve();
       return;
     }
     const generation = this.#generation;
@@ -917,6 +926,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           isRefreshing: false,
           availability,
         });
+        for (const [revision, resolve] of this.#stopped)
+          if (revision <= snapshot.revision) resolve();
+        this.#stopped = this.#stopped.filter(
+          ([revision]) => revision > snapshot.revision,
+        );
       } while (this.#requested && this.#listeners.size > 0);
     } catch (error) {
       if (generation !== this.#generation || this.#listeners.size === 0) return;
@@ -940,7 +954,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       if (generation === this.#generation) {
         this.#running = false;
         if (this.#requested && this.#listeners.size > 0) this.#requestRead();
-        else for (const resolve of this.#stopped.splice(0)) resolve();
+        else for (const [, resolve] of this.#stopped.splice(0)) resolve();
       }
     }
   }

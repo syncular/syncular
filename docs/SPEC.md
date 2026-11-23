@@ -8350,8 +8350,10 @@ Disposal releases the claimed units and keeps the rest. A window observer report
 whether its first read of the window state has returned (`loaded`); before it,
 its empty unit list says nothing about the window. A window observer reads the
 window state for a change batch that names its base only after every observed
-query the same batch made read has finished that read, so a completed unit
-never reaches a render before the query answers that include the unit's rows.
+query that is reading has answered at the batch's revision or stopped. A batch
+that changes a window starts the reads that an import deferred. A completed
+unit therefore never reaches a render before the query answers that include
+the unit's rows, whether they arrived in the same batch or an earlier one.
 A query without coverage ([SYQL.md §13.1](./SYQL.md#131-ordinary-query)), whose completeness the application
 takes from a window, depends on this order.
 
@@ -8363,7 +8365,10 @@ until the relation window completes, then from the local query; it rendered
 flight. The query cannot claim coverage, because it reads every retained
 release, and a comparison of revisions in the application would be a second
 readiness gate. A slow query read now delays the window state of the same batch
-by that read.
+by that read. The 0.105.7 order covered only the queries that the window batch
+itself named; the app's import wrote the rows in table batches whose reads the
+import deferred, and a later batch that only completed the window read the
+window first: 160 of 162 relations rendered for about 120 ms (0.105.8).
 
 DECISION (2026-11-17): a claim never evicts a unit the window held before the
 coordinator's first edit. After a reload, a web app's query claimed its one

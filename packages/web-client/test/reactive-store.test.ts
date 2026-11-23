@@ -1979,6 +1979,109 @@ describe('window claims after a reload (SPEC §7.8)', () => {
     store.dispose();
   });
 
+  test('a window-only batch completes after the reads of an earlier row batch (§7.8)', async () => {
+    let pending = ['p1'];
+    const client = new (class extends FakeReactiveClient {
+      override windowState(): WindowState {
+        return { units: ['p1'], pending, revoked: [] };
+      }
+    })();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const window = store.window(BASE);
+    const query = store.query<Row>(querySpec());
+    const order: string[] = [];
+    const offWindow = window.subscribe(() => order.push('window'));
+    const offQuery = query.subscribe(() => order.push('query'));
+    await drainMicrotasks();
+    let answer!: (snapshot: QuerySnapshot<object>) => void;
+    client.snapshots.push(new Promise((resolve) => (answer = resolve)));
+    order.length = 0;
+    // The rows land in one batch; the unit completes in a later window-only one.
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    pending = [];
+    client.emit(
+      batch(3n, {
+        windows: [{ baseKey: 'project_id\0{}', units: new Set(['p1']) }],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(window.getSnapshot().pending).toEqual(['p1']);
+    answer({
+      revision: 3n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks(24);
+    expect(window.getSnapshot().pending).toEqual([]);
+    expect(order).toEqual(['query', 'window']);
+    offWindow();
+    offQuery();
+    store.dispose();
+  });
+
+  test('a window-only batch during an import reads the deferred queries first (§7.8)', async () => {
+    let pending = ['p1'];
+    const client = new (class extends FakeReactiveClient {
+      override windowState(): WindowState {
+        return { units: ['p1'], pending, revoked: [] };
+      }
+    })();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const store = new ReactiveClientStore(client);
+    store.start();
+    const window = store.window(BASE);
+    const query = store.query<Row>(querySpec());
+    const order: string[] = [];
+    const offWindow = window.subscribe(() => order.push('window'));
+    const offQuery = query.subscribe(() => order.push('query'));
+    await drainMicrotasks();
+    client.progress.emit({
+      epoch: 'e1',
+      attempt: 1,
+      state: 'running',
+      phase: 'import',
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    order.length = 0;
+    // The import's row batch defers the read; the unit's completion reads.
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(client.reads).toHaveLength(1);
+    let answer!: (snapshot: QuerySnapshot<object>) => void;
+    client.snapshots.push(new Promise((resolve) => (answer = resolve)));
+    pending = [];
+    client.emit(
+      batch(3n, {
+        windows: [{ baseKey: 'project_id\0{}', units: new Set(['p1']) }],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(client.reads).toHaveLength(2);
+    expect(window.getSnapshot().pending).toEqual(['p1']);
+    answer({
+      revision: 3n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks(24);
+    expect(window.getSnapshot().pending).toEqual([]);
+    expect(order).toEqual(['query', 'window']);
+    offWindow();
+    offQuery();
+    store.dispose();
+  });
+
   test('a window snapshot says whether it has read the core', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);
