@@ -96,6 +96,8 @@ The page's report merges the worker's `statements` and `rounds`; `profiler.reset
 
 Wrap the native client with `profiler.client()`. The report fills `queries`, `units` and `writes`; query times include the IPC hop. The Rust core executes statements and rounds natively, so `statements`, `rounds` and `deltas` stay empty.
 
+A native query time is one span: the wait for the plugin's read thread, the SQLite work on its connection, the row encoding into the reply, the IPC hop and the bridge's decode. Syncular records no split of that span. To see where the native part goes, record a debug build with the Time Profiler in Xcode Instruments (iOS Simulator, macOS) or the CPU profiler in Android Studio. On Tauri a file replica reads on the thread `syncular-read`, under `FileQuerySnapshotReader::query_snapshot`; `rusqlite` frames below it are SQLite work, and `serde_json` frames are the reply encoding. An in-memory replica has no read thread: its reads run on the thread `syncular-core` behind the commands queued before them, so the profile shows that wait as `syncular-core` work that is not the read.
+
 Swift, Kotlin and Flutter apps have no profiler. Their queries get the generate-time plan check ([Named queries](/tooling-queries/#query-plan-check)), and `diagnosticsSnapshot()` reports active units and the last round's counters.
 
 ## Lock the numbers in tests
