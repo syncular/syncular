@@ -64,8 +64,7 @@ export function useRetainedWindow(
     [unitsIdentity],
   );
   // oxlint-enable react-hooks/exhaustive-deps
-  const [state, setState] =
-    useState<UseRetainedWindowResult>(RETAINED_PENDING);
+  const [state, setState] = useState<UseRetainedWindowResult>(RETAINED_PENDING);
 
   useEffect(() => {
     let active = true;
