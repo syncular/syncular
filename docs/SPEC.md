@@ -3227,8 +3227,10 @@ later range image of the table holds the size the rule below gave the previous
 range's next chunk, when the client still knows it (1,024 rows otherwise).
 Each later chunk holds at least 1,024 rows, at most
 twice the rows of the chunk before, at most 65,536 rows, and at most the rows
-the chunk before applied per 250 ms of its write time, measured on a monotonic
-clock from the chunk's start to the start of its `COMMIT`. While local writes
+the chunk before wrote per the larger of 250 ms and its commit time. Both
+times are measured on a monotonic clock: the write time from the chunk's start
+to the start of its `COMMIT`, the commit time from there until its
+transaction returns. While local writes
 to the table need replay (§7.1), a chunk holds at most 1,024 rows. When the image is
 the table's first page (§5.6), the fresh-bootstrap clear runs in its first
 transaction, then primary-key upserts for every image row with
@@ -3387,6 +3389,27 @@ counted; with the codes' FTS5 projection the lane commits 24 times either
 way, and its longest image took 140 ms before and 128 ms after.
 Journal modes `TRUNCATE` and `PERSIST` flushed more (136 calls against
 102), so the replica keeps `DELETE` with `synchronous=FULL`.
+
+DECISION (2026-11-23): the write budget of the next chunk is the larger of
+250 ms and the commit time of the chunk before. The 64 MiB page cache holds a
+chunk's dirty pages until `COMMIT`, so most page and journal writes of the
+replica happen inside `COMMIT`, and every commit rewrites the index pages its
+chunk touched. On storage with slow writes the commits then dominate while the
+write time stays small. A web app's Windows browsers on 0.103.0 and 0.105.5
+spent 84.1 s and 33.6 s after the import callback against 4.2 s and 11.0 s of
+writing on one 42,752-row relations image. `bench/src/image-range-lane.ts
+--write-delay-ms 6 --sync-delay-ms 100` holds every `xWrite` 6 ms and every
+`xSync` 100 ms longer on 154,569 rows in 12 range images (Apple M5 Pro,
+Chromium) and splits the time after the callback. Sized from write time
+alone, the import committed 135 times in 279.8 s: `COMMIT` took 114.6 s,
+bookkeeping before it 4.9 s and publication 4 ms, and the relations images ran
+in chunks of 1,024 rows. With the commit time as the budget it committed 21
+times in 56.9 s with 356 MB of `xWrite` calls against 1.38 GB. At 2 ms per
+write and 50 ms per flush the import took 22.1 s in 29 commits against 28.9 s
+in 36. A read waits up to one chunk's write time plus its commit: the longest
+wait of the 50 ms reader timer grew from 6.0 s to 7.6 s at 6 ms per write,
+while the median fell from 3.2 s to 5 ms. A commit below 250 ms leaves the
+2026-11-19 rule unchanged.
 
 A client whose replica lives in OPFS creates a new database with 64 KiB pages:
 the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it

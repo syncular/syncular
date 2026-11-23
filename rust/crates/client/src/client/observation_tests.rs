@@ -8763,13 +8763,19 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
 }
 
 #[test]
-fn a_slow_image_commit_leaves_the_chunk_doubling() {
+fn a_slow_image_commit_budgets_the_next_chunk() {
     // §5.3: a 1 s COMMIT (four slow flushes) after 10 ms of writing doubles
     // the chunks: 1,024, 2,048, 4,096 and the last 832 rows. With 1 ms of
-    // writing the doubling stops at 65,536 rows.
-    for (write_ms, total, chunks, next) in [(10.0, 8000, 4, 8192), (1.0, 200_000, 9, 65_536)] {
+    // writing the doubling stops at 65,536 rows. A 500 ms COMMIT after 400 ms
+    // of writing budgets 500 ms of writing: 1,024, 1,280, 1,600, 2,000 and
+    // the last 2,096 rows.
+    for (write_ms, commit_ms, total, chunks, next) in [
+        (10.0, 1000.0, 8000, 4, 8192),
+        (1.0, 1000.0, 200_000, 9, 65_536),
+        (400.0, 500.0, 8000, 5, 2500),
+    ] {
         let mut client = client();
-        client.image_chunk_ms.set(Some((write_ms, 1000.0)));
+        client.image_chunk_ms.set(Some((write_ms, commit_ms)));
         let image = Connection::open_in_memory().unwrap();
         image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{total})
@@ -8786,7 +8792,7 @@ fn a_slow_image_commit_leaves_the_chunk_doubling() {
         assert_eq!(client.drain_change_batches().len(), chunks);
         assert_eq!(client.image_chunk_rows.get("tasks"), Some(&next));
         let progress = client.progress.snapshot().unwrap();
-        assert_eq!(progress.import_commit_ms, Some(1000 * chunks as u64));
+        assert_eq!(progress.import_commit_ms, Some(commit_ms as u64 * chunks as u64));
     }
 }
 

@@ -1,5 +1,24 @@
 # Syncular release notes
 
+## 0.105.6 release notes
+
+An image import now commits less often when its commits are slow. Both cores
+sized each chunk from its write time alone, while the replica's page and
+journal writes happen inside `COMMIT` (the 64 MiB page cache holds them until
+then). On storage with slow writes a chunk therefore stayed near 1,024 rows
+and the import paid for many slow commits: a web app's Windows browsers spent
+84.1 s and 33.6 s after the import callback against 4.2 s and 11.0 s of
+writing on one 42,752-row image (SYNCULAR-BROWSER-IMPORT-TAIL-001). The next
+chunk now writes for the larger of 250 ms and the commit time of the chunk
+before (SPEC §5.3). `bench/src/image-range-lane.ts` gains `--write-delay-ms`
+and splits the time after the callback into bookkeeping, `COMMIT` and
+publication. With every write held 6 ms and every flush 100 ms longer,
+154,569 rows imported in 56.9 s and 21 transactions against 279.8 s and 135;
+`COMMIT` took 114.6 s of the 119.5 s after the callback, publication 4 ms.
+A local read waits up to one chunk's write time plus its commit: the longest
+wait grew from 6.0 s to 7.6 s in that run. A commit under 250 ms keeps the
+earlier sizing. No API changes.
+
 ## 0.105.5 release notes
 
 A local data purge in the TypeScript core now removes a purged row's words

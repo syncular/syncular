@@ -319,6 +319,9 @@ describe('CREATE INDEX subset — client local DDL', () => {
     [128, 0, 8000, [1024, 3024, 6930, 8000]],
     // 1,024 × 250 / 400 = 640 rows stays at the 1,024-row floor.
     [400, 0, 3000, [1024, 2048, 3000]],
+    // A 500 ms COMMIT budgets 500 ms of writing: 1,024 × 500 / 400 = 1,280,
+    // then 1,600 and 2,000 rows.
+    [400, 500, 8000, [1024, 2304, 3904, 5904, 8000]],
     // A 1 s COMMIT (four slow flushes) leaves the doubling.
     [10, 1000, 8000, [1024, 3072, 7168, 8000]],
     // Doubling stops at 65,536 rows.
@@ -329,7 +332,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
       [1024, 3072, 7168, 15_360, 31_744, 64_512, 130_048, 195_584, 200_000],
     ],
   ])(
-    'image chunks writing %i ms and committing %i ms size the next one by the rows per 250 ms of writing',
+    'image chunks writing %i ms and committing %i ms size the next one by the rows written per the larger of 250 ms and the commit',
     async (writeMs, commitMs, total, expected) => {
       const db = new BunClientDatabase();
       const image = new BunClientDatabase();

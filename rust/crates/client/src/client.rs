@@ -12584,9 +12584,9 @@ impl SyncClient {
             // §5.3: a table's first chunk holds 1,024 rows; a later range image
             // starts at the size its previous range reached. A later chunk holds at
             // least 1,024 rows, at most twice the rows of the one before, at
-            // most 65,536, and at most the rows the one before applied per
-            // 250 ms of its time before COMMIT; a chunk that replays local
-            // writes holds at most 1,024.
+            // most 65,536, and at most the rows the one before wrote in the
+            // larger of 250 ms and its time from the end of its writes through
+            // COMMIT; a chunk that replays local writes holds at most 1,024.
             let chunk = if pending || protected {
                 limit.min(1024)
             } else {
@@ -12737,6 +12737,7 @@ impl SyncClient {
                 p.import_commit_ms = u64::try_from(commit.as_millis()).ok();
             });
             let duration = spent.0.as_secs_f64() * 1000.0;
+            let budget = (spent.1.as_secs_f64() * 1000.0).max(250.0);
             std::thread::yield_now();
             if last {
                 break;
@@ -12744,7 +12745,7 @@ impl SyncClient {
             // A zero duration saturates the cast and leaves the doubling.
             limit = (processed * 2)
                 .min(65_536)
-                .min((f64::from(processed) * 250.0 / duration) as u32)
+                .min((f64::from(processed) * budget / duration) as u32)
                 .max(1024);
             self.image_chunk_rows.insert(table.name.clone(), limit);
         }

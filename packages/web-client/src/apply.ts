@@ -670,8 +670,9 @@ export async function applySqliteSegment(
     // §5.3: a table's first chunk holds 1,024 rows; a later range image
     // starts at the size its previous range reached. A later chunk holds at least
     // 1,024 rows, at most twice the rows of the one before, at most 65,536,
-    // and at most the rows the one before applied per 250 ms of its time
-    // before COMMIT; a replaying chunk holds one statement.
+    // and at most the rows the one before wrote in the larger of 250 ms and
+    // its time from the end of its writes to the return of its transaction
+    // (COMMIT); a replaying chunk holds one statement.
     for (
       let size =
         (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
@@ -757,6 +758,7 @@ export async function applySqliteSegment(
         written = now();
         return rebased;
       });
+      const committed = now() - written;
       await yieldToHost();
       if (boundary === undefined || applied === count) break;
       size = Math.max(
@@ -764,7 +766,7 @@ export async function applySqliteSegment(
         Math.min(
           2 * chunk,
           65_536,
-          Math.floor((chunk * 250) / (written - started)),
+          Math.floor((chunk * Math.max(250, committed)) / (written - started)),
         ),
       );
       options.chunkRows?.set(table.name, size);
