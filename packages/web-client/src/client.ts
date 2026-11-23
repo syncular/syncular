@@ -4056,8 +4056,8 @@ export class SyncClient {
           `local purge id ${JSON.stringify(purge.purgeId)} was already used with a different plan`,
         );
       }
-      // A retry after a failed rewrite finishes it.
-      this.#erasePurgedPages();
+      // A retry after an unfinished rewrite finishes it.
+      this.#erasePurgedPages(metaKey);
       return { alreadyApplied: true, purgedRows: 0, droppedCommits: 0 };
     }
     // RFC 0005 D7: the container file cannot be a purge target (its name is not
@@ -4209,19 +4209,30 @@ export class SyncClient {
       this.#conflicts = priorConflicts;
       throw error;
     }
-    this.#erasePurgedPages();
+    this.#erasePurgedPages(metaKey);
     return result;
   }
 
   /**
-   * §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of the database
-   * file, and a file replica's WAL keeps the frames written before the
-   * purge, until either is rewritten. VACUUM rebuilds the file from the
-   * remaining rows, and the checkpoint truncates the WAL.
+   * §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of
+   * the database file, FTS5 keeps a deleted document's tokens in its index
+   * segments, and a file replica's WAL keeps the frames written before the
+   * purge, until each is rewritten. The FTS5 merge drops the deleted tokens,
+   * VACUUM rebuilds the file from the remaining rows, and the checkpoint
+   * truncates the WAL. The plan's completion marker follows the checkpoint,
+   * so only a finished rewrite lets a retry skip it.
    */
-  #erasePurgedPages(): void {
+  #erasePurgedPages(metaKey: string): void {
+    const erased = `${metaKey}:erased`;
+    if (getMeta(this.#db, erased) !== undefined) return;
     this.#db.exec('PRAGMA secure_delete = ON');
     try {
+      for (const { name } of this.#db.query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%USING fts5%'",
+      ))
+        this.#db.exec(
+          `INSERT INTO ${quoteIdent(String(name))}(${quoteIdent(String(name))}) VALUES('optimize')`,
+        );
       this.#db.exec('VACUUM');
       if (this.#db.query('PRAGMA wal_checkpoint(TRUNCATE)')[0]?.busy)
         throw new ClientSyncError(
@@ -4232,6 +4243,16 @@ export class SyncClient {
     } finally {
       this.#db.exec('PRAGMA secure_delete = OFF');
     }
+    // The previous-version container is a copy of earlier rows; its removal
+    // is best-effort elsewhere, so a container that survived fails the purge.
+    this.#dropPreviousVersionContainerFile();
+    if (this.#db.siblingExists?.(PREVIOUS_VERSION_CONTAINER_NAME) === true)
+      throw new ClientSyncError(
+        'client.storage_failure',
+        'the previous-version container survived the purge',
+        true,
+      );
+    setMeta(this.#db, erased, '1');
   }
 
   /**

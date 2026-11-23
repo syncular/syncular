@@ -1,5 +1,45 @@
 # Syncular release notes
 
+## 0.105.5 release notes
+
+A local data purge now removes a purged row's words from the full-text index
+of the replica file. FTS5 keeps a deleted document's tokens in its index
+segments until a merge, and `VACUUM` copies those segments unchanged, so
+since 0.70.2 a purged row of a table with a full-text index left its words,
+lowercased and split, readable in the raw file. The 0.70.x marker tests missed
+it because they searched for the mixed-case marker, which the index stores
+only as lowercase tokens. Both cores now merge every FTS5 index (`'optimize'`)
+before the rewrite (SPEC §5.11, "Purge erasure"). Found while assessing
+SYNCULAR-PURGE-CLEAN-001.
+
+A retry of an applied purge plan no longer repeats a finished rewrite. The
+client records the erasure as complete after a truncating checkpoint that no
+reader blocked; a busy checkpoint or an interrupted erasure leaves no record,
+and the next retry of that plan rewrites. A fresh `purgeId` always rewrites,
+whatever it matched: zero matching rows says nothing about freed pages, and a
+client cannot detect writes an older core made without `secure_delete`, so
+the proof of a clean file that SYNCULAR-PURGE-CLEAN-001 asked for is declined.
+Derive the `purgeId` from the directive a purge carries out, so a repeat of
+the directive is an applied no-op.
+
+A previous-version container that the client could not delete now fails the
+purge with `client.storage_failure` and leaves no record. The container holds
+a copy of earlier rows, and its removal was best-effort; Rust ignored a failed
+removal.
+
+Tests in both cores write marker rows into an indexed column and check that
+the lowercase token is in the raw file before the purge and in no file after
+it. The TypeScript test checks that a retry of the applied plan runs no
+`VACUUM` while the record exists and runs one once the record is gone, and
+that a container that still exists fails the purge with no record. The Rust
+test checks the retry by its effect: a probe value written and deleted after
+the erasure stays in the file while the record exists and leaves once it is
+gone.
+
+**Upgrading.** No API changes. A purge of a replica with full-text indexes
+takes longer by the FTS5 merge. A host that retries an applied plan after a
+finished rewrite no longer pays the rewrite.
+
 ## 0.105.4 release notes
 
 `useRetainedWindow` no longer commits a content-equal state after a claim

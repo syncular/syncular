@@ -102,6 +102,38 @@ function values(id: string, keyId: string, title: string) {
 }
 
 describe('application-authorized local data purge', () => {
+  test('a previous-version container that survives fails the purge erasure', async () => {
+    const local = await makeClient(makeServer(), {
+      clientId: 'purge-container-client',
+      schema: SCHEMA,
+    });
+    insertBase(local.db, 't1', 'key-revoked', 'Target');
+    // A container file whose removal failed stays visible as a sibling.
+    local.db.siblingExists = () => true;
+    let refusal: unknown;
+    try {
+      local.client.purgeLocalData(PURGE);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(ClientSyncError);
+    expect(refusal).toMatchObject({ code: 'client.storage_failure' });
+    expect(
+      local.db.query(
+        "SELECT key FROM _syncular_meta WHERE key LIKE '%:erased'",
+      ),
+    ).toEqual([]);
+    // Once the container is gone, a retry of the applied plan finishes it.
+    local.db.siblingExists = () => false;
+    expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
+    expect(
+      local.db.query(
+        "SELECT key FROM _syncular_meta WHERE key LIKE '%:erased'",
+      ),
+    ).toHaveLength(1);
+    await local.client.close();
+  });
+
   test('a prior conflict of a purged row keeps its ids and codes only', async () => {
     const local = await makeClient(makeServer(), {
       clientId: 'purge-conflict-client',
@@ -190,10 +222,30 @@ describe('application-authorized local data purge', () => {
         values: values('t0', 'key-revoked', `${marker} pending`),
       },
     ]);
+    // The full-text index stores the marker as lowercase tokens; the scan
+    // finds them before the purge.
+    const token = 'purgemarker';
+    local.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    expect(readFileSync(join(dir, 'client.db')).includes(token)).toBe(true);
     expect(local.client.purgeLocalData(PURGE).purgedRows).toBe(200);
     expect(tableRows(local.db, 'patient_notes').map((row) => row.id)).toEqual([
       'kept',
     ]);
+    // A retry of the applied plan skips the finished rewrite; with the
+    // completion marker gone (a rewrite the process did not finish) it
+    // rewrites again.
+    const statements: string[] = [];
+    const exec = local.db.exec.bind(local.db);
+    local.db.exec = (sql, params) => {
+      statements.push(sql);
+      return exec(sql, params);
+    };
+    expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
+    expect(statements).not.toContain('VACUUM');
+    exec("DELETE FROM _syncular_meta WHERE key LIKE '%:erased'");
+    expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
+    expect(statements).toContain('VACUUM');
+    local.db.exec = exec;
     const scrubbed = outcomeOf(local.client.commitDelivery(rejected));
     expect(scrubbed?.status).toBe('rejected');
     expect(scrubbed?.operations).toBeUndefined();
@@ -208,7 +260,9 @@ describe('application-authorized local data purge', () => {
     const files = readdirSync(dir);
     expect(files).toContain('client.db');
     for (const file of files) {
-      expect(readFileSync(join(dir, file)).includes(marker)).toBe(false);
+      const bytes = readFileSync(join(dir, file));
+      expect(bytes.includes(marker)).toBe(false);
+      expect(bytes.includes(token)).toBe(false);
     }
   });
 

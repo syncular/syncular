@@ -4713,11 +4713,21 @@ not yet created. It MAY read the
 creation-time authority policy through `authorityRead(requests)` as defined below.
 No other application-data operation is permitted.
 
-**Purge erasure.** After `purgeLocalData` applies its plan, and again on a
-retry that finds the plan applied, the client MUST rewrite the replica file
-(SQLite `VACUUM` with `secure_delete` on) and truncate its WAL. SQLite
+**Purge erasure.** After `purgeLocalData` applies its plan, the client MUST
+merge every FTS5 index of the replica (`'optimize'`), rewrite the replica
+file (SQLite `VACUUM` with `secure_delete` on) and truncate its WAL. SQLite
 otherwise keeps a deleted value in freed pages and in WAL frames written
-before the purge. The journal entry of a commit the purge drops keeps its
+before the purge, and FTS5 keeps a deleted document's tokens in its index
+segments, which `VACUUM` copies unchanged. After a truncating checkpoint
+that no reader blocked, the client records the plan's erasure as complete. A
+retry that finds the plan applied runs the erasure again unless that record
+exists; a busy checkpoint or an interrupted erasure leaves no record. The
+previous-version container (§9) holds a copy of earlier rows: a container
+file that still exists after the erasure fails the purge with
+`client.storage_failure` and leaves no record. A fresh
+`purgeId` always runs the erasure, whatever the purge matched: zero matching
+rows proves nothing about freed pages, and a client cannot detect writes an
+older core made without `secure_delete`. The journal entry of a commit the purge drops keeps its
 `clientCommitId` and one `client.local_data_purged` result per operation
 index, and omits the `operations` collection and every nested `operation`
 (§7.2.1). In the same transaction the purge rewrites every journal entry

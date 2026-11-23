@@ -13099,8 +13099,8 @@ impl SyncClient {
                     input.purge_id
                 ).into());
             }
-            // A retry after a failed rewrite finishes it.
-            self.erase_purged_pages()?;
+            // A retry after an unfinished rewrite finishes it.
+            self.erase_purged_pages(&meta_key)?;
             return Ok(LocalDataPurgeResult {
                 already_applied: true,
                 purged_rows: 0,
@@ -13328,18 +13328,54 @@ impl SyncClient {
             }
         };
         self.cancel_sync_round();
-        self.erase_purged_pages()?;
+        self.erase_purged_pages(&meta_key)?;
         Ok(result)
     }
 
     /// §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of the
-    /// database file, and the WAL keeps the frames written before the purge,
-    /// until either is rewritten. VACUUM rebuilds the file from the remaining
-    /// rows, and the checkpoint truncates the WAL.
-    fn erase_purged_pages(&self) -> Result<(), String> {
+    /// database file, FTS5 keeps a deleted document's tokens in its index
+    /// segments, and the WAL keeps the frames written before the purge, until
+    /// each is rewritten. The FTS5 merge drops the deleted tokens, VACUUM
+    /// rebuilds the file from the remaining rows, and the checkpoint truncates
+    /// the WAL. The plan's completion marker follows the checkpoint, so only a
+    /// finished rewrite lets a retry skip it.
+    fn erase_purged_pages(&self, meta_key: &str) -> Result<(), String> {
+        let marker = format!("{meta_key}:erased");
+        let done = self.stored(
+            self.conn
+                .query_row(
+                    "SELECT 1 FROM _syncular_meta WHERE key = ?1",
+                    [&marker],
+                    |_| Ok(()),
+                )
+                .optional(),
+        )?;
+        if done.is_some() {
+            return Ok(());
+        }
+        let indexes: Vec<String> = self.stored(
+            self.conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%USING fts5%'",
+                )
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<Vec<String>, _>>()
+                }),
+        )?;
         let erased = self.stored(
             self.conn
-                .execute_batch("PRAGMA secure_delete = ON; VACUUM;")
+                .execute_batch("PRAGMA secure_delete = ON;")
+                .and_then(|()| {
+                    for index in &indexes {
+                        let name = quote_ident(index);
+                        self.conn.execute_batch(&format!(
+                            "INSERT INTO {name}({name}) VALUES('optimize');"
+                        ))?;
+                    }
+                    self.conn.execute_batch("VACUUM;")
+                })
                 .and_then(|()| {
                     self.conn
                         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
@@ -13351,7 +13387,22 @@ impl SyncClient {
         if erased.and_then(|busy| reset.map(|()| busy))? {
             return Err("client.storage_busy: WAL checkpoint is busy".to_owned());
         }
-        Ok(())
+        // The previous-version container is a copy of earlier rows; its
+        // removal is best-effort elsewhere, so a container that survived
+        // fails the purge.
+        if let Some(replica_path) = self.previous_version_replica_path() {
+            let container = crate::previous_version::previous_version_container_path(&replica_path);
+            if std::path::Path::new(&container).exists() {
+                self.drop_previous_version()?;
+            }
+            if std::path::Path::new(&container).exists() {
+                return Err(
+                    "client.storage_failure: the previous-version container survived the purge"
+                        .to_owned(),
+                );
+            }
+        }
+        self.set_meta(&marker, "1")
     }
 
     /// Application-authorized recovery of the replicated projection. Unlike a

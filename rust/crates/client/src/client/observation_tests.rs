@@ -12250,7 +12250,12 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
                 { "name": "encryption_key_id", "type": "string", "nullable": false },
                 { "name": "title", "type": "string", "nullable": false }
             ],
-            "scopes": [{ "pattern": "practice:{practice_id}" }]
+            "scopes": [{ "pattern": "practice:{practice_id}" }],
+            "ftsIndexes": [{
+                "name": "patient_notes_fts",
+                "columns": ["title"],
+                "tokenize": "unicode61 remove_diacritics 2"
+            }]
         }]
     });
     let marker = "PURGEMARKER-RUST-9d41";
@@ -12328,6 +12333,30 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
             base_version: None,
         }])
         .expect("pending edit");
+    // The full-text index stores the marker as lowercase tokens; the scan
+    // finds them before the purge.
+    let token = "purgemarker";
+    let contains = |path: &std::path::Path, needle: &str| {
+        std::fs::read(path)
+            .expect("read replica file")
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    };
+    client
+        .conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .expect("checkpoint");
+    assert!(contains(&path, token), "the index holds the token");
+    let input = LocalDataPurgeInput {
+        purge_id: "purge-file".to_owned(),
+        targets: vec![LocalDataPurgeTarget::Table {
+            table: "patient_notes".to_owned(),
+            selectors: BTreeMap::from([(
+                "encryption_key_id".to_owned(),
+                vec!["key-revoked".to_owned()],
+            )]),
+        }],
+    };
     let purged = client
         .purge_local_data(&LocalDataPurgeInput {
             purge_id: "purge-file".to_owned(),
@@ -12341,6 +12370,24 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
         })
         .expect("purge");
     assert_eq!(purged.purged_rows, 200);
+    // A probe written and deleted without zeroing stays in the file while a
+    // retry of the applied plan skips the finished rewrite, and leaves once
+    // the completion marker is gone (a rewrite the process did not finish).
+    let probe = "skipprobe-77c1";
+    client
+        .conn
+        .execute_batch(&format!(
+            "INSERT INTO _syncular_meta(key, value) VALUES('probe', '{probe}'); DELETE FROM _syncular_meta WHERE key = 'probe'; PRAGMA wal_checkpoint(TRUNCATE);"
+        ))
+        .expect("probe");
+    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(contains(&path, probe), "a finished rewrite is not repeated");
+    client
+        .conn
+        .execute("DELETE FROM _syncular_meta WHERE key = 'localPurge:purge-file:erased'", [])
+        .expect("drop marker");
+    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(!contains(&path, probe), "an unfinished rewrite runs again");
     let (results_json, operations_json): (String, Option<String>) = client
         .conn
         .query_row(
@@ -12370,12 +12417,14 @@ fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
         let file = entry.expect("dir entry").path();
         let bytes = std::fs::read(&file).expect("read replica file");
         files += 1;
-        assert!(
-            !bytes
-                .windows(marker.len())
-                .any(|window| window == marker.as_bytes()),
-            "purged value found in {file:?}"
-        );
+        for needle in [marker, token] {
+            assert!(
+                !bytes
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_bytes()),
+                "purged value {needle:?} found in {file:?}"
+            );
+        }
     }
     assert!(files > 0);
     std::fs::remove_dir_all(&dir).expect("remove replica dir");
