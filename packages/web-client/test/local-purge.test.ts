@@ -102,6 +102,55 @@ function values(id: string, keyId: string, title: string) {
 }
 
 describe('application-authorized local data purge', () => {
+  test('the first open repairs a replica purged before the index merge', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-purge-repair-'));
+    const databasePath = join(dir, 'client.db');
+    const seeded = await makeClient(makeServer(), {
+      clientId: 'purge-repair-client',
+      schema: SCHEMA,
+      databasePath,
+    });
+    for (let i = 0; i < 20; i++)
+      insertBase(seeded.db, `t${i}`, 'key-revoked', `legacymarker ${i}`);
+    insertBase(seeded.db, 'kept', 'key-held', 'Kept original');
+    // A 0.105.4 purge: the rows go, VACUUM runs without an index merge, and
+    // the plan is recorded with no erasure record.
+    seeded.db.exec(
+      "DELETE FROM patient_notes WHERE encryption_key_id = 'key-revoked'",
+    );
+    seeded.db.exec('VACUUM');
+    seeded.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    seeded.db.exec(
+      "INSERT INTO _syncular_meta(key, value) VALUES('localPurge:legacy-001', '{}')",
+    );
+    seeded.db.exec(
+      "DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:erased'",
+    );
+    seeded.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    expect(readFileSync(databasePath).includes('legacymarker')).toBe(true);
+    await seeded.client.close();
+    seeded.db.close();
+
+    const reopened = await makeClient(makeServer(), {
+      clientId: 'purge-repair-client',
+      schema: SCHEMA,
+      databasePath,
+    });
+    expect(search(reopened.db, 'kept')).toEqual(['kept']);
+    expect(search(reopened.db, 'legacymarker')).toEqual([]);
+    expect(
+      reopened.db.query(
+        "SELECT key FROM _syncular_meta WHERE key = 'localPurgeRepair:erased'",
+      ),
+    ).toHaveLength(1);
+    await reopened.client.close();
+    reopened.db.close();
+    for (const file of readdirSync(dir))
+      expect(readFileSync(join(dir, file)).includes('legacymarker')).toBe(
+        false,
+      );
+  });
+
   test('a previous-version container that survives fails the purge erasure', async () => {
     const local = await makeClient(makeServer(), {
       clientId: 'purge-container-client',
@@ -120,7 +169,7 @@ describe('application-authorized local data purge', () => {
     expect(refusal).toMatchObject({ code: 'client.storage_failure' });
     expect(
       local.db.query(
-        "SELECT key FROM _syncular_meta WHERE key LIKE '%:erased'",
+        "SELECT key FROM _syncular_meta WHERE key = 'localPurge:purge-001:erased'",
       ),
     ).toEqual([]);
     // Once the container is gone, a retry of the applied plan finishes it.
@@ -128,7 +177,7 @@ describe('application-authorized local data purge', () => {
     expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
     expect(
       local.db.query(
-        "SELECT key FROM _syncular_meta WHERE key LIKE '%:erased'",
+        "SELECT key FROM _syncular_meta WHERE key = 'localPurge:purge-001:erased'",
       ),
     ).toHaveLength(1);
     await local.client.close();
@@ -242,7 +291,9 @@ describe('application-authorized local data purge', () => {
     };
     expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
     expect(statements).not.toContain('VACUUM');
-    exec("DELETE FROM _syncular_meta WHERE key LIKE '%:erased'");
+    exec(
+      "DELETE FROM _syncular_meta WHERE key = 'localPurge:purge-001:erased'",
+    );
     expect(local.client.purgeLocalData(PURGE).alreadyApplied).toBe(true);
     expect(statements).toContain('VACUUM');
     local.db.exec = exec;

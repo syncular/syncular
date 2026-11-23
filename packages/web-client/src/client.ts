@@ -747,6 +747,8 @@ export function windowComplete(state: WindowState, unit: string): boolean {
 
 /** §4.2 accept bits the client cares about. */
 const ACCEPT_ROWS_BASELINE = 0b0011;
+/** §5.11: the first-open repair's erasure record (`<key>:erased`). */
+const PURGE_REPAIR_KEY = 'localPurgeRepair';
 const ACCEPT_SQLITE = 1 << 2;
 const ACCEPT_SIGNED_URLS = 1 << 3;
 
@@ -1338,6 +1340,18 @@ export class SyncClient {
         // running schema. Removed-table registrations would poison every pull.
         pruneUnknownUnits(this.#db, this.#schema);
       });
+      // §5.11: a purge before 0.105.5 left its words in the full-text index;
+      // the first open of a replica that applied one erases it before any
+      // read. The record follows the erasure, so an interrupted repair runs
+      // again at the next open.
+      if (
+        this.#db.query(
+          `SELECT 1 FROM ${META_TABLE} WHERE key LIKE 'localPurge:%' LIMIT 1`,
+        ).length > 0
+      )
+        this.#erasePurgedPages(PURGE_REPAIR_KEY);
+      else if (getMeta(this.#db, `${PURGE_REPAIR_KEY}:erased`) === undefined)
+        setMeta(this.#db, `${PURGE_REPAIR_KEY}:erased`, '1');
     } catch (error) {
       await this.#lease.release();
       this.#lease = undefined;
@@ -4057,6 +4071,7 @@ export class SyncClient {
         );
       }
       // A retry after an unfinished rewrite finishes it.
+      this.#requirePreviousVersionGone();
       this.#erasePurgedPages(metaKey);
       return { alreadyApplied: true, purgedRows: 0, droppedCommits: 0 };
     }
@@ -4209,8 +4224,22 @@ export class SyncClient {
       this.#conflicts = priorConflicts;
       throw error;
     }
+    this.#requirePreviousVersionGone();
     this.#erasePurgedPages(metaKey);
     return result;
+  }
+
+  /** §5.11: the previous-version container is a copy of earlier rows; its
+   * removal is best-effort elsewhere, so a container that survived the purge
+   * fails it before the erasure is recorded. */
+  #requirePreviousVersionGone(): void {
+    this.#dropPreviousVersionContainerFile();
+    if (this.#db.siblingExists?.(PREVIOUS_VERSION_CONTAINER_NAME) === true)
+      throw new ClientSyncError(
+        'client.storage_failure',
+        'the previous-version container survived the purge',
+        true,
+      );
   }
 
   /**
@@ -4243,15 +4272,6 @@ export class SyncClient {
     } finally {
       this.#db.exec('PRAGMA secure_delete = OFF');
     }
-    // The previous-version container is a copy of earlier rows; its removal
-    // is best-effort elsewhere, so a container that survived fails the purge.
-    this.#dropPreviousVersionContainerFile();
-    if (this.#db.siblingExists?.(PREVIOUS_VERSION_CONTAINER_NAME) === true)
-      throw new ClientSyncError(
-        'client.storage_failure',
-        'the previous-version container survived the purge',
-        true,
-      );
     setMeta(this.#db, erased, '1');
   }
 

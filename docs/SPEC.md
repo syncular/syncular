@@ -4724,7 +4724,12 @@ retry that finds the plan applied runs the erasure again unless that record
 exists; a busy checkpoint or an interrupted erasure leaves no record. The
 previous-version container (§9) holds a copy of earlier rows: a container
 file that still exists after the erasure fails the purge with
-`client.storage_failure` and leaves no record. A fresh
+`client.storage_failure` and leaves no record. A replica that applied a purge
+before the merge existed (0.105.4 and earlier) can hold purged tokens: the
+first open of a replica with any recorded purge plan and no repair record
+runs the same merge, rewrite and checkpoint before the open completes and any
+read runs, then records the repair; an interrupted or failed repair fails the
+open and runs again at the next open. A fresh
 `purgeId` always runs the erasure, whatever the purge matched: zero matching
 rows proves nothing about freed pages, and a client cannot detect writes an
 older core made without `secure_delete`. The journal entry of a commit the purge drops keeps its

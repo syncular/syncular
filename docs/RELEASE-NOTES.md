@@ -21,8 +21,17 @@ and the next retry of that plan rewrites. A fresh `purgeId` always rewrites,
 whatever it matched: zero matching rows says nothing about freed pages, and a
 client cannot detect writes an older core made without `secure_delete`, so
 the proof of a clean file that SYNCULAR-PURGE-CLEAN-001 asked for is declined.
-Derive the `purgeId` from the directive a purge carries out, so a repeat of
-the directive is an applied no-op.
+A retry of an applied id returns before any logical deletion, so it removes
+no row written since; use a new `purgeId` whenever matching rows can have
+arrived since the last purge (for example one per exposure period of a key).
+
+The first open of a replica that applied a purge with 0.105.4 or earlier runs
+the same merge, rewrite and checkpoint before the open completes and before
+any read, and records the repair. This covers purges the app already
+acknowledged and signed-out replicas that never purge again. A failed or
+interrupted repair fails the open and runs again at the next open; rows that
+were not purged stay. A replica that never applied a purge records the repair
+at its first open without a rewrite.
 
 A previous-version container that the client could not delete now fails the
 purge with `client.storage_failure` and leaves no record. The container holds
@@ -38,8 +47,9 @@ test checks the retry by its effect: a probe value written and deleted after
 the erasure stays in the file while the record exists and leaves once it is
 gone.
 
-**Upgrading.** No API changes. A purge of a replica with full-text indexes
-takes longer by the FTS5 merge. A host that retries an applied plan after a
+**Upgrading.** No API changes. The first open of a replica that applied a
+purge before 0.105.5 takes one rewrite (its cost grows with the replica size).
+A purge of a replica with full-text indexes takes longer by the FTS5 merge. A host that retries an applied plan after a
 finished rewrite no longer pays the rewrite.
 
 ## 0.105.4 release notes

@@ -115,6 +115,8 @@ const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
 /// the new schema after a bump. Never a wire code (§10.3).
 const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
+/// §5.11: the first-open repair's erasure record (`<key>:erased`).
+const PURGE_REPAIR_KEY: &str = "localPurgeRepair";
 /// §5.11 client-local code: an encode at the push seam resolved no usable key
 /// id or named an unknown key. Never a wire code (§10.3).
 const ENCRYPT_FAILED_CODE: &str = "client.encrypt_failed";
@@ -2673,6 +2675,27 @@ impl SyncClient {
                 // preflight finishes it at activation.
                 Ok(()) => {
                     client.opening_replica = false;
+                    // §5.11: a purge before 0.105.5 left its words in the
+                    // full-text index; the first open of a replica that
+                    // applied one erases it before any read. The record
+                    // follows the erasure, so an interrupted repair runs
+                    // again at the next open.
+                    let purged = client.stored(
+                        client
+                            .conn
+                            .query_row(
+                                "SELECT 1 FROM _syncular_meta WHERE key LIKE 'localPurge:%' LIMIT 1",
+                                [],
+                                |_| Ok(()),
+                            )
+                            .optional(),
+                    )?;
+                    let repaired = format!("{PURGE_REPAIR_KEY}:erased");
+                    if purged.is_some() {
+                        client.erase_purged_pages(PURGE_REPAIR_KEY)?;
+                    } else if client.get_meta(&repaired)?.is_none() {
+                        client.set_meta(&repaired, "1")?;
+                    }
                     if !client.security_preflight {
                         client.drain_pending_evictions()?;
                     }
@@ -13100,6 +13123,7 @@ impl SyncClient {
                 ).into());
             }
             // A retry after an unfinished rewrite finishes it.
+            self.require_previous_version_gone()?;
             self.erase_purged_pages(&meta_key)?;
             return Ok(LocalDataPurgeResult {
                 already_applied: true,
@@ -13328,8 +13352,29 @@ impl SyncClient {
             }
         };
         self.cancel_sync_round();
+        self.require_previous_version_gone()?;
         self.erase_purged_pages(&meta_key)?;
         Ok(result)
+    }
+
+    /// §5.11: the previous-version container is a copy of earlier rows; its
+    /// removal is best-effort elsewhere, so a container that survived the
+    /// purge fails it before the erasure is recorded.
+    fn require_previous_version_gone(&self) -> Result<(), String> {
+        let Some(replica_path) = self.previous_version_replica_path() else {
+            return Ok(());
+        };
+        let container = crate::previous_version::previous_version_container_path(&replica_path);
+        if std::path::Path::new(&container).exists() {
+            self.drop_previous_version()?;
+        }
+        if std::path::Path::new(&container).exists() {
+            return Err(
+                "client.storage_failure: the previous-version container survived the purge"
+                    .to_owned(),
+            );
+        }
+        Ok(())
     }
 
     /// §5.11 purge erasure: SQLite leaves a deleted value in the freed pages of the
@@ -13386,21 +13431,6 @@ impl SyncClient {
         let reset = self.stored(self.conn.execute_batch("PRAGMA secure_delete = OFF"));
         if erased.and_then(|busy| reset.map(|()| busy))? {
             return Err("client.storage_busy: WAL checkpoint is busy".to_owned());
-        }
-        // The previous-version container is a copy of earlier rows; its
-        // removal is best-effort elsewhere, so a container that survived
-        // fails the purge.
-        if let Some(replica_path) = self.previous_version_replica_path() {
-            let container = crate::previous_version::previous_version_container_path(&replica_path);
-            if std::path::Path::new(&container).exists() {
-                self.drop_previous_version()?;
-            }
-            if std::path::Path::new(&container).exists() {
-                return Err(
-                    "client.storage_failure: the previous-version container survived the purge"
-                        .to_owned(),
-                );
-            }
         }
         self.set_meta(&marker, "1")
     }

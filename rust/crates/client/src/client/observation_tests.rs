@@ -12574,3 +12574,140 @@ fn patch_reads_the_row_as_earlier_operations_of_its_commit_leave_it() {
         .unwrap();
     assert_eq!(Value::from(rows), json!([{"id": "t1", "project_id": "p1"}]));
 }
+
+fn purge_repair_schema() -> Value {
+    json!({
+        "version": 1,
+        "tables": [{
+            "name": "patient_notes",
+            "primaryKey": "id",
+            "columns": [
+                { "name": "id", "type": "string", "nullable": false },
+                { "name": "practice_id", "type": "string", "nullable": false },
+                { "name": "encryption_key_id", "type": "string", "nullable": false },
+                { "name": "title", "type": "string", "nullable": false }
+            ],
+            "scopes": [{ "pattern": "practice:{practice_id}" }],
+            "localProjections": [{"name": "patient_notes_fts", "generation": "1",
+                "columns": [{"name": "title", "declaredType": "string", "source": "title"}],
+                "fts": {"tokenize": "unicode61", "columns": ["title"]}}]
+        }]
+    })
+}
+
+fn file_contains(path: &std::path::Path, needle: &str) -> bool {
+    std::fs::read(path)
+        .map(|bytes| {
+            bytes
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        })
+        .unwrap_or(false)
+}
+
+#[test]
+fn the_first_open_repairs_a_replica_purged_before_the_index_merge() {
+    let dir = std::env::temp_dir().join(format!("syncular-repair-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("replica dir");
+    let path = dir.join("client.db");
+    let open = || {
+        SyncClient::open_path_with_identity(
+            Some("repair-client".to_owned()),
+            &purge_repair_schema(),
+            ClientLimits::default(),
+            path.to_str().expect("utf-8 path"),
+        )
+        .expect("file client")
+    };
+    let mut client = open();
+    for (id, title) in [("t1", "legacymarker one"), ("t2", "legacymarker two"), ("kept", "kept original")] {
+        client
+            .conn
+            .execute(
+                "INSERT INTO _syncular_base_patient_notes(id, practice_id, encryption_key_id, title, _syncular_version) VALUES (?1, 'practice-1', 'key-revoked', ?2, 1)",
+                rusqlite::params![id, title],
+            )
+            .expect("seed base row");
+    }
+    client.overlay_dirty.set(true);
+    client.rebuild_overlay_if_dirty().expect("rebuild overlay");
+    // A pre-0.105.5 erasure: the index loses the documents without a merge,
+    // VACUUM runs, and a purge plan is recorded with no erasure record.
+    let mapping: Vec<i64> = client
+        .conn
+        .prepare("SELECT id FROM \"_syncular_fts_patient_notes_fts\" WHERE source_id IN ('t1', 't2')")
+        .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+        .expect("index rows");
+    assert_eq!(mapping.len(), 2);
+    for rowid in mapping {
+        client
+            .conn
+            .execute("DELETE FROM patient_notes_fts WHERE rowid = ?1", [rowid])
+            .expect("index delete");
+    }
+    client
+        .conn
+        .execute_batch(
+            "VACUUM; INSERT INTO _syncular_meta(key, value) VALUES('localPurge:legacy-001', '{}'); DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:erased'; PRAGMA wal_checkpoint(TRUNCATE);",
+        )
+        .expect("legacy erasure");
+    assert!(file_contains(&path, "legacymarker"), "the remnant is in the file");
+    drop(client);
+
+    let client = open();
+    assert!(client.get_meta("localPurgeRepair:erased").expect("meta").is_some());
+    let kept: i64 = client
+        .conn
+        .query_row("SELECT count(*) FROM patient_notes_fts WHERE patient_notes_fts MATCH 'kept'", [], |row| row.get(0))
+        .expect("search kept");
+    assert_eq!(kept, 1);
+    drop(client);
+    for entry in std::fs::read_dir(&dir).expect("read replica dir") {
+        let file = entry.expect("dir entry").path();
+        assert!(!file_contains(&file, "legacymarker"), "remnant left in {file:?}");
+    }
+    std::fs::remove_dir_all(&dir).expect("remove replica dir");
+}
+
+#[test]
+fn a_previous_version_container_that_survives_fails_the_purge_erasure() {
+    let dir = std::env::temp_dir().join(format!("syncular-container-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("replica dir");
+    let path = dir.join("client.db");
+    let mut client = SyncClient::open_path_with_identity(
+        Some("container-client".to_owned()),
+        &purge_repair_schema(),
+        ClientLimits::default(),
+        path.to_str().expect("utf-8 path"),
+    )
+    .expect("file client");
+    // A directory at the container path cannot be removed as a file.
+    let container = crate::previous_version::previous_version_container_path(
+        path.to_str().expect("utf-8 path"),
+    );
+    std::fs::create_dir_all(&container).expect("stuck container");
+    let input = LocalDataPurgeInput {
+        purge_id: "purge-container".to_owned(),
+        targets: vec![LocalDataPurgeTarget::Table {
+            table: "patient_notes".to_owned(),
+            selectors: BTreeMap::from([(
+                "encryption_key_id".to_owned(),
+                vec!["key-revoked".to_owned()],
+            )]),
+        }],
+    };
+    let refused = client.purge_local_data(&input).expect_err("surviving container");
+    assert_eq!(refused.code, "client.storage_failure");
+    assert!(client
+        .get_meta("localPurge:purge-container:erased")
+        .expect("meta")
+        .is_none());
+    std::fs::remove_dir_all(&container).expect("remove stuck container");
+    assert!(client.purge_local_data(&input).expect("retry").already_applied);
+    assert!(client
+        .get_meta("localPurge:purge-container:erased")
+        .expect("meta")
+        .is_some());
+    drop(client);
+    std::fs::remove_dir_all(&dir).expect("remove replica dir");
+}
