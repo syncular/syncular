@@ -1910,7 +1910,12 @@ export class SyncClient {
         'client.authority_read_forbidden',
         'authority read denied',
       );
-    return this.#authorityReads.read(this.#db, this.#schema, requests);
+    return this.#authorityReads.read(
+      this.#db,
+      this.#schema,
+      requests,
+      this.#securityLifecycle === 'active',
+    );
   }
 
   /**
@@ -4776,12 +4781,9 @@ export class SyncClient {
     for (const table of this.#schema.tables.values()) {
       if (!table.hasEncryptedColumns) continue;
       const encrypted = table.columns.filter((column) => column.encrypted);
-      const revealed: SqlValue[][] = [];
-      for (const row of this.#db.query(
-        `SELECT ${quoteIdent(table.primaryKey)} AS id,${quoteIdent(SYNC_VERSION_COLUMN)} AS v,${quoteIdent(SEALED_COLUMN)} AS e FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
-      )) {
-        const stored: Record<string, number[]> = JSON.parse(String(row.e));
-        const values = await decryptRowValues(
+      const open = (envelopes: unknown) => {
+        const stored: Record<string, number[]> = JSON.parse(String(envelopes));
+        return decryptRowValues(
           this.#encryption,
           table,
           table.columns.map((column) =>
@@ -4790,6 +4792,12 @@ export class SyncClient {
         ).catch((error: { code?: string }) => {
           if (error.code !== 'client.encryption_key_missing') throw error;
         });
+      };
+      const revealed: SqlValue[][] = [];
+      for (const row of this.#db.query(
+        `SELECT ${quoteIdent(table.primaryKey)} AS id,${quoteIdent(SYNC_VERSION_COLUMN)} AS v,${quoteIdent(SEALED_COLUMN)} AS e FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
+      )) {
+        const values = await open(row.e);
         if (values)
           revealed.push([
             ...table.columns.flatMap((column, i) =>
@@ -4799,12 +4807,39 @@ export class SyncClient {
             row.v ?? null,
           ]);
       }
-      if (revealed.length > 0)
+      // A retained base sealed under a key now held opens the same way.
+      const bases: SqlValue[][] = [];
+      for (const row of this.#db.query(
+        `SELECT rowid AS r,base,sealed FROM ${RETAINED_ROWS} WHERE tbl=? AND sealed IS NOT NULL`,
+        [table.name],
+      )) {
+        const values = await open(JSON.parse(String(row.sealed)).envelopes);
+        if (values)
+          bases.push([
+            JSON.stringify({
+              ...JSON.parse(String(row.base)),
+              ...Object.fromEntries(
+                encrypted.map((column) => [
+                  column.name,
+                  rowValueToJson(values[table.columns.indexOf(column)] ?? null),
+                ]),
+              ),
+            }),
+            row.r ?? null,
+            row.sealed ?? null,
+          ]);
+      }
+      if (revealed.length + bases.length > 0)
         this.#applyBatch((batch) => {
           // A delivery since the read replaced the sealed state.
           for (const params of revealed)
             this.#db.exec(
               `UPDATE ${quoteIdent(table.name)} SET ${encrypted.map((column) => `${quoteIdent(column.name)}=?,`).join('')}${quoteIdent(SEALED_KEY_COLUMN)}=NULL,${quoteIdent(SEALED_COLUMN)}=NULL WHERE ${quoteIdent(table.primaryKey)}=? AND ${quoteIdent(SYNC_VERSION_COLUMN)}=? AND ${quoteIdent(SEALED_KEY_COLUMN)} IS NOT NULL`,
+              params,
+            );
+          for (const params of bases)
+            this.#db.exec(
+              `UPDATE ${RETAINED_ROWS} SET base=?,sealed=NULL WHERE rowid=? AND sealed=?`,
               params,
             );
           batch.table(table.name);

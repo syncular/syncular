@@ -997,3 +997,92 @@ describe('§5.11 rows-segment decrypt', () => {
     }
   });
 });
+
+test('a retained base keeps its sealed state through a restore and reveals with the key', async () => {
+  // Nullable encrypted columns: replaying intent over a sealed row with a
+  // NOT NULL encrypted column fails today (reported separately).
+  const table = {
+    ...SECRETS_TABLE,
+    columns: [
+      ...SECRETS_COLUMNS.map((column) => ({ ...column, nullable: true })),
+      { name: 'starts', type: 'integer' as const, nullable: false },
+    ],
+  };
+  const schema: ClientSchema = { version: 1, tables: [table] };
+  const server = makeServer(schema);
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  const writer = await makeClient(server, {
+    clientId: 'retained-writer',
+    schema,
+    encryption: GOOD,
+  });
+  const reader = await makeClient(server, {
+    clientId: 'retained-reader',
+    schema,
+    encryption: GOOD,
+    retainFailedCommits: true,
+  });
+  const write = async (note: string) => {
+    writer.client.mutate([
+      {
+        op: 'upsert',
+        table: 'secrets',
+        values: { id: 's1', project_id: 'p1', note, amount: 1, starts: 1 },
+      },
+    ]);
+    await writer.client.syncUntilIdle();
+  };
+  const retained = () =>
+    reader.db.query('SELECT base,sealed FROM _syncular_failed_rows');
+  try {
+    writer.client.subscribe({ project_id: 'p1' });
+    reader.client.subscribe({ project_id: 'p1' });
+    await write('first');
+    await reader.client.syncUntilIdle();
+    // Lock the keys; a plain-column patch then conflicts with a newer write.
+    await reader.client.beginSecurityPreflight();
+    await reader.client.activateSecurity({ encryption: { keys: {} } });
+    reader.client.mutate([
+      {
+        op: 'patch',
+        table: 'secrets',
+        values: { id: 's1', starts: 5 },
+        baseVersion: 1,
+      },
+    ]);
+    await write('second');
+    await reader.client.syncUntilIdle();
+    await write('third');
+    await reader.client.syncUntilIdle();
+    // The delivery under the missing key seals the retained base too.
+    expect(retained()).toEqual([
+      expect.objectContaining({
+        sealed: expect.stringContaining('"keyId":"secrets"'),
+      }),
+    ]);
+    const { restoreFailedBases } = await import('../src/failed-overlay');
+    restoreFailedBases(reader.db, compileClientSchema(schema));
+    expect(
+      reader.db.query('SELECT note,_sync_sealed_key AS k FROM secrets'),
+    ).toEqual([{ note: null, k: 'secrets' }]);
+    // The next delivery seals the base again, under its own envelopes.
+    await write('fourth');
+    await reader.client.syncUntilIdle();
+    expect(retained()).toEqual([
+      expect.objectContaining({
+        sealed: expect.stringContaining('"keyId":"secrets"'),
+      }),
+    ]);
+    await reader.client.addEncryptionKeys(GOOD.keys);
+    expect(retained()).toEqual([{ base: expect.any(String), sealed: null }]);
+    expect(JSON.parse(String(retained()[0]!.base))).toMatchObject({
+      note: 'fourth',
+      amount: 1,
+    });
+  } finally {
+    await writer.client.close();
+    await reader.client.close();
+    writer.db.close();
+    reader.db.close();
+  }
+});

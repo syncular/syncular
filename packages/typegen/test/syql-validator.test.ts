@@ -1702,6 +1702,7 @@ describe('authority queries (SYQL §13.3)', () => {
             columns: [
               ...table.columns,
               { name: 'attachment', type: 'bytes', nullable: true },
+              { name: 'remote', type: 'blob_ref', nullable: true },
               {
                 name: 'secret',
                 type: 'bytes',
@@ -1837,15 +1838,41 @@ describe('authority queries (SYQL §13.3)', () => {
       );
       expect(error.detail).toContain(message);
     }
-    for (const column of ['attachment', 'secret']) {
+    for (const [schema, source, message] of [
+      [
+        SECURE,
+        `authority query q(listId) {
+          select n.id from notes n where n.list_id = :listId and n.remote is null;
+        }`,
+        'reads notes.remote',
+      ],
+      [
+        IR,
+        `authority query q(listId) {
+          select t.id, t._sync_sealed_key as sealed from todos t where t.list_id = :listId;
+        }`,
+        '_sync_sealed_key',
+      ],
+    ] as const) {
       const error = frontendError(() =>
-        validateSecure(`authority query q(listId) {
-          select n.id from notes n where n.list_id = :listId and n.${column} is null;
-        }`),
+        schema === SECURE ? validateSecure(source) : validate(source),
       );
-      expect(error.code).toBe('SYQL6009_INVALID_AUTHORITY_QUERY');
-      expect(error.detail).toContain(`reads notes.${column}`);
+      expect(error.detail).toContain(message);
     }
+  });
+
+  test('reads encrypted, bytes and sealed-key columns as protected columns', () => {
+    const query = validateSecure(`authority query q(listId) {
+      select n.id, n.attachment, n.secret, n._sync_sealed_key as sealed
+      from notes n where n.list_id = :listId;
+    }`)?.queries[0];
+    expect(query?.authorityReads?.['notes']).toEqual([
+      '_sync_sealed_key',
+      'attachment',
+      'id',
+      'list_id',
+      'secret',
+    ]);
   });
 
   test('follows every sync coverage rule', () => {

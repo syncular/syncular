@@ -3,12 +3,19 @@
  * declared SYQL reads over the accepted base, run in one read transaction.
  */
 import { check, checkEqual } from '../checks';
-import type { DriverAuthorityQuery, DriverRow } from '../driver';
+import type {
+  DriverAuthorityQuery,
+  DriverEncryptionConfig,
+  DriverRow,
+} from '../driver';
 import {
   AUTHORITY_FIXTURE_SCHEMA,
   CENTRE_WRAP_COVER,
   CENTRE_WRAP_COVER_SEALED,
   participant,
+  PATIENT_COUNT,
+  PATIENT_FIXTURE_SCHEMA,
+  PATIENTS_ACCEPTED,
   sealedIdentity,
   surgery,
   TASK_ORIGINALS,
@@ -22,7 +29,7 @@ import {
   type ScenarioContext,
   ScenarioSkip,
 } from '../scenario';
-import { seedRows, seedTasks, syncIdle } from './util';
+import { seedRows, seedTasks, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
@@ -49,6 +56,38 @@ const COVER_PARAMS = {
   trustedNowMs: DEFAULT_NOW_MS,
 };
 const SEALED_PARAMS = { ...COVER_PARAMS, sealerFacilityId: 'p1' };
+
+const C1 = { clinic_id: ['c1'] } as const;
+const CLINIC = { clinic_id: 'c1' } as const;
+const CLINIC_KEY = { $bytes: '2a'.repeat(32) };
+const OTHER_KEY = { $bytes: '3b'.repeat(32) };
+/** The reader holds the clinic key; the writer also holds `other-key`. */
+const READER_KEYS: DriverEncryptionConfig = {
+  keys: { 'clinic-key': CLINIC_KEY },
+  keyIdColumns: { patients: 'key_id' },
+};
+const WRITER_KEYS: DriverEncryptionConfig = {
+  keys: { 'clinic-key': CLINIC_KEY, 'other-key': OTHER_KEY },
+  keyIdColumns: { patients: 'key_id' },
+};
+
+function patient(
+  id: string,
+  familyName: string | null,
+  options: { keyId?: string; seal?: string | null; status?: string } = {},
+): DriverRow {
+  return {
+    id,
+    clinic_id: 'c1',
+    key_id: options.keyId ?? 'clinic-key',
+    family_name: familyName,
+    seal:
+      options.seal === undefined || options.seal === null
+        ? null
+        : { $bytes: options.seal },
+    status: options.status ?? 'active',
+  };
+}
 
 /** Seed one OP pointer per surgery row, with its seals and participant. */
 async function seedCentre(
@@ -490,10 +529,10 @@ export const authorityScenarios: readonly Scenario[] = [
           authorityReads: [
             {
               ...CENTRE_WRAP_COVER,
-              sql: 'select w.wrapped_key from record_key_wraps as w where w.recipient_facility_id = ?',
+              sql: 'select w._sync_sealed_key as sealed from record_key_wraps as w where w.recipient_facility_id = ?',
               bind: ['centreFacilityId'],
               reads: {
-                record_key_wraps: ['recipient_facility_id', 'wrapped_key'],
+                record_key_wraps: ['_sync_sealed_key', 'recipient_facility_id'],
               },
             },
           ],
@@ -507,10 +546,10 @@ export const authorityScenarios: readonly Scenario[] = [
             query: CENTRE_WRAP_COVER.name,
             reason: 'column',
             table: 'record_key_wraps',
-            column: 'wrapped_key',
+            column: '_sync_sealed_key',
           },
         },
-        'a bytes column is refused at creation',
+        'the sealed-key marker of a table without encryption is refused',
       );
     },
   },
@@ -610,6 +649,14 @@ export const authorityScenarios: readonly Scenario[] = [
         'the base is distinct from the edit and the local creation',
       );
       checkEqual(
+        read.results[0]?.intent,
+        [
+          { table: 'tasks', rowId: 'local', kind: 'pending' },
+          { table: 'tasks', rowId: 't1', kind: 'pending' },
+        ],
+        'intent lists the edit and the creation the rows omit',
+      );
+      checkEqual(
         await a.api.localRevision!(),
         revision,
         'the read writes nothing',
@@ -635,6 +682,12 @@ export const authorityScenarios: readonly Scenario[] = [
         'scope loss invalidates completeness',
       );
       checkEqual(revoked?.rows, [], 'revoked base and intent disappear');
+      checkEqual(
+        revoked?.coverage.map((entry) => entry.state),
+        ['revoked'],
+        'the withdrawn unit reads revoked',
+      );
+      checkEqual(revoked?.intent, [], 'no intent outlives the withdrawal');
     },
   },
   {
@@ -683,6 +736,196 @@ export const authorityScenarios: readonly Scenario[] = [
           'only schema-approved plain columns pass',
         );
       }
+    },
+  },
+  {
+    name: 'authority/protected-columns-read-one-accepted-revision',
+    specRefs: ['§5.11', '§7.2'],
+    requires: ['scope-authorization'],
+    server: { schema: PATIENT_FIXTURE_SCHEMA },
+    async run(ctx) {
+      const writer = await ctx.newClient({
+        actorId: 'writer',
+        clientId: 'patients-writer',
+        schema: PATIENT_FIXTURE_SCHEMA,
+        allowed: C1,
+        encryption: WRITER_KEYS,
+      });
+      await writer.api.subscribe(CLINIC);
+      await syncIdle(writer);
+      await writer.api.mutate(
+        [
+          patient('p1', 'Ada', { seal: '0102ff' }),
+          patient('p2', 'Bo', { keyId: 'other-key' }),
+          patient('p4', 'Di'),
+        ].map((values) => ({ op: 'upsert', table: 'patients', values })),
+      );
+      await syncIdle(writer);
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'patients-reader',
+        schema: PATIENT_FIXTURE_SCHEMA,
+        allowed: C1,
+        encryption: READER_KEYS,
+        authorityReads: [PATIENTS_ACCEPTED, PATIENT_COUNT],
+      });
+      await reader.api.subscribe(CLINIC);
+      await syncIdle(reader);
+      const read = async (query: DriverAuthorityQuery) => {
+        const result = (
+          await reader.api.authorityRead([
+            { query: query.name, params: { clinicId: 'c1' } },
+          ])
+        ).results[0];
+        if (result === undefined) throw new Error('no authority result');
+        return {
+          rows: result.rows,
+          complete: result.complete,
+          intent: result.intent,
+        };
+      };
+      const ada = {
+        id: 'p1',
+        family_name: 'Ada',
+        seal: { $bytes: '0102ff' },
+        sealed_key: null,
+      };
+      const sealed = {
+        id: 'p2',
+        family_name: null,
+        seal: null,
+        sealed_key: 'other-key',
+      };
+      const di = { id: 'p4', family_name: 'Di', seal: null, sealed_key: null };
+
+      await reader.api.beginSecurityPreflight();
+      checkEqual(
+        await codeOf(() => read(PATIENTS_ACCEPTED)),
+        {
+          code: 'client.security_preflight_required',
+          details: { query: PATIENTS_ACCEPTED.name },
+        },
+        'preflight refuses a query over protected columns',
+      );
+      checkEqual(
+        await read(PATIENT_COUNT),
+        { rows: [{ n: 3 }], complete: true, intent: [] },
+        'preflight still runs a query over plain columns',
+      );
+      await reader.api.activateSecurity(READER_KEYS);
+      checkEqual(
+        await read(PATIENTS_ACCEPTED),
+        { rows: [ada, sealed, di], complete: true, intent: [] },
+        'active reads decrypted names, the bytes seal and the sealed marker',
+      );
+
+      // Accepted but not pulled: the pre-ack base, then the delivered value.
+      await reader.api.patch('patients', 'p1', { family_name: 'Ada Two' });
+      reader.faults.deferNextPulls = 1;
+      await syncOk(reader);
+      checkEqual(
+        await read(PATIENTS_ACCEPTED),
+        {
+          rows: [ada, sealed, di],
+          complete: true,
+          intent: [{ table: 'patients', rowId: 'p1', kind: 'acknowledged' }],
+        },
+        'an acknowledged edit reads its pre-ack base',
+      );
+      await syncIdle(reader);
+      const adaTwo = { ...ada, family_name: 'Ada Two' };
+      checkEqual(
+        await read(PATIENTS_ACCEPTED),
+        { rows: [adaTwo, sealed, di], complete: true, intent: [] },
+        'the pulled value replaces the base',
+      );
+
+      // A new identifier, a pending delete and a filter-changing edit are
+      // intent although the accepted rows hold none of them.
+      await reader.api.setTransportGate('closed');
+      await reader.api.mutate([
+        { op: 'upsert', table: 'patients', values: patient('p3', 'Cy') },
+        { op: 'delete', table: 'patients', rowId: 'p4' },
+        {
+          op: 'patch',
+          table: 'patients',
+          values: { id: 'p1', status: 'moved' },
+        },
+      ]);
+      checkEqual(
+        await read(PATIENTS_ACCEPTED),
+        {
+          rows: [adaTwo, sealed, di],
+          complete: true,
+          intent: [
+            { table: 'patients', rowId: 'p1', kind: 'pending' },
+            { table: 'patients', rowId: 'p3', kind: 'pending' },
+            { table: 'patients', rowId: 'p4', kind: 'pending' },
+          ],
+        },
+        'pending intent is listed while the rows stay accepted',
+      );
+      await reader.api.setTransportGate('open');
+      await syncIdle(reader);
+      checkEqual(
+        await read(PATIENTS_ACCEPTED),
+        {
+          rows: [
+            sealed,
+            { id: 'p3', family_name: 'Cy', seal: null, sealed_key: null },
+          ],
+          complete: true,
+          intent: [],
+        },
+        'the settled writes leave a complete read without intent',
+      );
+    },
+  },
+  {
+    name: 'authority/retained-conflict-reads-the-server-base',
+    specRefs: ['§5.11', '§7.2'],
+    requires: ['scope-authorization'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'accepted')]);
+      const a = await ctx.newClient({
+        actorId: 'retaining',
+        clientId: 'retaining',
+        allowed: P1,
+        retainFailedCommits: true,
+        authorityReads: [TASK_ORIGINALS],
+      });
+      await a.api.subscribe(U1);
+      await syncIdle(a);
+      await seedTasks(ctx, [task('t1', 'p1', 'server')]);
+      await a.api.mutate([
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'mine' },
+          baseVersion: 1,
+        },
+      ]);
+      await syncIdle(a);
+      const read = (
+        await a.api.authorityRead([
+          { query: TASK_ORIGINALS.name, params: { projectId: 'p1' } },
+        ])
+      ).results[0];
+      checkEqual(
+        { rows: read?.rows, intent: read?.intent },
+        {
+          rows: [
+            { id: 't1', project_id: 'p1', title: 'server', server_version: 2 },
+          ],
+          intent: [{ table: 'tasks', rowId: 't1', kind: 'retained' }],
+        },
+        'a retained conflict reads the server base',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        'mine',
+        'the visible row keeps the retained intent',
+      );
     },
   },
 ];

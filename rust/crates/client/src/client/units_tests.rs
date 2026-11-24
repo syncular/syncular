@@ -2443,7 +2443,7 @@ fn an_authority_read_returns_the_accepted_base_through_settlement_and_rollback()
     let query: AuthorityQuery = serde_json::from_value(titles_query()).unwrap();
     assert_eq!(
         h.client.authority_statement(&query).unwrap(),
-        (query.sql.clone(), Vec::new())
+        (query.sql.clone(), Vec::new(), Vec::new())
     );
     assert_eq!(titles(&h, "p1"), accepted);
 
@@ -2477,7 +2477,14 @@ fn an_authority_read_returns_the_accepted_base_through_settlement_and_rollback()
             vec![
                 json!(r#"["t1","t2","t3"]"#),
                 json!(r#"[["t1","p1","base",1],["t3","p1","base3",1]]"#),
-            ]
+            ],
+            ["t1", "t2", "t3"]
+                .map(|id| AuthorityIntent {
+                    table: "tasks".to_owned(),
+                    row_id: id.to_owned(),
+                    kind: "pending",
+                })
+                .to_vec()
         )
     );
     // A pending edit reads its accepted base; a pending creation is absent.
@@ -2495,6 +2502,13 @@ fn an_authority_read_returns_the_accepted_base_through_settlement_and_rollback()
     ]));
     assert_eq!(h.ids("tasks"), vec!["t1", "t3"]);
     assert_eq!(titles(&h, "p1"), accepted);
+    assert_eq!(
+        serde_json::to_value(
+            &authority(&h, "titles", json!({"projectId": "p1"})).results[0].intent
+        )
+        .unwrap(),
+        json!([{"table": "tasks", "rowId": "t1", "kind": "acknowledged"}])
+    );
 
     let echo = h.commit(4, &[("tasks", Op::Upsert, &["t1", "p1", "mine"], 2)]);
     h.round(live(4, vec![echo]));
@@ -2554,7 +2568,11 @@ fn an_authority_join_aggregates_the_base_and_reports_subset_coverage() {
                 {"table": "tasks", "base": {"variable": "project_id"}, "unit": "p1", "state": "complete"},
                 {"table": "notes", "base": {"variable": "project_id", "fixedScopes": {"org_id": "o1"}}, "unit": "p1", "state": "complete"}
             ],
-            "complete": true
+            "complete": true,
+            "intent": [
+                {"table": "notes", "rowId": "n2", "kind": "pending"},
+                {"table": "notes", "rowId": "n3", "kind": "pending"}
+            ]
         })
     );
     // The same entry through the §7.5 snapshot coverage.

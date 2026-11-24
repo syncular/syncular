@@ -22,7 +22,10 @@ fn authority_queries_are_refused_at_creation_with_their_reason() {
     let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
         {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false},
         {"name": "role", "type": "string", "nullable": false}, {"name": "photo", "type": "bytes", "nullable": true},
-        {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
+        {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true},
+        {"name": "file", "type": "blob_ref", "nullable": true}
+    ]}, {"name": "plain", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+        {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}
     ]}]});
     let compiled = parse_schema_json(&schema).unwrap();
     let role = "SELECT role FROM authority WHERE actor_id = ?";
@@ -54,6 +57,10 @@ fn authority_queries_are_refused_at_creation_with_their_reason() {
         ),
         with(
             json!({"name": "counted", "sql": "SELECT count(*) AS n FROM authority WHERE actor_id = ?", "reads": {"authority": []}}),
+        ),
+        // Encrypted, bytes and sealed-key columns are protected, not refused.
+        with(
+            json!({"name": "protected", "reads": {"authority": ["_sync_sealed_key", "actor_id", "photo", "secret"]}}),
         ),
     ];
     for query in &accepted {
@@ -120,14 +127,15 @@ fn authority_queries_are_refused_at_creation_with_their_reason() {
             refusal("roleOf", "column", Some("authority"), Some("_sync_sealed")),
         ),
         (
-            vec![with(
-                json!({"reads": {"authority": ["actor_id", "secret"]}}),
-            )],
-            refusal("roleOf", "column", Some("authority"), Some("secret")),
+            vec![with(json!({"reads": {"authority": ["actor_id", "file"]}}))],
+            refusal("roleOf", "column", Some("authority"), Some("file")),
         ),
+        // The sealed-key marker exists only on a table with an encrypted column.
         (
-            vec![with(json!({"reads": {"authority": ["actor_id", "photo"]}}))],
-            refusal("roleOf", "column", Some("authority"), Some("photo")),
+            vec![with(
+                json!({"reads": {"plain": ["_sync_sealed_key", "id"]}}),
+            )],
+            refusal("roleOf", "column", Some("plain"), Some("_sync_sealed_key")),
         ),
         (
             vec![with(
@@ -225,6 +233,89 @@ fn authority_read_observes_one_file_transaction_during_concurrent_writes() {
     assert_eq!(client.authority_read(&request).unwrap().revision, "100");
     drop(client);
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn protected_authority_columns_read_only_while_active_and_from_the_accepted_base() {
+    let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+        {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false},
+        {"name": "photo", "type": "bytes", "nullable": true},
+        {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
+    ]}]});
+    let limits = ClientLimits {
+        authority_reads: vec![
+            serde_json::from_value(actor_query(
+                "vault",
+                "SELECT id, photo, secret, _sync_sealed_key AS sealed FROM authority WHERE actor_id = ? ORDER BY id",
+                json!({"authority": ["_sync_sealed_key", "actor_id", "id", "photo", "secret"]}),
+            ))
+            .unwrap(),
+            serde_json::from_value(actor_query(
+                "owners",
+                "SELECT count(*) AS n FROM authority WHERE actor_id = ?",
+                json!({"authority": ["actor_id"]}),
+            ))
+            .unwrap(),
+        ],
+        ..Default::default()
+    };
+    let mut client = SyncClient::new("protected".into(), &schema, limits).unwrap();
+    let insert = |client: &SyncClient, values: &str| {
+        for table in ["_syncular_base_authority", "authority"] {
+            client
+                .conn
+                .execute(
+                    &format!("INSERT INTO {table}(id,actor_id,photo,secret,_syncular_version,_sync_sealed_key,_sync_sealed) VALUES {values}"),
+                    [],
+                )
+                .unwrap();
+        }
+    };
+    insert(&client, "('v1','a',X'0102FF','kept',3,NULL,NULL)");
+    let read = |client: &SyncClient, query: &str| {
+        client.authority_read(&[(
+            query.to_owned(),
+            json!({"actorId": "a"}).as_object().unwrap().clone(),
+        )])
+    };
+    client.begin_security_preflight().unwrap();
+    assert_eq!(read(&client, "owners").unwrap().results[0].rows[0]["n"], 1);
+    let refused = read(&client, "vault").unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.details),
+        (
+            "client.security_preflight_required",
+            Some(json!({"query": "vault"}))
+        )
+    );
+    client.activate_security(Default::default()).unwrap();
+    // Sealed after activation, so no reveal runs over the fixture envelopes.
+    insert(&client, "('v2','a',NULL,NULL,4,'k-missing','{}')");
+    let rows = json!([
+        {"id": "v1", "photo": {"$bytes": "0102ff"}, "secret": "kept", "sealed": null},
+        {"id": "v2", "photo": null, "secret": null, "sealed": "k-missing"}
+    ]);
+    let accepted = read(&client, "vault").unwrap();
+    assert_eq!(
+        serde_json::to_value(&accepted.results[0].rows).unwrap(),
+        rows
+    );
+    assert!(accepted.results[0].intent.is_empty());
+    // An acknowledged edit not yet pulled reads its blob base; the shadow
+    // decodes the bytes of the base JSON.
+    client
+        .conn
+        .execute_batch(
+            "UPDATE authority SET photo=X'09',secret='edit' WHERE id='v1';
+             INSERT INTO _syncular_acked_rows(commit_id,idx,tbl,id,commit_seq,op_json) VALUES('c1',0,'authority','v1',5,'{}')",
+        )
+        .unwrap();
+    let base = read(&client, "vault").unwrap();
+    assert_eq!(serde_json::to_value(&base.results[0].rows).unwrap(), rows);
+    assert_eq!(
+        serde_json::to_value(&base.results[0].intent).unwrap(),
+        json!([{"table": "authority", "rowId": "v1", "kind": "acknowledged"}])
+    );
 }
 
 fn client() -> SyncClient {

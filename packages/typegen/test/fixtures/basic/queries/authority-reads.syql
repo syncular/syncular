@@ -13,3 +13,10 @@ authority query projectRevisionCover(projectId, orgId) by t.project_id {
   where t.project_id = :projectId
     and r.org_id = :orgId;
 }
+
+authority query docAttachment(orgId, docId) by d.org_id {
+  select d.id, d.attachment
+  from docs as d
+  where d.org_id = :orgId
+    and d.id = :docId;
+}

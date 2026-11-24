@@ -379,6 +379,71 @@ export const CENTRE_WRAP_COVER_SEALED: DriverAuthorityQuery = {
   },
 };
 
+/**
+ * SPEC §5.11 protected authority fixture: an encrypted `family_name` under
+ * the key the `key_id` column names, a binary `seal`, and a plain `status`
+ * the authority query filters on. The encrypted column is nullable: a sealed
+ * row holds NULL there.
+ */
+export const PATIENT_FIXTURE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'patients',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'clinic_id', type: 'string', nullable: false },
+        { name: 'key_id', type: 'string', nullable: true },
+        {
+          name: 'family_name',
+          type: 'bytes',
+          nullable: true,
+          encrypted: true,
+          declaredType: 'string',
+        },
+        { name: 'seal', type: 'bytes', nullable: true },
+        { name: 'status', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'clinic:{clinic_id}' }],
+    },
+  ],
+};
+
+/** The active patients of a clinic with their protected columns. */
+export const PATIENTS_ACCEPTED: DriverAuthorityQuery = {
+  name: 'patientsAccepted',
+  sql: "select p.id, p.family_name, p.seal, p._sync_sealed_key as sealed_key from patients as p where p.clinic_id = ? and p.status = 'active' order by p.id",
+  bind: ['clinicId'],
+  params: [{ name: 'clinicId', type: 'string', nullable: false }],
+  coverage: [{ table: 'patients', variable: 'clinic_id', units: ['clinicId'] }],
+  reads: {
+    patients: [
+      '_sync_sealed_key',
+      'clinic_id',
+      'family_name',
+      'id',
+      'seal',
+      'status',
+    ],
+  },
+  resultColumns: [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'family_name', type: 'string', nullable: true },
+    { name: 'seal', type: 'bytes', nullable: true },
+    { name: 'sealed_key', type: 'string', nullable: true },
+  ],
+};
+
+/** The patient count of a clinic, from plain columns only. */
+export const PATIENT_COUNT: DriverAuthorityQuery = {
+  ...PATIENTS_ACCEPTED,
+  name: 'patientCount',
+  sql: 'select count(p.id) as n from patients as p where p.clinic_id = ?',
+  reads: { patients: ['clinic_id', 'id'] },
+  resultColumns: [{ name: 'n', type: 'integer', nullable: false }],
+};
+
 /** A per-project lookup of accepted task originals (SPEC §5.11). */
 export const TASK_ORIGINALS: DriverAuthorityQuery = {
   name: 'taskOriginals',

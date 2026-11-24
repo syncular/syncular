@@ -1798,6 +1798,156 @@
       }
     },
     {
+      "name": "docAttachment",
+      "file": "authority-reads.syql",
+      "sourceSql": "select d.id, d.attachment\n  from docs as d\n  where d.org_id = :orgId\n    and d.id = :docId",
+      "sql": "select d.id, d.attachment\n  from docs as d\n  where d.org_id = :orgId\n    and d.id = :docId",
+      "positionalSql": "select d.id, d.attachment from docs as d where d.org_id = ? and d.id = ?",
+      "relations": [
+        {
+          "table": "docs",
+          "start": 31,
+          "end": 35,
+          "alias": "d"
+        }
+      ],
+      "params": [
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        },
+        {
+          "name": "docId",
+          "langName": "docId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
+        },
+        {
+          "name": "attachment",
+          "langName": "attachment",
+          "type": "bytes",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "attachment"
+          }
+        }
+      ],
+      "tables": [
+        "docs"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "docs",
+            "variable": "org_id",
+            "units": [
+              "orgId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "orgId",
+            "langName": "orgId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "docId",
+            "langName": "docId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select d.id, d.attachment\n  from docs as d\n  where d.org_id = :orgId\n    and d.id = :docId",
+              "positionalSql": "select d.id, d.attachment from docs as d where d.org_id = ? and d.id = ?",
+              "relations": [
+                {
+                  "table": "docs",
+                  "start": 31,
+                  "end": 35,
+                  "alias": "d"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "orgId",
+                  "type": "string",
+                  "input": "orgId"
+                },
+                {
+                  "kind": "value",
+                  "name": "docId",
+                  "type": "string",
+                  "input": "docId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ],
+        "authority": {
+          "reads": {
+            "docs": [
+              "attachment",
+              "id",
+              "org_id"
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "facilityDocs",
       "file": "facility-docs.syql",
       "sourceSql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs\n  where docs.org_id = :orgId\n  order by docs.id",

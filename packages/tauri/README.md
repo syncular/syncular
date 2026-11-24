@@ -189,9 +189,12 @@ registration and local progress reads throw that code. `close()` is idempotent.
 Declare authority queries at client creation with `defineAuthorityReads` from
 `@syncular/client/authority`. Each entry is a generated `authority query`
 declaration (SYQL.md §13.3). The declared set stays fixed for that client. A
-read set cannot include encrypted, bytes, blob, CRDT or internal columns.
-Choose only authority fields; clinical fields and credentials do not belong in
-these queries.
+read set cannot include `blob_ref`, CRDT or internal columns. Encrypted
+columns, `bytes` columns and `_sync_sealed_key` are protected: a query that
+reads one runs only while the lifecycle is active and fails in preflight with
+`client.security_preflight_required` and the details `{ query }`. A query over
+plain columns runs in preflight too, so keep clinical fields and credentials
+out of plain columns.
 
 ```ts
 import { defineAuthorityReads } from '@syncular/client/authority';
@@ -225,7 +228,8 @@ let config = SyncularConfig {
 ```
 
 At `create` Rust prepares each declared statement under a SQLite authorizer
-and refuses a declaration that reads outside that ceiling, or performs any
+and refuses a declaration that reads outside that ceiling (a protected column
+needs its ceiling entry too), or performs any
 action other than a read or a deterministic core function, with
 `client.authority_read_forbidden` and `reason: "ceiling"`. The native
 `authorityRead` command takes `{ requests }` and nothing else; forged IPC
@@ -235,8 +239,10 @@ writes still fail with `client.security_preflight_required`.
 
 The result contains `revision: bigint` and one result per request with the
 query's raw SQL `rows`, its `coverage` entries (`table`, `base`, `unit`,
-`state`) and `complete`. Both cores read rows, revision and coverage in one
-SQLite read transaction. The native authority read runs on the mutable owner;
+`state`), `complete` and `intent`: every row of the query's read tables with
+local intent as `{ table, rowId, kind }` (`pending`, `retained` or
+`acknowledged`), including rows the result omits. Both cores read rows,
+revision, coverage and intent in one SQLite read transaction. The native authority read runs on the mutable owner;
 it does not use the ordinary query sidecar or its latency contract.
 
 A coverage entry is `complete`, `pending` (the unit is still bootstrapping or

@@ -13,7 +13,12 @@ import {
   getMeta,
   loadUnits,
 } from './state';
-import { quoteIdent, SYNC_VERSION_COLUMN } from './schema';
+import {
+  localColumnType,
+  quoteIdent,
+  SEALED_KEY_COLUMN,
+  SYNC_VERSION_COLUMN,
+} from './schema';
 import type { CompiledClientSchema, JsonRowValue } from './schema';
 import type { WindowBase } from './window';
 
@@ -67,6 +72,12 @@ export interface AuthorityReadResult {
     }[];
     /** Every coverage entry is complete; rows are evidence only then. */
     readonly complete: boolean;
+    /** Every row of a read table with intent, sorted by table and row id. */
+    readonly intent: readonly {
+      readonly table: string;
+      readonly rowId: string;
+      readonly kind: 'pending' | 'retained' | 'acknowledged';
+    }[];
   }[];
 }
 
@@ -205,14 +216,19 @@ export class AuthorityReadPolicy {
         for (const column of columns)
           if (
             column !== SYNC_VERSION_COLUMN &&
+            !(column === SEALED_KEY_COLUMN && table.hasEncryptedColumns) &&
             !table.columns.some(
               (c) =>
                 c.name === column &&
                 !column.startsWith('_sync') &&
-                !c.encrypted &&
-                ['string', 'integer', 'float', 'boolean', 'json'].includes(
-                  c.type,
-                ),
+                [
+                  'string',
+                  'integer',
+                  'float',
+                  'boolean',
+                  'json',
+                  'bytes',
+                ].includes(localColumnType(c)),
             )
           )
             throw refuse(query.name, 'column', name, column);
@@ -220,11 +236,16 @@ export class AuthorityReadPolicy {
     }
   }
 
-  /** @internal Run requests over accepted bases in one read transaction. */
+  /**
+   * @internal Run requests over accepted bases in one read transaction. A
+   * query reading an encrypted, `bytes` or sealed-key column runs only while
+   * `active`.
+   */
   read(
     db: ClientDatabase,
     schema: CompiledClientSchema,
     requests: readonly AuthorityReadRequest[],
+    active: boolean,
   ): AuthorityReadResult {
     if (
       !Array.isArray(requests) ||
@@ -332,6 +353,29 @@ export class AuthorityReadPolicy {
           );
         const revision = getLocalRevision(db);
         const units = loadUnits(db);
+        for (const { query } of runs)
+          if (
+            !active &&
+            Object.entries(query.reads).some(([name, columns]) =>
+              columns.some(
+                (column) =>
+                  column === SEALED_KEY_COLUMN ||
+                  schema.tables
+                    .get(name)!
+                    .columns.some(
+                      (c) =>
+                        c.name === column &&
+                        (c.encrypted || c.type === 'bytes'),
+                    ),
+              ),
+            )
+          )
+            throw new ClientSyncError(
+              'client.security_preflight_required',
+              'protected authority reads require activateSecurity',
+              false,
+              { query: query.name },
+            );
         const outbox = listOutbox(db);
         // Per table: row id → its accepted base, for every row with intent.
         const intent = new Map<
@@ -341,6 +385,7 @@ export class AuthorityReadPolicy {
             {
               values: Readonly<Record<string, JsonRowValue>> | null;
               version: number;
+              kind: 'pending' | 'retained' | 'acknowledged';
             }
           >
         >();
@@ -367,13 +412,14 @@ export class AuthorityReadPolicy {
               bases.set(op.rowId, {
                 values: image.values ?? null,
                 version: image.syncVersion ?? -1,
+                kind: 'pending',
               });
             }
           }
           // A retained/ACK base precedes pending edits stacked over that intent.
           const retained = new Set<string>();
           for (const row of db.query(
-            `SELECT id,base,version FROM ${RETAINED_ROWS} WHERE tbl=? ORDER BY commit_seq,at,commit_id,idx`,
+            `SELECT id,base,version,commit_seq,sealed FROM ${RETAINED_ROWS} WHERE tbl=? ORDER BY commit_seq,at,commit_id,idx`,
             [name],
           )) {
             const id = String(row.id);
@@ -384,8 +430,18 @@ export class AuthorityReadPolicy {
               );
             if (!retained.has(id))
               bases.set(id, {
-                values: row.base === null ? null : JSON.parse(String(row.base)),
+                values:
+                  row.base === null
+                    ? null
+                    : {
+                        ...JSON.parse(String(row.base)),
+                        [SEALED_KEY_COLUMN]:
+                          row.sealed === null
+                            ? null
+                            : JSON.parse(String(row.sealed)).keyId,
+                      },
                 version: Number(row.version ?? -1),
+                kind: row.commit_seq === null ? 'retained' : 'acknowledged',
               });
             retained.add(id);
           }
@@ -396,10 +452,13 @@ export class AuthorityReadPolicy {
           results: runs.map(({ query, binds, coverage }) => {
             const shadows: string[] = [];
             const shadowBinds: SqlValue[] = [];
+            const intent: AuthorityReadResult['results'][number]['intent'][number][] =
+              [];
             for (const name of Object.keys(query.reads).sort()) {
               const bases = basesOf(name);
               if (!bases.size) continue;
-              const pk = schema.tables.get(name)!.primaryKey;
+              const table = schema.tables.get(name)!;
+              const pk = table.primaryKey;
               const columns = [
                 pk,
                 ...query.reads[name]!.filter(
@@ -408,8 +467,14 @@ export class AuthorityReadPolicy {
                 SYNC_VERSION_COLUMN,
               ];
               const ids = [...bases.keys()].sort();
+              for (const rowId of ids)
+                intent.push({
+                  table: name,
+                  rowId,
+                  kind: bases.get(rowId)!.kind,
+                });
               shadows.push(
-                `${quoteIdent(name)} AS (SELECT ${columns.map(quoteIdent).join(',')} FROM main.${quoteIdent(name)} WHERE CAST(${quoteIdent(pk)} AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT ${columns.map((_, i) => `json_extract(value,'$[${i}]')`).join(',')} FROM json_each(?))`,
+                `${quoteIdent(name)} AS (SELECT ${columns.map(quoteIdent).join(',')} FROM main.${quoteIdent(name)} WHERE CAST(${quoteIdent(pk)} AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT ${columns.map((c, i) => (table.columns.some((column) => column.name === c && localColumnType(column) === 'bytes') ? `unhex(json_extract(value,'$[${i}]."$bytes"'))` : `json_extract(value,'$[${i}]')`)).join(',')} FROM json_each(?))`,
               );
               shadowBinds.push(
                 JSON.stringify(ids),
@@ -424,6 +489,7 @@ export class AuthorityReadPolicy {
                         !columns.every(
                           (c) =>
                             c === SYNC_VERSION_COLUMN ||
+                            c === SEALED_KEY_COLUMN ||
                             Object.hasOwn(values, c),
                         ))
                     )
@@ -440,7 +506,7 @@ export class AuthorityReadPolicy {
                                 ? values[c]
                                   ? 1
                                   : 0
-                                : values[c],
+                                : (values[c] ?? null),
                           ),
                         ]
                       : [];
@@ -480,6 +546,7 @@ export class AuthorityReadPolicy {
               ),
               coverage: result,
               complete: result.every((entry) => entry.state === 'complete'),
+              intent,
             };
           }),
         };

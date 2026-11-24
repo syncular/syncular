@@ -295,8 +295,12 @@ There are no `@scope` or `@cover` directives.
 `authority query` declares evidence a client reads during security preflight
 over the accepted base of its replica: the last state the server accepted,
 without local intent. It follows every `sync query` coverage rule and reads
-only `string`, `integer`, `float`, `boolean` and `json` columns without
-encryption, plus `_sync_version`. It has one statement, no dynamic sort, limit
+`string`, `integer`, `float`, `boolean`, `json` and `bytes` columns,
+encrypted or not, plus `_sync_version` and, on a table with an encrypted
+column, `_sync_sealed_key`. `blob_ref` and `crdt` columns are refused. A
+query that reads an encrypted column, a `bytes` column or `_sync_sealed_key`
+runs only while the security lifecycle is active; in preflight it fails with
+`client.security_preflight_required`. It has one statement, no dynamic sort, limit
 or conditional predicate, no FTS, and scalar parameters only. A violation fails
 with `SYQL6009_INVALID_AUTHORITY_QUERY`. A query that needs `EXISTS` across
 scoped tables writes it as a top-level join with an aggregate:

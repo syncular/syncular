@@ -241,7 +241,7 @@ export async function applyCommitFrame(
         retainedBaseWrite(
           db,
           change.table,
-          new Map([[rowId, [change.values, rowVersion]]]),
+          new Map([[rowId, [change.values, rowVersion, change.sealed]]]),
         );
       }
     }
@@ -884,12 +884,15 @@ export function* applyRowsSegment(
       }
       const kept = new Set<string>();
       const skipped = new Set<string>();
-      const written = new Map<string, readonly [readonly RowValue[], number]>();
+      const written = new Map<
+        string,
+        readonly [readonly RowValue[], number, (SealedRow | undefined)?]
+      >();
       for (const row of rows) {
         const rowId = String(row.values[table.primaryKeyIndex]);
         if (lands(db, table, rowId, row.serverVersion, kept, skipped)) {
           upsertLocalRow(db, table, row.values, row.serverVersion, row.sealed);
-          written.set(rowId, [row.values, row.serverVersion]);
+          written.set(rowId, [row.values, row.serverVersion, row.sealed]);
         }
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);

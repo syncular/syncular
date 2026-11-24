@@ -2040,7 +2040,8 @@ mod tests {
                 "query": "roleOf",
                 "rows": [{"role": "accepted"}],
                 "coverage": [{"table": "authority", "base": {"variable": "actor_id"}, "unit": "a", "state": "complete"}],
-                "complete": true
+                "complete": true,
+                "intent": []
             }]),
             "{snapshot}"
         );
@@ -2097,10 +2098,16 @@ mod tests {
                 json!({"authority": ["actor_id", "role"]}),
                 json!({"query": "probe", "reason": "shape"}),
             ),
+            // A protected column the declaration names still needs the ceiling.
             (
-                "SELECT role FROM authority WHERE actor_id = ?",
+                "SELECT secret FROM authority WHERE actor_id = ?",
                 json!({"authority": ["actor_id", "secret"]}),
-                json!({"query": "probe", "reason": "column", "table": "authority", "column": "secret"}),
+                json!({"query": "probe", "reason": "ceiling", "table": "authority", "column": "secret"}),
+            ),
+            (
+                "SELECT _sync_sealed_key AS sealed FROM authority WHERE actor_id = ?",
+                json!({"authority": ["_sync_sealed_key", "actor_id"]}),
+                json!({"query": "probe", "reason": "ceiling", "table": "authority", "column": "_sync_sealed_key"}),
             ),
         ] {
             let refused = command(create(json!([query("probe", sql, reads)])));

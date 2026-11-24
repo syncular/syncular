@@ -284,6 +284,7 @@ test('retained-row columns keep the order the pending-row UNION arm produces', (
     'version',
     'unique_conflicts',
     'commit_seq',
+    'sealed',
   ];
   const fresh = new BunClientDatabase();
   const upgraded = new BunClientDatabase();

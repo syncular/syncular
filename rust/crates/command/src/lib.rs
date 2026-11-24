@@ -2512,7 +2512,8 @@ mod tests {
                 "query": "listOf",
                 "rows": [],
                 "coverage": [{"table": "todos", "base": {"variable": "list_id"}, "unit": "l1", "state": "missing"}],
-                "complete": false
+                "complete": false,
+                "intent": []
             }])
         );
         for params in [

@@ -31,6 +31,9 @@ test('ordinary native bridge excludes the authority method; explicit bridge deco
                     rows: [{ id: 'a', flags: { $bigint: '42' } }],
                     coverage,
                     complete: true,
+                    intent: [
+                      { table: 'actors', rowId: 'a', kind: 'acknowledged' },
+                    ],
                   },
                 ],
               }
@@ -76,6 +79,7 @@ test('ordinary native bridge excludes the authority method; explicit bridge deco
         rows: [{ id: 'a', flags: 42n }],
         coverage,
         complete: true,
+        intent: [{ table: 'actors', rowId: 'a', kind: 'acknowledged' }],
       },
     ],
   });

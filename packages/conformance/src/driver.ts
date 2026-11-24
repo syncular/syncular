@@ -1219,6 +1219,11 @@ export interface DriverAuthorityReadResult {
       readonly state: 'complete' | 'pending' | 'missing' | 'revoked';
     }[];
     readonly complete: boolean;
+    readonly intent: readonly {
+      readonly table: string;
+      readonly rowId: string;
+      readonly kind: 'pending' | 'retained' | 'acknowledged';
+    }[];
   }[];
 }
 /** SPEC §8.8 transport gate states. */

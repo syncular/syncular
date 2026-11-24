@@ -1579,6 +1579,19 @@ pub struct AuthorityQueryResult {
     pub coverage: Vec<AuthorityCoverageState>,
     /// True when every coverage entry is `complete`.
     pub complete: bool,
+    /// Every row of a read table with intent, sorted by table and row id,
+    /// including rows the result omits.
+    pub intent: Vec<AuthorityIntent>,
+}
+
+/// One row with intent in a read table: `kind` is `pending`, `retained` or
+/// `acknowledged`, the entry its accepted base comes from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorityIntent {
+    pub table: String,
+    pub row_id: String,
+    pub kind: &'static str,
 }
 
 /// One coverage unit of a request: `base` is `{ variable, fixedScopes? }`

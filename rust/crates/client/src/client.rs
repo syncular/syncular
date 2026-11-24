@@ -32,22 +32,23 @@ use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, R
 use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessage, PresenceKind};
 
 use crate::api::{
-    AppliedServerCommit, AppliedServerCommitSource, AuthorityCoverageState, AuthorityQuery,
-    AuthorityQueryResult, AuthorityReadResult, ClientChangeBatch, ClientDiagnosticsHost,
-    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsSchema,
-    ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects,
-    CommitDelivery, CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
-    CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
-    CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
-    DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticUnits, EchoRecord, FetchedBlob,
-    LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
-    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PendingCommit, PresencePeer,
-    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
-    RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome,
-    SyncReport, SyncStatusSnapshot, TableChange, UnitCatchup, UnitRecord, UnitRestriction,
-    UnitScopes, UnitStatus, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
-    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_QUERY_FAILURES,
+    AppliedServerCommit, AppliedServerCommitSource, AuthorityCoverageState, AuthorityIntent,
+    AuthorityQuery, AuthorityQueryResult, AuthorityReadResult, ClientChangeBatch,
+    ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
+    ClientDiagnosticsSchema, ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError,
+    ClientLimits, CommandEffects, CommitDelivery, CommitOperation, CommitOperationOutcome,
+    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
+    ConflictRecord, CoverageSnapshot, CurrentBaseProof, CurrentBaseProofReason,
+    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
+    DiagnosticUnits, EchoRecord, FetchedBlob, LeaseState, LocalDataPurgeInput,
+    LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
+    LocalDataRebootstrapResult, Mutation, PendingCommit, PresencePeer, PreviousVersionStatus,
+    QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue, RejectionDetails,
+    RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow, RetainedUniqueConflict,
+    RowState, SchemaFloor, SnapshotRead, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot,
+    TableChange, UnitCatchup, UnitRecord, UnitRestriction, UnitScopes, UnitStatus, WindowBase,
+    WindowChange, WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
+    MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
 #[cfg(feature = "bench-internals")]
@@ -2007,13 +2008,15 @@ pub fn validate_authority_reads(
                 .filter(|_| !name.starts_with("_syncular_"))
                 .ok_or_else(|| refuse("column", Some(name.as_str()), None))?;
             for column in columns {
-                if column == "_sync_version" {
+                if column == "_sync_version"
+                    || (column == "_sync_sealed_key" && table.has_encrypted_columns())
+                {
                     continue;
                 }
-                let plain = !column.starts_with("_sync")
-                    && table.columns.iter().enumerate().any(|(index, held)| {
+                // `ty` is the local type: an encrypted column's declared type.
+                let readable = !column.starts_with("_sync")
+                    && table.columns.iter().any(|held| {
                         &held.name == column
-                            && !table.encrypted_columns.iter().any(|e| e.index == index)
                             && matches!(
                                 held.ty,
                                 ColumnType::String
@@ -2021,9 +2024,10 @@ pub fn validate_authority_reads(
                                     | ColumnType::Float
                                     | ColumnType::Boolean
                                     | ColumnType::Json
+                                    | ColumnType::Bytes
                             )
                     });
-                if !plain {
+                if !readable {
                     return Err(refuse("column", Some(name.as_str()), Some(column.as_str())));
                 }
             }
@@ -8802,7 +8806,10 @@ impl SyncClient {
     /// §5.11: run declared authority queries over the accepted base in one
     /// SQLite read transaction. Each request is a query name and its params
     /// keyed by param name; each result carries its rows, its coverage per
-    /// table and unit, and whether every entry is complete.
+    /// table and unit, whether every entry is complete, and every row of a
+    /// read table with intent. A query reading an encrypted, `bytes` or
+    /// `_sync_sealed_key` column fails with
+    /// `client.security_preflight_required` while a preflight is pending.
     pub fn authority_read(
         &self,
         requests: &[(String, Map<String, Value>)],
@@ -8905,10 +8912,34 @@ impl SyncClient {
                         .is_ok_and(|parsed| &parsed.to_string() == revision)
                 })
                 .ok_or_else(authority_corrupt)?;
+            if self.security_preflight {
+                let protected = |(name, columns): (&String, &Vec<String>)| {
+                    let table = self.schema.table(name).expect("validated authority table");
+                    columns.iter().any(|column| {
+                        column == "_sync_sealed_key"
+                            || table.columns.iter().enumerate().any(|(index, held)| {
+                                &held.name == column
+                                    && (held.ty == ColumnType::Bytes
+                                        || table.encrypted_columns.iter().any(|e| e.index == index))
+                            })
+                    })
+                };
+                if let Some((query, ..)) = prepared
+                    .iter()
+                    .find(|(query, ..)| query.reads.iter().any(protected))
+                {
+                    return Err(ClientError {
+                        code: SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
+                        message: "protected authority reads require activateSecurity".to_owned(),
+                        details: Some(json!({ "query": query.name })),
+                        retryable: false,
+                    });
+                }
+            }
             let units = load_units(&self.conn).map_err(authority_stored)?;
             let mut results = Vec::with_capacity(prepared.len());
             for (query, bound, coverage) in &prepared {
-                let (sql, mut params) = self.authority_statement(query)?;
+                let (sql, mut params, intent) = self.authority_statement(query)?;
                 params.extend(query.bind.iter().map(|name| bound[name.as_str()].clone()));
                 let rows =
                     query_connection(&self.conn, &sql, &params).map_err(ClientError::from)?;
@@ -8939,6 +8970,7 @@ impl SyncClient {
                     rows,
                     complete: coverage.iter().all(|entry| entry.state == "complete"),
                     coverage,
+                    intent,
                 });
             }
             Ok(AuthorityReadResult { revision, results })
@@ -8961,8 +8993,9 @@ impl SyncClient {
         }
     }
 
-    /// §5.11: the statement `authority_read` runs for `query` and its shadow
-    /// params, which precede the authored binds. Every read table with
+    /// §5.11: the statement `authority_read` runs for `query`, its shadow
+    /// params, which precede the authored binds, and the intent rows of its
+    /// read tables, sorted by table and row id. Every read table with
     /// intent reads its accepted base through a common table expression of
     /// the same name; the text is identical in the TypeScript core. The Rust
     /// mirror keeps the accepted base in `_syncular_base_<table>`: retained,
@@ -8971,31 +9004,43 @@ impl SyncClient {
     fn authority_statement(
         &self,
         query: &AuthorityQuery,
-    ) -> Result<(String, Vec<Value>), ClientError> {
+    ) -> Result<(String, Vec<Value>, Vec<AuthorityIntent>), ClientError> {
         let mut shadows = Vec::new();
         let mut params = Vec::new();
+        let mut intent = Vec::new();
         for (name, reads) in &query.reads {
             let table = self.schema.table(name).expect("validated authority table");
+            // One kind per row by the base precedence: a retained entry, then
+            // an acknowledged one, then pending outbox intent.
             let mut ids = Vec::new();
             let mut statement = self
                 .conn
                 .prepare_cached(
-                    "SELECT DISTINCT id FROM (\
-                     SELECT json_extract(value,'$.table') AS tbl,json_extract(value,'$.rowId') AS id \
+                    "SELECT id,min(k) FROM (\
+                     SELECT json_extract(value,'$.table') AS tbl,json_extract(value,'$.rowId') AS id,2 AS k \
                      FROM _syncular_outbox,json_each(ops_json) \
-                     UNION ALL SELECT json_extract(value,'$.table'),json_extract(value,'$.rowId') \
+                     UNION ALL SELECT json_extract(value,'$.table'),json_extract(value,'$.rowId'),0 \
                      FROM _syncular_failed_commits,json_each(operations_json) \
-                     UNION ALL SELECT tbl,id FROM _syncular_acked_rows) WHERE tbl=?1",
+                     UNION ALL SELECT tbl,id,1 FROM _syncular_acked_rows) WHERE tbl=?1 GROUP BY id",
                 )
                 .map_err(authority_stored)?;
             let mut rows = statement.query([name]).map_err(authority_stored)?;
             while let Some(row) = rows.next().map_err(authority_stored)? {
-                ids.push(row.get::<_, String>(0).map_err(authority_stored)?);
+                ids.push((
+                    row.get::<_, String>(0).map_err(authority_stored)?,
+                    row.get::<_, usize>(1).map_err(authority_stored)?,
+                ));
             }
             if ids.is_empty() {
                 continue;
             }
-            ids.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+            ids.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            intent.extend(ids.iter().map(|(row_id, kind)| AuthorityIntent {
+                table: name.clone(),
+                row_id: row_id.clone(),
+                kind: ["retained", "acknowledged", "pending"][*kind],
+            }));
+            let ids: Vec<String> = ids.into_iter().map(|(id, _)| id).collect();
             let columns: Vec<&str> =
                 std::iter::once(table.primary_key.as_str())
                     .chain(reads.iter().map(String::as_str).filter(|column| {
@@ -9040,7 +9085,7 @@ impl SyncClient {
                         ValueRef::Text(text) => {
                             Value::from(std::str::from_utf8(text).map_err(|_| authority_corrupt())?)
                         }
-                        ValueRef::Blob(_) => return Err(authority_corrupt()),
+                        ValueRef::Blob(blob) => json!({ "$bytes": bytes_to_hex(blob) }),
                     });
                 }
                 let version = values
@@ -9061,8 +9106,20 @@ impl SyncClient {
                     .map(|column| quote_ident(column))
                     .collect::<Vec<_>>()
                     .join(","),
-                (0..columns.len())
-                    .map(|index| format!("json_extract(value,'$[{index}]')"))
+                columns
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| {
+                        if table
+                            .columns
+                            .iter()
+                            .any(|held| held.name == *column && held.ty == ColumnType::Bytes)
+                        {
+                            format!("unhex(json_extract(value,'$[{index}].\"$bytes\"'))")
+                        } else {
+                            format!("json_extract(value,'$[{index}]')")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(","),
             ));
@@ -9094,7 +9151,7 @@ impl SyncClient {
                 format!("WITH {shadows} {}", query.sql)
             }
         };
-        Ok((sql, params))
+        Ok((sql, params, intent))
     }
 
     /// Rows, coverage, and local revision from one SQLite read snapshot.

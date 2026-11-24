@@ -55,6 +55,7 @@ const schema: ClientSchema = {
         { name: 'id', type: 'string', nullable: false },
         { name: 'owner_id', type: 'string', nullable: false },
         { name: 'blob', type: 'bytes', nullable: true },
+        { name: 'file', type: 'blob_ref', nullable: true },
         {
           name: 'secret',
           type: 'bytes',
@@ -264,12 +265,13 @@ test('authority declarations are refused at creation with their reason', () => {
       column('ops', 'nope'),
     );
     refused(
-      { ...centre, reads: { vault: ['id', 'secret'] } },
-      column('vault', 'secret'),
+      { ...centre, reads: { vault: ['file', 'id'] } },
+      column('vault', 'file'),
     );
+    // The sealed-key marker exists only on a table with an encrypted column.
     refused(
-      { ...centre, reads: { vault: ['blob', 'id'] } },
-      column('vault', 'blob'),
+      { ...centre, reads: { ops: ['_sync_sealed_key', 'id'] } },
+      column('ops', '_sync_sealed_key'),
     );
     refused(
       { ...centre, reads: { vault: ['_sync_sealed', 'id'] } },
@@ -288,6 +290,18 @@ test('authority declarations are refused at creation with their reason', () => {
     expect(() =>
       create(db, [
         { ...centre, reads: { ...centre.reads, ops: ['_sync_version', 'id'] } },
+      ]),
+    ).not.toThrow();
+    // Encrypted, bytes and sealed-key columns are protected, not refused.
+    expect(() =>
+      create(db, [
+        {
+          ...centre,
+          reads: {
+            ...centre.reads,
+            vault: ['_sync_sealed_key', 'blob', 'id', 'secret'],
+          },
+        },
       ]),
     ).not.toThrow();
   } finally {
@@ -335,6 +349,7 @@ test('authority reads join three accepted bases with aggregates and never write'
             },
           ],
           complete: true,
+          intent: [],
         },
       ],
     });
@@ -373,6 +388,13 @@ test('authority reads join three accepted bases with aggregates and never write'
       [{ qualifying: 0, latest: null }],
     ]);
     expect(shadowed.results[1]!.complete).toBe(false);
+    // The pending creation and the pending delete are listed though the
+    // accepted rows hold neither.
+    expect(shadowed.results[0]!.intent).toEqual([
+      { table: 'seals', rowId: 's-2', kind: 'pending' },
+      { table: 'wraps', rowId: 'w-1', kind: 'pending' },
+      { table: 'wraps', rowId: 'w-new', kind: 'pending' },
+    ]);
     const seals = `"seals" AS (SELECT "id","current","op_id","workspace_id","_sync_version" FROM main."seals" WHERE CAST("id" AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]') FROM json_each(?))`;
     const wraps = `"wraps" AS (SELECT "id","expires_at","recipient_id","seal_id","sealer_id","_sync_version" FROM main."wraps" WHERE CAST("id" AS TEXT) NOT IN (SELECT value FROM json_each(?)) UNION ALL SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]') FROM json_each(?))`;
     expect(db.reads.at(-2)).toEqual({
@@ -756,8 +778,43 @@ test('retained and acknowledged bases precede later pending edits; corrupt evide
     retainFailedRows(db, first, 8);
     deleteOutboxCommit(db, first.clientCommitId);
     client.patch('seals', 'one', { op_id: 'later' });
+    db.exec(
+      'INSERT INTO seals(id,op_id,workspace_id,current,_sync_version)VALUES(?,?,?,?,?)',
+      ['two', 'op1', 'w1', 1, 7],
+    );
+    client.patch('seals', 'two', { current: false });
+    const second = listOutbox(db).find((commit) =>
+      commit.operations.some((op) => op.rowId === 'two'),
+    )!;
+    retainFailedRows(db, second);
+    deleteOutboxCommit(db, second.clientCommitId);
+    client.patch('seals', 'two', { op_id: 'later' });
+    client.mutate([
+      {
+        table: 'seals',
+        op: 'upsert',
+        values: {
+          id: 'three',
+          op_id: 'op1',
+          workspace_id: 'w1',
+          current: true,
+        },
+      },
+    ]);
     await client.beginSecurityPreflight();
-    expect(read()).toEqual([{ id: 'one', current: 1, v: 7 }]);
+    expect(read()).toEqual([
+      { id: 'one', current: 1, v: 7 },
+      { id: 'two', current: 1, v: 7 },
+    ]);
+    // One kind per row, by the base precedence: the earliest entry.
+    expect(
+      client.authorityRead([{ query: 'ops', params: {} }]).results[0]!.intent,
+    ).toEqual([
+      { table: 'seals', rowId: 'one', kind: 'acknowledged' },
+      { table: 'seals', rowId: 'three', kind: 'pending' },
+      { table: 'seals', rowId: 'two', kind: 'retained' },
+    ]);
+    db.exec("DELETE FROM _syncular_failed_rows WHERE id='two'");
     db.exec('UPDATE _syncular_failed_rows SET version=NULL');
     expect(read).toThrow(
       expect.objectContaining({ code: 'sync.local_corrupt' }),
@@ -779,9 +836,162 @@ test('retained and acknowledged bases precede later pending edits; corrupt evide
       expect.objectContaining({ code: 'sync.local_corrupt' }),
     );
     db.exec('UPDATE _syncular_failed_rows SET base=NULL,version=NULL');
-    expect(read()).toEqual([]);
+    // Without its retained entry, `two` reads its later pending before-image.
+    expect(read()).toEqual([{ id: 'two', current: 0, v: 7 }]);
   } finally {
     await client.close();
     db.close();
+  }
+});
+
+test('protected columns read only while active; bytes and the sealed marker read from the accepted base', async () => {
+  const db = new RecordingDatabase(':memory:');
+  const vault: AuthorityQuery = {
+    ...tasks,
+    name: 'vault',
+    sql: 'SELECT id, blob, secret, _sync_sealed_key AS sealed FROM vault WHERE owner_id = ? ORDER BY id',
+    bind: ['ownerId'],
+    params: [{ name: 'ownerId', type: 'string', nullable: false }],
+    coverage: [{ table: 'vault', variable: 'owner_id', units: ['ownerId'] }],
+    reads: { vault: ['_sync_sealed_key', 'blob', 'id', 'owner_id', 'secret'] },
+    resultColumns: [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'blob', type: 'bytes', nullable: true },
+      { name: 'secret', type: 'string', nullable: true },
+      { name: 'sealed', type: 'string', nullable: true },
+    ],
+  };
+  const plain: AuthorityQuery = {
+    ...vault,
+    name: 'owners',
+    sql: 'SELECT count(*) AS n FROM vault WHERE owner_id = ?',
+    reads: { vault: ['owner_id'] },
+    resultColumns: [{ name: 'n', type: 'integer', nullable: false }],
+  };
+  const client = create(db, [vault, plain]);
+  await client.start();
+  const read = (query: string) =>
+    client.authorityRead([{ query, params: { ownerId: 'o1' } }]).results[0]!;
+  try {
+    db.exec(
+      'INSERT INTO vault(id,owner_id,blob,secret,_sync_version,_sync_sealed_key,_sync_sealed)VALUES(?,?,?,?,?,?,?)',
+      ['v1', 'o1', new Uint8Array([1, 2, 255]), 'kept', 3, null, null],
+    );
+    db.exec(
+      'INSERT INTO vault(id,owner_id,blob,secret,_sync_version,_sync_sealed_key,_sync_sealed)VALUES(?,?,?,?,?,?,?)',
+      ['v2', 'o1', null, null, 4, 'k-missing', '{}'],
+    );
+    expect(read('owners').rows).toEqual([{ n: 2 }]);
+    expect(() => read('vault')).toThrow(
+      expect.objectContaining({
+        code: 'client.security_preflight_required',
+        details: { query: 'vault' },
+      }),
+    );
+    // A protected request fails the whole call; no partial result.
+    expect(() =>
+      client.authorityRead([
+        { query: 'owners', params: { ownerId: 'o1' } },
+        { query: 'vault', params: { ownerId: 'o1' } },
+      ]),
+    ).toThrow(
+      expect.objectContaining({ code: 'client.security_preflight_required' }),
+    );
+    await client.activateSecurity();
+    expect(read('vault').rows).toEqual([
+      {
+        id: 'v1',
+        blob: new Uint8Array([1, 2, 255]),
+        secret: 'kept',
+        sealed: null,
+      },
+      { id: 'v2', blob: null, secret: null, sealed: 'k-missing' },
+    ]);
+    client.patch('vault', 'v1', { blob: new Uint8Array([9]), secret: 'edit' });
+    const pending = read('vault');
+    expect(pending.rows[0]).toEqual({
+      id: 'v1',
+      blob: new Uint8Array([1, 2, 255]),
+      secret: 'kept',
+      sealed: null,
+    });
+    expect(pending.intent).toEqual([
+      { table: 'vault', rowId: 'v1', kind: 'pending' },
+    ]);
+    expect(db.reads.at(-1)?.sql).toContain(
+      `unhex(json_extract(value,'$[2]."$bytes"'))`,
+    );
+    await client.beginSecurityPreflight();
+    expect(() => read('vault')).toThrow(
+      expect.objectContaining({ code: 'client.security_preflight_required' }),
+    );
+    expect(read('owners').rows).toEqual([{ n: 2 }]);
+  } finally {
+    await client.close();
+    db.close();
+  }
+});
+
+test('a 0.105.13 replica holding a retained row opens with the sealed column and reads its base', async () => {
+  const server = makeServer();
+  const db = new BunClientDatabase(':memory:');
+  const a = await makeClient(server, {
+    clientId: 'upgraded',
+    database: db,
+    retainFailedCommits: true,
+  });
+  const b = await makeClient(server, { clientId: 'other' });
+  {
+    a.client.subscribe({ project_id: 'p1' });
+    b.client.subscribe({ project_id: 'p1' });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'one') },
+    ]);
+    await a.client.syncUntilIdle();
+    await b.client.syncUntilIdle();
+    b.client.patch('tasks', 't1', { title: 'server' });
+    await b.client.syncUntilIdle();
+    a.client.mutate([
+      {
+        table: 'tasks',
+        op: 'patch',
+        values: { id: 't1', title: 'mine' },
+        baseVersion: 1,
+      },
+    ]);
+    await a.client.syncUntilIdle();
+    await a.client.close();
+    // The table as 0.105.13 left it: no `sealed` column.
+    db.exec('ALTER TABLE _syncular_failed_rows DROP COLUMN sealed');
+    expect(db.query('SELECT id FROM _syncular_failed_rows')).toEqual([
+      { id: 't1' },
+    ]);
+    expect(() => db.query('SELECT sealed FROM _syncular_failed_rows')).toThrow(
+      'no such column',
+    );
+  }
+  const reopened = await makeClient(server, {
+    clientId: 'upgraded',
+    database: db,
+    retainFailedCommits: true,
+    authorityReads: defineAuthorityReads([tasks]),
+  });
+  try {
+    expect(db.query('SELECT id,sealed FROM _syncular_failed_rows')).toEqual([
+      { id: 't1', sealed: null },
+    ]);
+    const read = reopened.client.authorityRead([
+      { query: 'projectTasks', params: { projectId: 'p1' } },
+    ]).results[0]!;
+    expect(read.rows).toEqual([{ id: 't1', title: 'server', done: 0 }]);
+    expect(read.intent).toEqual([
+      { table: 'tasks', rowId: 't1', kind: 'retained' },
+    ]);
+  } finally {
+    await reopened.client.close();
+    await b.client.close();
+    b.db.close();
+    db.close();
+    server.storage.db.close();
   }
 });

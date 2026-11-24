@@ -1,5 +1,62 @@
 # Syncular release notes
 
+## 0.106.0 release notes
+
+An `authority query` may read encrypted columns, `bytes` columns and, on a
+table with an encrypted column, `_sync_sealed_key`, the marker that names the
+missing key of a sealed row. Those are protected columns: a request whose
+query reads one runs only while the security lifecycle is active, and in
+preflight it fails the call with `client.security_preflight_required` and the
+details `{ query }`. Both cores check the lifecycle inside the read
+transaction on the serialized owner, so `beginSecurityPreflight` closes
+protected reads before the next read. A query over plain columns runs in
+preflight and while active as before. An app needs one accepted revision of an
+encrypted name and a binary seal before it signs, and has to tell pending,
+retained and acknowledged-not-pulled intent apart
+(SYNCULAR-ACCEPTED-PROTECTED-READ-001; SPEC §5.11, SYQL §13.3).
+
+Every authority result carries `intent`: each row of the query's read tables
+with local intent as `{ table, rowId, kind }`, sorted by table and row id, at
+the revision of the rows and coverage. It includes rows the result omits, so a
+pending creation, a pending delete or an edit that moves a row out of the
+filter or the join is always visible. `kind` is `retained`, `acknowledged` or
+`pending`, in that order of precedence. A `bytes` column reads as bytes from
+the accepted base in both cores; the Rust core failed such a read with
+`sync.local_corrupt` before.
+
+The TypeScript client also keeps the sealed state of a retained or
+acknowledged base: restoring that base kept its values and dropped
+`_sync_sealed_key`, so the visible row came back unsealed with NULL encrypted
+columns. The base now keeps the sealed state of the delivery that wrote it,
+and the reveal opens it with the visible rows, as the Rust core already did.
+
+**Upgrading.**
+
+- A declaration that reads an encrypted column, a `bytes` column or
+  `_sync_sealed_key` was refused with `client.authority_read_forbidden` and is
+  accepted now; `blob_ref`, `_sync_sealed` and internal columns stay
+  refused, and so does `_sync_sealed_key` on a table without an encrypted
+  column. `SYQL6009_INVALID_AUTHORITY_QUERY` follows the same rule.
+- A preflight read of such a declaration fails with
+  `client.security_preflight_required`; call `activateSecurity` first. Plain
+  declarations are unaffected.
+- On Tauri the `authority_columns` ceiling must name every protected column a
+  declaration reads; `create` refuses the declaration with `reason: "ceiling"`
+  otherwise.
+- Each result has a new `intent` array. In Rust, `AuthorityQueryResult` gains
+  the public field `intent: Vec<AuthorityIntent>` and the new public struct
+  `AuthorityIntent { table, row_id, kind }` serializes as
+  `{ table, rowId, kind }`; code that builds `AuthorityQueryResult` with a
+  struct literal must set it.
+- The multi-tab protocol moves to 15, because the forwarded
+  `authorityRead` result gains `intent`. A 0.105.x tab and a 0.106.0 tab
+  refuse each other's link until every tab runs 0.106.0; the older tabs stay
+  `blocked` with reason `leader-incompatible` until they reload. Reload older
+  tabs after deploying.
+- The TypeScript client adds a `sealed` column to `_syncular_failed_rows`
+  when it opens a replica an older version wrote; its retained and
+  acknowledged rows keep their bases and read with a NULL marker.
+
 ## 0.105.13 release notes
 
 `purgeLocalData` now moves every unit that held a purged row back to catching

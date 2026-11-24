@@ -98,6 +98,176 @@
       }
     },
     {
+      "name": "acceptedPatient",
+      "file": "accepted-patient.syql",
+      "sourceSql": "select p.id, p.given_names AS \"givenNames\", p.notes, p._sync_sealed_key AS \"sealedKey\" from patients as p\n  where p.clinic_id = :clinicId\n    and p.id = :patientId",
+      "sql": "select p.id, p.given_names AS \"givenNames\", p.notes, p._sync_sealed_key AS \"sealedKey\" from patients as p\n  where p.clinic_id = :clinicId\n    and p.id = :patientId",
+      "positionalSql": "select p.id, p.given_names AS \"givenNames\", p.notes, p._sync_sealed_key AS \"sealedKey\" from patients as p where p.clinic_id = ? and p.id = ?",
+      "relations": [
+        {
+          "table": "patients",
+          "start": 92,
+          "end": 100,
+          "alias": "p"
+        }
+      ],
+      "params": [
+        {
+          "name": "clinicId",
+          "langName": "clinicId",
+          "type": "string"
+        },
+        {
+          "name": "patientId",
+          "langName": "patientId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "id"
+          }
+        },
+        {
+          "name": "given_names",
+          "langName": "givenNames",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "given_names"
+          }
+        },
+        {
+          "name": "notes",
+          "langName": "notes",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "patients",
+            "column": "notes"
+          }
+        },
+        {
+          "name": "sealed_key",
+          "langName": "sealedKey",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "patients"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "patients",
+            "scopes": [
+              {
+                "variable": "clinic_id",
+                "pattern": "clinic:{clinic_id}",
+                "params": [
+                  "clinicId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "patients",
+            "variable": "clinic_id",
+            "units": [
+              "clinicId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "clinicId",
+            "langName": "clinicId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "patientId",
+            "langName": "patientId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select p.id, p.given_names AS \"givenNames\", p.notes, p._sync_sealed_key AS \"sealedKey\" from patients as p\n  where p.clinic_id = :clinicId\n    and p.id = :patientId",
+              "positionalSql": "select p.id, p.given_names AS \"givenNames\", p.notes, p._sync_sealed_key AS \"sealedKey\" from patients as p where p.clinic_id = ? and p.id = ?",
+              "relations": [
+                {
+                  "table": "patients",
+                  "start": 92,
+                  "end": 100,
+                  "alias": "p"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "clinicId",
+                  "type": "string",
+                  "input": "clinicId"
+                },
+                {
+                  "kind": "value",
+                  "name": "patientId",
+                  "type": "string",
+                  "input": "patientId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ],
+        "authority": {
+          "reads": {
+            "patients": [
+              "_sync_sealed_key",
+              "clinic_id",
+              "given_names",
+              "id",
+              "notes"
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "patientDisplay",
       "file": "patient-display.syql",
       "sourceSql": "select __syql_fts_1.__syql_fts_source_1 AS \"patientId\", display_name AS \"displayName\", display_order AS \"displayOrder\" from patient_display JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_patient_display) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = patient_display.rowid\n  where patient_display match :term\n  order by __syql_fts_1.__syql_fts_source_1",

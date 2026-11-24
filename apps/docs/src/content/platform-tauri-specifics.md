@@ -162,10 +162,16 @@ keyset pagination and bounded windows.
 ## Authority evidence before activation
 
 Declare the authority evidence as `authority query` declarations in your
-`.syql` files. An authority query is a `sync query` restricted to plain
-columns of schema tables: one statement, no dynamic sort, limit or conditional
-predicate, and no FTS. Choose only authority fields; clinical fields and
-credentials do not belong in it. `typegen` emits each one as a data-only
+`.syql` files. An authority query is a `sync query` over the columns of
+schema tables: one statement, no dynamic sort, limit or conditional predicate,
+and no FTS. It reads `string`, `integer`, `float`, `boolean`, `json` and
+`bytes` columns, encrypted or not, `_sync_version` and, on a table with an
+encrypted column, `_sync_sealed_key`. An encrypted column, a `bytes` column
+and `_sync_sealed_key` are protected: a query that reads one runs only after
+`activateSecurity`, and in preflight it fails with
+`client.security_preflight_required` and the details `{ query }`. A query over
+plain columns runs in preflight and while active, so keep clinical fields and
+credentials out of plain columns. `typegen` emits each one as a data-only
 declaration, `<name>Authority`, with its positional SQL, parameters, coverage
 entries and read set ([SYQL](/syql/#authority-query)).
 
@@ -221,7 +227,8 @@ let config = SyncularConfig {
 At `create` the native host prepares each declared statement under a SQLite
 authorizer and refuses it with `client.authority_read_forbidden` (details
 `{ query, reason: "ceiling", table, column }`) when the statement reads a
-column outside the ceiling. The check runs on the statement itself, so a
+column outside the ceiling. A protected column needs its ceiling entry like a
+plain one. The check runs on the statement itself, so a
 webview that understates the read set gains nothing. It prepares the
 statements on the replica `create` opens; a refused `create` leaves no client,
 and the next `create` opens the same file. A request naming an
@@ -243,11 +250,19 @@ On a client the Rust host created, the declarations come from the host's
 | `rows` | The statement's rows over the accepted base. |
 | `coverage` | One entry per table and unit: `table`, `base`, `unit`, and `state` (`complete`, `pending`, `missing` or `revoked`). |
 | `complete` | `true` when every coverage entry is `complete`. |
+| `intent` | Every row of the query's read tables with local intent, `{ table, rowId, kind }`, sorted by table and row id. |
 
 The statement reads each table's accepted base: the last state the server
 accepted, without pending, failed or protected ACK intent. A row created on
 the device and not yet accepted is absent, so it never makes a join or an
-aggregate positive. Rows are returned even while coverage is incomplete, and
+aggregate positive. `intent` names those rows at the same revision, including
+the ones the rows omit: a pending creation, a pending delete, and a row whose
+edit moves it out of the filter or the join. `kind` is `retained` for a row
+with a retained failure, `acknowledged` for a commit the server accepted whose
+row the pull has not delivered, and `pending` for outbox intent; a row with
+several entries takes the first of that order. A `bytes` column reads as a
+`Uint8Array` from the base, and `_sync_sealed_key AS sealed_key` names the
+missing key of a sealed row, whose encrypted columns read NULL. Rows are returned even while coverage is incomplete, and
 they are never evidence until `complete` is `true`. `pending` asks the host to
 wait for a bootstrap, `missing` to register the unit, and `revoked` reports
 lost access. A complete negative is `complete: true` with rows that say no

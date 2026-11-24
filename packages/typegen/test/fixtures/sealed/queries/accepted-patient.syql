@@ -1,0 +1,6 @@
+authority query acceptedPatient(clinicId, patientId) {
+  select p.id, p.given_names, p.notes, p._sync_sealed_key as sealed_key
+  from patients as p
+  where p.clinic_id = :clinicId
+    and p.id = :patientId;
+}

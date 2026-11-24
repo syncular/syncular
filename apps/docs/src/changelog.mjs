@@ -17,6 +17,19 @@
 export const changelog = [
   {
     date: '2026-11-24',
+    title:
+      'Authority queries read protected columns while active and list every row with intent',
+    body: 'An `authority query` may now read encrypted columns, `bytes` columns and, on a table with an encrypted column, `_sync_sealed_key`. A request that reads one of those protected columns runs only while the security lifecycle is active and fails in preflight with `client.security_preflight_required`; queries over plain columns run in preflight as before. Every result carries `intent`: each row of its read tables with pending, retained or acknowledged-but-not-pulled intent, at the same revision as the rows, including pending creations, pending deletes and rows an edit moves out of the filter. The accepted base of a retained or acknowledged row also keeps its sealed state, which a reveal opens with the visible rows.',
+    links: [
+      {
+        href: '/platform-tauri-specifics/#authority-evidence-before-activation',
+        label: 'Authority evidence before activation',
+      },
+      { href: '/syql/#authority-query', label: 'authority query' },
+    ],
+  },
+  {
+    date: '2026-11-24',
     title: 'A local purge sends the units over its rows back to catching up',
     body: '`purgeLocalData` removed rows but left the units that held them at their cursors, so their query coverage stayed complete over rows the replica no longer had and the next sync never downloaded them again. 0.105.13 moves every unit that held a purged row back to catching up in the purge transaction; its coverage reports pending until the next authorized sync refills it, and other units keep their cursors and rows. The first open of a replica purged by an older build moves the units over every purged table back once.',
     links: [

@@ -570,7 +570,12 @@ restrictions:
 - The query has no dynamic sort, no dynamic limit and no conditional
   predicate, so it lowers to exactly one statement.
 - Every column the statement reads, in any clause, is a `string`, `integer`,
-  `float`, `boolean` or `json` column without encryption, or `_sync_version`.
+  `float`, `boolean`, `json` or `bytes` column, encrypted or not,
+  `_sync_version`, or `_sync_sealed_key` on a table with an encrypted column.
+  `blob_ref` and `crdt` columns are refused. An encrypted column, a `bytes`
+  column and `_sync_sealed_key` are protected columns: the client runs a
+  query that reads one only while its security lifecycle is active
+  (SPEC.md §5.11).
 - Every parameter is a scalar value parameter of type `string`, `integer`,
   `float`, `bool` or `json`, optionally `| null`.
 

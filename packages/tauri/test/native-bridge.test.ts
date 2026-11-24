@@ -1721,6 +1721,7 @@ test.skipIf(!available)(
               },
             ],
             complete: true,
+            intent: [],
           },
         ],
       });

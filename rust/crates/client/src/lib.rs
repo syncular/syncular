@@ -72,7 +72,7 @@ pub(crate) fn wall_clock_ms() -> i64 {
 
 pub use api::{
     creation_time_bucket, last, AppliedServerCommit, AppliedServerCommitSource, AuthorityCoverage,
-    AuthorityCoverageState, AuthorityParam, AuthorityQuery, AuthorityQueryResult,
+    AuthorityCoverageState, AuthorityIntent, AuthorityParam, AuthorityQuery, AuthorityQueryResult,
     AuthorityReadResult, AuthorityResultColumn, ClientChangeBatch, ClientDiagnosticsHost,
     ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsSchema,
     ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects,

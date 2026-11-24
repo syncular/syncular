@@ -20,6 +20,7 @@ import {
   toSqlValue,
 } from './schema';
 import type { RowValue } from '@syncular/core';
+import type { SealedRow } from './encryption';
 import type { RetainedCommitRow } from './outcomes';
 import {
   listOutboxBeforeImages,
@@ -33,10 +34,14 @@ const SET_UNIQUE_CONFLICTS = `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHE
 
 export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   db.exec(
-    `CREATE TABLE IF NOT EXISTS ${RETAINED_ROWS}(commit_id TEXT NOT NULL,idx INTEGER NOT NULL,tbl TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,op TEXT NOT NULL,intent TEXT,base TEXT,version INTEGER,unique_conflicts TEXT,commit_seq INTEGER,PRIMARY KEY(commit_id,idx))`,
+    `CREATE TABLE IF NOT EXISTS ${RETAINED_ROWS}(commit_id TEXT NOT NULL,idx INTEGER NOT NULL,tbl TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,op TEXT NOT NULL,intent TEXT,base TEXT,version INTEGER,unique_conflicts TEXT,commit_seq INTEGER,sealed TEXT,PRIMARY KEY(commit_id,idx))`,
   );
   const columns = db.query(`PRAGMA table_info(${RETAINED_ROWS})`);
-  for (const column of ['unique_conflicts TEXT', 'commit_seq INTEGER'])
+  for (const column of [
+    'unique_conflicts TEXT',
+    'commit_seq INTEGER',
+    'sealed TEXT',
+  ])
     if (!columns.some((row) => row.name === column.split(' ')[0]))
       db.exec(`ALTER TABLE ${RETAINED_ROWS} ADD COLUMN ${column}`);
   db.exec(
@@ -46,7 +51,8 @@ export function ensureFailedOverlaySchema(db: ClientDatabase): void {
 
 /**
  * Server writes, after they are stored: each `written` row replaces the base
- * of its key's retained rows (`undefined`: deleted), and the table's retained
+ * and the §5.11 sealed state of its key's retained rows (`undefined`:
+ * deleted), and the table's retained
  * intents re-read their unique conflicts with the written keys. A written row
  * without a retained row costs no statement.
  */
@@ -55,7 +61,7 @@ export function retainedBaseWrite(
   table: CompiledClientTable,
   written: ReadonlyMap<
     string,
-    readonly [readonly RowValue[], number] | undefined
+    readonly [readonly RowValue[], number, (SealedRow | undefined)?] | undefined
   >,
 ): void {
   if (!written.size) return;
@@ -65,20 +71,24 @@ export function retainedBaseWrite(
   )) {
     const base = written.get(retained.id as string);
     if (written.has(retained.id as string))
-      db.exec(`UPDATE ${RETAINED_ROWS} SET base=?,version=? WHERE rowid=?`, [
-        base
-          ? JSON.stringify(
-              Object.fromEntries(
-                table.columns.map((column, index) => [
-                  column.name,
-                  rowValueToJson(base[0][index] ?? null),
-                ]),
-              ),
-            )
-          : null,
-        base?.[1] ?? null,
-        retained.r as number,
-      ]);
+      db.exec(
+        `UPDATE ${RETAINED_ROWS} SET base=?,version=?,sealed=? WHERE rowid=?`,
+        [
+          base
+            ? JSON.stringify(
+                Object.fromEntries(
+                  table.columns.map((column, index) => [
+                    column.name,
+                    rowValueToJson(base[0][index] ?? null),
+                  ]),
+                ),
+              )
+            : null,
+          base?.[1] ?? null,
+          base?.[2] ? JSON.stringify(base[2]) : null,
+          retained.r as number,
+        ],
+      );
     if (!hasUniqueIndex(table) || retained.commit_seq !== null) continue;
     const prior: readonly (Omit<
       NonNullable<RetainedCommitRow['uniqueConflicts']>[number],
@@ -198,7 +208,7 @@ function retainedRows(
   // the columns line up with the table's fixed order, pinned by
   // unique-pull.test.ts "retained-row columns keep the order".
   return db.query(
-    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=k.value->>0 AND r.id=k.value->>1 UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=k.value->>0))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`}${pending ? ` UNION ALL SELECT NULL,NULL,op_index,tbl,row_id,seq,NULL,NULL,values_json,sync_version,NULL,9e18 FROM ${OUTBOX_IMAGES} JOIN ${OUTBOX_TABLE} USING(client_commit_id)WHERE tbl IN(SELECT value->>0 FROM json_each(?1) WHERE json_array_length(value)=1)` : ''} ORDER BY commit_seq,at,commit_id,idx`,
+    `SELECT rowid AS r,* FROM ${RETAINED_ROWS} WHERE (?1 IS NULL OR rowid IN(SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON r.tbl=k.value->>0 AND r.id=k.value->>1 UNION SELECT r.rowid FROM json_each(?1) k JOIN ${RETAINED_ROWS} r ON json_array_length(k.value)=1 AND r.tbl=k.value->>0))${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`}${pending ? ` UNION ALL SELECT NULL,NULL,op_index,tbl,row_id,seq,NULL,NULL,values_json,sync_version,NULL,9e18,NULL FROM ${OUTBOX_IMAGES} JOIN ${OUTBOX_TABLE} USING(client_commit_id)WHERE tbl IN(SELECT value->>0 FROM json_each(?1) WHERE json_array_length(value)=1)` : ''} ORDER BY commit_seq,at,commit_id,idx`,
     [scope ? JSON.stringify(scope) : null],
   );
 }
@@ -238,6 +248,7 @@ export function restoreFailedBases(
           jsonToRowValue(values[column.name] ?? null),
         ),
         (row.version ?? -1) as number,
+        row.sealed ? JSON.parse(String(row.sealed)) : undefined,
       );
     }
   }

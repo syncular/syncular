@@ -562,6 +562,7 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
         },
       ],
       complete: false,
+      intent: [],
     },
   ]);
   await expectRejectsWithCode(

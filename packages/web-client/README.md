@@ -954,16 +954,20 @@ Import `defineAuthorityReads` from `@syncular/client/authority` and pass
 `authorityReads: defineAuthorityReads([centreWrapCoverAuthority])` at creation.
 Each entry is a generated `authority query` declaration (`AuthorityQuery`,
 SYQL.md §13.3); the client refuses a declaration whose read set names an
-internal, encrypted, `bytes`, `blob_ref` or `crdt` column with
-`client.authority_read_forbidden` and the details `{ query, reason, table?,
-column? }`.
+internal, `blob_ref` or `crdt` column with `client.authority_read_forbidden`
+and the details `{ query, reason, table?, column? }`. Encrypted columns,
+`bytes` columns and `_sync_sealed_key` are protected columns.
 
 `authorityRead([{ query, params }])` runs the declared queries in one SQLite
-read transaction, including during security preflight, and returns
-`{ revision, results }`. Each result holds the raw SQL `rows`, one
-`coverage` entry per table and unit (`complete`, `pending`, `missing` or
-`revoked`) and `complete`. The queries read accepted bases: a pending local
-creation is absent and a pending edit reads the value the server accepted. A
+read transaction and returns `{ revision, results }`. A query over plain
+columns runs during security preflight too; a query that reads a protected
+column fails in preflight with `client.security_preflight_required` and the
+details `{ query }`. Each result holds the raw SQL `rows`, one `coverage`
+entry per table and unit (`complete`, `pending`, `missing` or `revoked`),
+`complete` and `intent`, every row of the read tables with local intent as
+`{ table, rowId, kind }`. The queries read accepted bases: a pending local
+creation is absent from `rows` and listed in `intent`, and a pending edit
+reads the value the server accepted. A
 row answer is evidence only while `complete` is true. The read changes no
 keys, transport, units or lifecycle. See the
 [authority contract](../../docs/SPEC.md) and

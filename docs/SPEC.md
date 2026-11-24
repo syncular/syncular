@@ -4813,17 +4813,26 @@ with `createTauriAuthoritySyncClient` from `@syncular/tauri/authority`.
 At creation the client checks every declaration and fails with
 `client.authority_read_forbidden`, with the details `{ query, reason }` and,
 where one applies, `table` and `column`, when a name repeats, when the read
-set names an unknown table or column, an internal name, or a column that is
-encrypted or of type `bytes`, `blob_ref` or `crdt` (`reason: "column"`), when
-a parameter is not a plain scalar (`reason: "param"`), or when the declaration
-is otherwise malformed (`reason: "shape"`). Applications MUST declare only
-authority columns, excluding clinical data and credentials. Tauri
+set names an unknown table or column, an internal name, a column of type
+`blob_ref` or `crdt`, or `_sync_sealed_key` on a table without an encrypted
+column (`reason: "column"`), when a parameter is not a plain scalar
+(`reason: "param"`), or when the declaration is otherwise malformed
+(`reason: "shape"`). The read set MAY name `_sync_version`, and on a table
+with an encrypted column `_sync_sealed_key`, which is non-NULL while the row
+is sealed under a key the keyring does not hold. An encrypted column, a
+`bytes` column and `_sync_sealed_key` are protected columns; every other
+readable column is a plain column. A request whose query reads a protected
+column runs only while the lifecycle is active, so a preflight read sees plain
+columns only; applications MUST keep clinical data and credentials out of
+plain columns. Tauri
 additionally requires a Rust-host `SyncularConfig.authority_columns` ceiling,
 and the native host does not trust the webview's read set: at `create` it
 prepares each authored statement on the replica connection it opens, under a
 SQLite authorizer, and refuses the declaration with `reason: "ceiling"` when any read
 names a table or column outside the ceiling, or when the statement performs
 any action other than `SELECT`, a read, or a deterministic core function. A
+protected column is subject to the ceiling like a plain one: the ceiling MUST
+name every protected column a declaration reads. A
 refused `create` leaves no client; the opened file stays a valid replica for
 the next `create`. The
 declared set is fixed at creation; a read MUST NOT redefine or extend it.
@@ -4851,7 +4860,8 @@ client fails with `sync.invalid_request`.
 `authorityRead(requests)` runs one or more declared queries in one SQLite read
 transaction. Each request is `{ query, params }`. The result is
 `{ revision, results }`, where `revision` is the `localRevision` of that
-transaction and each result is `{ query, rows, coverage, complete }`. A host
+transaction and each result is `{ query, rows, coverage, complete, intent }`.
+A host
 that needs several authority facts reads them in one call and MUST NOT compose
 them from separate reads. A request naming an undeclared query fails with
 `client.authority_query_unknown` and the details `{ query }`. A missing, extra
@@ -4872,10 +4882,26 @@ The client presents the base to the authored SQL by shadowing each read table
 that holds intent or retained entries with a common table expression of the
 same name, which selects the table's rows without intent from `main."<table>"`
 and the base of every row with intent from the stored base JSON; booleans read
-as `0` and `1`. A table without intent or retained entries is read directly.
+as `0` and `1`, and a `bytes` column (by its local type, so an encrypted
+column reads its declared type) decodes the base's `{ "$bytes": hex }` with
+`unhex(json_extract(value,'$[i]."$bytes"'))`. The base carries the row's
+`_sync_sealed_key`; a pending before-image never belongs to a sealed row,
+whose writes are refused, so its marker reads NULL. A table without intent or
+retained entries is read directly.
 Both cores build the same SQL text. The expression selects only the read-set
 columns of its table, its primary key and `_sync_version`. Missing or corrupt
 revision or base evidence MUST fail with `sync.local_corrupt`.
+
+**Intent.** `intent` lists, at the same revision, every row of every read
+table of the query that holds a retained, acknowledged or pending entry, as
+`{ table, rowId, kind }` sorted by table and then row id in UTF-16 code-unit
+order. It includes rows the result omits: a pending creation absent from the
+accepted base, a pending delete, and a row whose intent changes its filter or
+join membership, so a filter or a join never hides a new identifier or a
+pending delete. `kind` follows the base precedence: `retained` when the row
+has a retained entry, otherwise `acknowledged` when it has an acknowledged
+entry whose row the pull has not delivered, otherwise `pending`. A query
+whose read tables hold no intent has `intent: []`.
 
 **Coverage.** For each request the client evaluates every coverage entry of
 the declaration with the request's parameters and classifies each unit in the
@@ -4892,8 +4918,13 @@ authority pins; the SDK MUST NOT infer application authorization from
 completeness.
 
 The read MUST NOT write, register a unit, install keys, open transport,
-or change lifecycle. It runs in preflight and while active, and
-`client.security_preflight_required` never applies to it. Native reads run on
+or change lifecycle. A request whose query reads only plain columns runs in
+preflight and while active. While the lifecycle is in preflight, a request
+whose query reads a protected column fails the whole call with
+`client.security_preflight_required` and the details `{ query }`; the client
+checks the lifecycle inside the read transaction on the serialized owner, so
+`beginSecurityPreflight` and every lock that enters preflight close protected
+reads before the next read runs. Native reads run on
 the serialized owner and MUST observe lock, purge, replacement and shutdown
 ordering. A closed native command returns `client.closed`; a bridge MUST
 discard a reply racing its local close. Ordinary query and write gates remain
@@ -4969,7 +5000,10 @@ keys the keyring now holds is decrypted from `_sync_sealed` into its columns,
 both reserved columns are cleared, and the change publishes one revision per
 table. A reveal that hits `client.decrypt_failed` fails the round (or the
 `addEncryptionKeys` call). A later
-delivery of the row replaces its sealed state like any other upsert.
+delivery of the row replaces its sealed state like any other upsert. The
+accepted base of a row with a retained or acknowledged entry (§7.2) keeps the
+sealed state of the delivery that wrote it: restoring that base restores the
+sealed state, and the reveal opens it with the visible rows.
 
 A sealed row is read-only on the device: `mutate`, `patch` and delete of a
 sealed row fail at once with `client.encryption_key_missing` and the details

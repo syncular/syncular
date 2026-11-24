@@ -872,24 +872,29 @@ class Validator {
     const reads = new Map<string, Set<string>>(
       relations.tables.map((ref) => [ref.table, new Set<string>()]),
     );
+    // §5.11: encrypted, bytes and sealed-key columns are protected reads
+    // that run only while the security lifecycle is active.
     const read = (table: string, name: string, subject: string): void => {
-      const column =
-        name === '_sync_version'
-          ? undefined
-          : this.#ir.tables
-              .find((candidate) => candidate.name === table)
-              ?.columns.find(
-                (candidate) => candidate.name.toLowerCase() === name,
-              );
+      const columns = this.#ir.tables.find(
+        (candidate) => candidate.name === table,
+      )?.columns;
+      const column = columns?.find(
+        (candidate) => candidate.name.toLowerCase() === name,
+      );
       if (
         name !== '_sync_version' &&
+        !(
+          name === '_sync_sealed_key' &&
+          columns?.some((candidate) => candidate.encrypted === true)
+        ) &&
         (column === undefined ||
-          column.encrypted === true ||
-          !AUTHORITY_TYPES.has(column.type))
+          ![...AUTHORITY_TYPES, 'bytes'].includes(
+            column.declaredType ?? column.type,
+          ))
       ) {
         fail(
           subjectSpan(subject),
-          `authority query reads ${table}.${name}; every read column must be a string, integer, float, boolean or json column without encryption, or _sync_version`,
+          `authority query reads ${table}.${name}; every read column must be a string, integer, float, boolean, json or bytes column, _sync_version, or _sync_sealed_key on a table with an encrypted column`,
         );
       }
       reads.get(table)?.add(column?.name ?? name);
