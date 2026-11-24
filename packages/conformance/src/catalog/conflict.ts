@@ -624,7 +624,21 @@ export const conflictScenarios: readonly Scenario[] = [
             'the retained row names the delivered server row',
           );
           await a.api.resolveCommitOutcome(late!, 'resolved_keep_server');
+          checkEqual(
+            (await a.api.commitOutcomes()).find(
+              (row) => row.clientCommitId === late,
+            )?.resolution,
+            'resolved_keep_server',
+            'keep-server resolves the retained edit',
+          );
         }
+        checkEqual(
+          (await a.api.commitOutcomes())
+            .filter((row) => row.resolution === 'active')
+            .flatMap((row) => row.retainedRows ?? []),
+          [],
+          'no failed overlay remains',
+        );
         checkEqual(
           (await a.api.readRows('tasks')).map((row) => [
             row.rowId,

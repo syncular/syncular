@@ -131,3 +131,93 @@ for (const subscriptions of [0, 2, 6, 12]) {
     }
   });
 }
+
+// §7.1: the acknowledgement of `early` is lost; a pull delivers its change
+// (v2) and B's later write (v3) before the resent commit drains as `cached`.
+// `trailing` makes B write again (v4) so that COMMIT lands in the response
+// right after the acknowledgements.
+for (const variant of ['single', 'rollback', 'retained'] as const)
+  for (const trailing of [false, true])
+    test(`a cached ACK after delivery restores the delivered row (${variant}${trailing ? ', trailing COMMIT' : ''})`, async () => {
+      const server = makeServer();
+      const a = await makeClient(server, {
+        clientId: 'a',
+        retainFailedCommits: variant === 'retained',
+      });
+      const b = await makeClient(server, { clientId: 'b' });
+      const title = () =>
+        a.db.query('SELECT title, _sync_version AS v FROM tasks');
+      const failedRows = () =>
+        a.db.query('SELECT count(*) AS n FROM _syncular_failed_rows')[0]?.n;
+      try {
+        a.client.subscribe({ project_id: 'p1' });
+        b.client.subscribe({ project_id: 'p1' });
+        a.client.mutate([
+          { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+        ]);
+        await a.client.syncUntilIdle();
+        await b.client.syncUntilIdle();
+
+        const early = a.client.patch('tasks', 't1', { title: 'early' });
+        a.faults.dropResponseOnce = true;
+        await expect(a.client.sync()).rejects.toThrow('transport round failed');
+        a.client.setTransportGate('pull');
+        const late =
+          variant === 'single'
+            ? undefined
+            : a.client.patch(
+                'tasks',
+                't1',
+                { title: 'late' },
+                { baseVersion: 1 },
+              );
+        await b.client.syncUntilIdle();
+        b.client.patch('tasks', 't1', { title: 'winner' });
+        await b.client.syncUntilIdle();
+        await a.client.syncUntilIdle();
+        if (trailing) {
+          b.client.patch('tasks', 't1', { title: 'winner-2' });
+          await b.client.syncUntilIdle();
+        }
+        const winner = trailing
+          ? { title: 'winner-2', v: 4 }
+          : { title: 'winner', v: 3 };
+
+        a.client.setTransportGate('open');
+        const report = await a.client.sync();
+        expect(report.applied).toEqual([early]);
+        expect(report.rejected).toEqual(late === undefined ? [] : [late]);
+        await a.client.syncUntilIdle();
+        expect(a.client.pendingCommits()).toEqual([]);
+        expect(title()).toEqual([
+          variant === 'retained' ? { title: 'late', v: winner.v } : winner,
+        ]);
+        if (variant === 'retained') {
+          expect(failedRows()).toBe(1);
+          expect(
+            a.client
+              .commitOutcomes()
+              .find((outcome) => outcome.clientCommitId === late)
+              ?.retainedRows?.map((row) => [
+                row.serverRow?.title,
+                row.serverVersion,
+              ]),
+          ).toEqual([[winner.title, winner.v]]);
+          expect(
+            a.client.resolveCommitOutcome({
+              clientCommitId: late!,
+              resolution: 'resolved_keep_server',
+            }).resolution,
+          ).toBe('resolved_keep_server');
+          await a.client.syncUntilIdle();
+          expect(title()).toEqual([winner]);
+        }
+        expect(failedRows()).toBe(0);
+      } finally {
+        await a.client.close();
+        await b.client.close();
+        a.db.close();
+        b.db.close();
+        server.storage.db.close();
+      }
+    });
