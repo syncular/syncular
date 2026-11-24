@@ -1,5 +1,28 @@
 # Syncular release notes
 
+## 0.106.1 release notes
+
+The TypeScript client left a drained commit's local values in a row for good
+when a pull or realtime delta delivered the commit's change, and a newer write
+to the same row, before the commit's `applied` or `cached` acknowledgement
+arrived. This happens when the acknowledgement is lost and the commit is
+resent after a pull. The drain kept no acknowledged intent for the delivered
+row, but it also never removed the commit's layer, so the row showed the
+commit's values at the newer version until another write. A later pending edit
+of the row took those values as its before-image: a rejection without
+`retainFailedCommits` rolled the row back to them, and with
+`retainFailedCommits` the retained `serverRow` named them and
+`resolved_keep_server` restored them. The acknowledgement now returns the row
+to the delivered server row, re-takes the before-images of later pending
+commits on it and replays them, in the transaction that drains the commit. An
+acknowledgement whose rows were not delivered yet still reconciles nothing
+(SYNCULAR-ACK-ALREADY-DELIVERED-OVERLAY-001; SPEC §7.1). The Rust core rebuilds
+drained rows from its server base and was not affected; the conformance
+scenarios `conflict/ack-after-delivery-restores-the-delivered-row-*` now hold
+both cores to it.
+
+Upgrading: no API or schema change.
+
 ## 0.106.0 release notes
 
 An `authority query` may read encrypted columns, `bytes` columns and, on a

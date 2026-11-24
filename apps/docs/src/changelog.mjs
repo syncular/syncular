@@ -18,6 +18,18 @@ export const changelog = [
   {
     date: '2026-11-24',
     title:
+      'An acknowledgement after the row was delivered returns the row to the server',
+    body: "When a pull or realtime delta delivered a commit's change and a newer write to the same row before the commit's `applied` or `cached` acknowledgement arrived, the TypeScript client drained the commit but left its local values in the row for good. A later pending edit of the row then rolled back, or resolved with `resolved_keep_server`, to those stale values. The acknowledgement now returns the row to the delivered server row and replays later pending commits over it. The Rust core already rebuilt the row from its server base.",
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#acknowledgement-and-replay',
+        label: 'Acknowledgement and replay',
+      },
+    ],
+  },
+  {
+    date: '2026-11-24',
+    title:
       'A pending write over a row that arrives sealed keeps the row sealed',
     body: "When a row arrived sealed under a key the device lacks while a write to it was still pending, the TypeScript client failed the sync round with `sync.local_corrupt` on a `NOT NULL` encrypted column, and both cores otherwise dropped the row's `_sync_sealed_key`, so it read unsealed and accepted writes. 0.106.0 keeps the row sealed, shows the pending write's plain columns over it, and leaves its encrypted columns NULL until the key arrives.",
     links: [

@@ -18,7 +18,7 @@ import {
   responsePushResults,
 } from '../raw';
 import type { Scenario, ScenarioContext } from '../scenario';
-import { expectConverged, seedRows, syncIdle, syncOk } from './util';
+import { expectConverged, seedRows, syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
@@ -551,6 +551,97 @@ export const conflictScenarios: readonly Scenario[] = [
       });
     },
   },
+
+  // §7.1: A's acknowledgement of `early` is lost, and a pull delivers its
+  // change and B's later write before the `cached` acknowledgement arrives.
+  // Draining `early` removes its layer from the delivered row; a later
+  // pending edit rolls back, or resolves, to B's write.
+  ...(['single', 'rollback', 'retained'] as const).map(
+    (variant): Scenario => ({
+      name: `conflict/ack-after-delivery-restores-the-delivered-row-${variant}`,
+      specRefs: ['§7.1', '§7.2'],
+      async run(ctx) {
+        const a = await ctx.newClient({
+          actorId: 'actor-a',
+          clientId: `ack-delivered-a-${variant}`,
+          allowed: P1,
+          retainFailedCommits: variant === 'retained',
+        });
+        await a.api.subscribe(U1);
+        await a.api.mutate([
+          { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'initial') },
+        ]);
+        await syncIdle(a);
+        const b = await bootstrapped(
+          ctx,
+          'actor-b',
+          `ack-delivered-b-${variant}`,
+        );
+
+        const early = await a.api.patch('tasks', 't1', { title: 'early' }, 1);
+        a.faults.dropNextResponses = 1;
+        await syncFails(a, 'transport.lost', 'the acknowledgement is lost');
+        await a.api.setTransportGate('pull');
+        const late =
+          variant === 'single'
+            ? undefined
+            : await a.api.patch('tasks', 't1', { title: 'late' }, 1);
+        await syncIdle(b);
+        await b.api.patch('tasks', 't1', { title: 'winner' }, 2);
+        await syncIdle(b);
+        await syncIdle(a);
+        checkEqual(
+          await a.api.pendingCommitIds(),
+          late === undefined ? [early] : [early, late],
+          'the pull holds the outbox',
+        );
+
+        await a.api.setTransportGate('open');
+        const report = await syncIdle(a);
+        check(
+          report.applied.includes(early),
+          'the resent commit drains as cached',
+        );
+        checkEqual(await a.api.pendingCommitIds(), [], 'nothing stays pending');
+        if (late !== undefined) {
+          checkEqual(
+            (await a.api.commitOutcomes()).find(
+              (row) => row.clientCommitId === late,
+            )?.status,
+            'conflict',
+            'the later edit conflicts with the winner',
+          );
+        }
+        if (variant === 'retained') {
+          checkEqual(
+            (await a.api.commitOutcomes())
+              .find((row) => row.clientCommitId === late)
+              ?.retainedRows?.map((row) => [
+                row.serverRow?.title,
+                row.serverVersion,
+              ]),
+            [['winner', 3]],
+            'the retained row names the delivered server row',
+          );
+          await a.api.resolveCommitOutcome(late!, 'resolved_keep_server');
+        }
+        checkEqual(
+          (await a.api.readRows('tasks')).map((row) => [
+            row.rowId,
+            row.values.title,
+            row.version,
+          ]),
+          [['t1', 'winner', 3]],
+          'the replica holds the delivered row',
+        );
+        await syncIdle(a);
+        await expectConverged(ctx, 'tasks', [a, b], {
+          variable: 'project_id',
+          values: ['p1'],
+        });
+      },
+    }),
+  ),
 
   // §7.2: a rollback rebuilds the row from the last server-delivered base.
   // B queues an unrelated commit and then its edit of t1; A's write of t1

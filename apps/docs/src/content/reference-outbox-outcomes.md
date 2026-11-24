@@ -142,6 +142,7 @@ An `applied` or `cached` acknowledgement confirms server acceptance and removes 
 |---|---|
 | Acknowledgement | Schedules a following pull, even when realtime sends no notification to the originating client. |
 | Row delivery | Delivery and overlay reconciliation share one local transaction. |
+| Row delivery before the acknowledgement | A change at the commit's sequence or later already holds the commit, so the acknowledgement keeps no intent for that row. The row returns to the delivered row, and later pending commits replay over it. |
 | Revocation or security purge | Removes the affected aggregates. |
 | Window eviction | Removes the evicted row's intent. |
 | Unrelated bootstrap, including an empty one | Does not rewrite acknowledged rows or decode their protected operations. |

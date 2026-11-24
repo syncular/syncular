@@ -6540,12 +6540,34 @@ export class SyncClient {
     // already drained it. Its recorded outcome stands, and skipping keeps the
     // cached outbox count exact (a drain may only be counted once).
     if (!this.#outboxCommitExists(frame.clientCommitId)) return false;
+    const rebase = () =>
+      this.#db.transaction(() => {
+        this.#rollbackFailedCommit(commit, batch);
+        // §7.2: rebasing reaches rows the same-row replay inside
+        // `#rollbackFailedCommit` cannot: peers of a secondary UNIQUE index
+        // (table-wide scope), later commits over legacy before-images, and
+        // acknowledged intent on the commit's rows.
+        this.#replayOutbox(
+          commit.operations.flatMap((operation) => {
+            const table = this.#schema.tables.get(operation.table);
+            return table === undefined
+              ? []
+              : [
+                  JSON.stringify(
+                    hasUniqueIndex(table)
+                      ? [operation.table]
+                      : [operation.table, operation.rowId],
+                  ),
+                ];
+          }),
+        );
+      });
     if (frame.status === 'applied' || frame.status === 'cached') {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
       if (frame.commitSeq === undefined)
         throw invalidHostResponse('ACK lacks a commit sequence');
-      retainFailedRows(this.#db, commit, frame.commitSeq);
+      const delivered = retainFailedRows(this.#db, commit, frame.commitSeq);
       this.#setSyncNeeded(true);
       recordCommitOutcome(this.#db, {
         clientCommitId: frame.clientCommitId,
@@ -6556,7 +6578,11 @@ export class SyncClient {
           opIndex: result.opIndex,
         })),
       });
-      deleteOutboxCommit(this.#db, frame.clientCommitId);
+      // §7.1: a delivery at or after the commit's sequence already holds
+      // its effect, so its layer leaves those rows like a rejected one. An
+      // ACK with nothing delivered reconciles nothing and stays zero-work.
+      if (delivered) rebase();
+      else deleteOutboxCommit(this.#db, frame.clientCommitId);
       batch.status();
       batch.outcomes();
       summary.applied.push(frame.clientCommitId);
@@ -6637,28 +6663,8 @@ export class SyncClient {
     // §7.2: remove the rejected optimistic layer. Before-images restore
     // validator-rejected updates even when the server emitted no new COMMIT;
     // later pending overlays are then replayed with rebased before-images.
-    this.#db.transaction(() => {
-      if (this.#retainFailedCommits) retainFailedRows(this.#db, commit);
-      this.#rollbackFailedCommit(commit, batch);
-      // §7.2: rebasing a rejection reaches rows the same-row replay inside
-      // `#rollbackFailedCommit` cannot: peers of a secondary UNIQUE index
-      // (table-wide scope) and later commits over legacy before-images.
-      // ACK-only groups reconcile nothing and stay zero-work.
-      this.#replayOutbox(
-        commit.operations.flatMap((operation) => {
-          const table = this.#schema.tables.get(operation.table);
-          return table === undefined
-            ? []
-            : [
-                JSON.stringify(
-                  hasUniqueIndex(table)
-                    ? [operation.table]
-                    : [operation.table, operation.rowId],
-                ),
-              ];
-        }),
-      );
-    });
+    if (this.#retainFailedCommits) retainFailedRows(this.#db, commit);
+    rebase();
     batch.status();
     summary.rejected.push(frame.clientCommitId);
     return true;

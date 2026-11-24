@@ -6456,6 +6456,11 @@ documents: a JSON boolean for a `boolean` column.
   replay that intent until an authoritative change for the same row has a
   `commitSeq` at least equal to the acknowledgement's `commitSeq`, or a
   completed bootstrap covers that row's scope at that sequence or later.
+  A change for the row that the client applied before the acknowledgement,
+  at the acknowledgement's `commitSeq` or later, already holds the commit's
+  effect: the drain records no acknowledged intent for that row, returns it
+  to the delivered row, re-takes the before-images of later pending commits
+  on it and replays them, in the transaction that drains the commit.
   An empty live section and its cursor do not prove row delivery.
   Whole-replica schema, log-epoch and authorized rebootstrap resets discard
   acknowledged intent with the replicated data; only pending outbox intent

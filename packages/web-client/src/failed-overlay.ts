@@ -130,12 +130,15 @@ export function retainFailedRows(
   db: ClientDatabase,
   commit: OutboxCommit,
   commitSeq?: number,
-): void {
+): boolean {
   const images = listOutboxBeforeImages(db, commit.clientCommitId);
+  let delivered = false;
   for (const [index, operation] of commit.operations.entries()) {
     const image = images.get(index);
-    if (commitSeq !== undefined && (image?.deliverySeq ?? -1) >= commitSeq)
+    if (commitSeq !== undefined && (image?.deliverySeq ?? -1) >= commitSeq) {
+      delivered = true;
       continue;
+    }
     const initial =
       operation.op === 'upsert'
         ? { ...image?.values, ...operation.values }
@@ -157,6 +160,7 @@ export function retainFailedRows(
       ],
     );
   }
+  return delivered;
 }
 
 /** Match declared keys through SQLite, preserving index affinity and NULL semantics. */
