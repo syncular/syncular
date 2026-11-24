@@ -7,7 +7,7 @@ up with cursor `-1`, in the purge transaction, in both cores. Before, the
 purge deleted the rows and left the unit at its cursor, so the unit's query
 coverage stayed `complete` over rows the replica no longer had, and after
 fresh authorization the server held the rows while the device had none and
-never asked for them again. A web app reported it after a key-loss purge of
+never asked for them again. An app reported it after a key-loss purge of
 one table during security preflight (SYNCULAR-PURGE-UNIT-REFILL-001; SPEC
 §7.3.4, the §3.3 rule for a revoked scope that turns active again). The purge
 itself sends no request: the unit bootstraps on the next authorized round,
