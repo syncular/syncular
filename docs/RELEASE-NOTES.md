@@ -21,7 +21,7 @@ drained rows from its server base and was not affected; the conformance
 scenarios `conflict/ack-after-delivery-restores-the-delivered-row-*` now hold
 both cores to it.
 
-Upgrading: no API or schema change.
+Upgrading: no API or schema change. A row an earlier version already left stale keeps those values until the server delivers that row again; 0.106.1 prevents new cases and repairs none.
 
 ## 0.106.0 release notes
 
