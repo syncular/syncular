@@ -2697,6 +2697,87 @@ impl SyncClient {
                     } else if client.get_meta(&repaired)?.is_none() {
                         client.set_meta(&repaired, "1")?;
                     }
+                    // §7.3.4: a purge before 0.105.13 left the units over its
+                    // rows at their cursors. The rows are gone, so once, every
+                    // unit that covers a recorded target's table catches up
+                    // from -1, unless a selector on a scope column names none
+                    // of the unit's effective values.
+                    let refill = format!("{PURGE_REPAIR_KEY}:refill");
+                    if client.get_meta(&refill)?.is_none() {
+                        let rows = client.stored(
+                            client
+                                .conn
+                                .prepare(
+                                    "SELECT m.key||' '||t.key, json_extract(t.value,'$.table'), s.key, v.value FROM _syncular_meta m, json_each(m.value) t, json_each(t.value,'$.selectors') s, json_each(s.value) v WHERE m.key LIKE 'localPurge:%' AND json_valid(m.value) AND json_type(m.value)='array' AND json_type(t.value)='object'",
+                                )
+                                .and_then(|mut statement| {
+                                    statement
+                                        .query_map([], |row| {
+                                            Ok((
+                                                row.get::<_, String>(0)?,
+                                                row.get::<_, String>(1)?,
+                                                row.get::<_, String>(2)?,
+                                                row.get::<_, String>(3)?,
+                                            ))
+                                        })?
+                                        .collect::<rusqlite::Result<Vec<_>>>()
+                                }),
+                        )?;
+                        let mut targets: BTreeMap<String, (String, BTreeMap<String, Vec<String>>)> =
+                            BTreeMap::new();
+                        for (target, table, column, value) in rows {
+                            targets
+                                .entry(target)
+                                .or_insert_with(|| (table, BTreeMap::new()))
+                                .1
+                                .entry(column)
+                                .or_default()
+                                .push(value);
+                        }
+                        for unit in client.stored(load_units(&client.conn))? {
+                            if unit.status == UnitStatus::Active
+                                && (unit.cursor != Some(-1) || unit.bootstrap_state.is_some())
+                                && targets.values().any(|(name, selectors)| {
+                                    let Some(table) = client.schema.table(name) else {
+                                        return false;
+                                    };
+                                    let Some(effective) = covers(table, &unit.scopes)
+                                        .then(|| {
+                                            pair_scopes(&unit.scopes, name, unit.echo.as_deref())
+                                        })
+                                        .flatten()
+                                    else {
+                                        return false;
+                                    };
+                                    table.scope_variables.iter().all(|scope| {
+                                        let held = effective
+                                            .iter()
+                                            .find(|(variable, _)| *variable == scope.variable);
+                                        match (selectors.get(&scope.column), held) {
+                                            (Some(values), Some((_, held))) => {
+                                                held.iter().any(|value| {
+                                                    value == "*" || values.contains(value)
+                                                })
+                                            }
+                                            _ => true,
+                                        }
+                                    })
+                                })
+                            {
+                                client.stored(save_unit(
+                                    &client.conn,
+                                    &UnitRecord {
+                                        cursor: Some(-1),
+                                        bootstrap_state: None,
+                                        seeded: Vec::new(),
+                                        restriction: None,
+                                        ..unit
+                                    },
+                                ))?;
+                            }
+                        }
+                        client.set_meta(&refill, "1")?;
+                    }
                     if !client.security_preflight {
                         client.drain_pending_evictions()?;
                     }
@@ -13261,6 +13342,72 @@ impl SyncClient {
                 batch.status = true;
                 batch.rejections = true;
                 batch.outcomes = true;
+            }
+
+            // §7.3.4: a unit whose cursor claims a purged row catches up from
+            // -1, the §3.3 rule for rows a purge removed (§4.5 C1).
+            for unit in self.stored(load_units(&self.conn))? {
+                if unit.status != UnitStatus::Active
+                    || (unit.cursor == Some(-1) && unit.bootstrap_state.is_none())
+                {
+                    continue;
+                }
+                let mut holds = false;
+                for target in &targets {
+                    let Some(table) = self.schema.table(&target.table) else {
+                        continue;
+                    };
+                    let Some((scope, scope_params)) = covers(table, &unit.scopes)
+                        .then(|| pair_scopes(&unit.scopes, &table.name, unit.echo.as_deref()))
+                        .flatten()
+                        .and_then(|effective| local_scope_predicate(table, &effective, &[]).ok().flatten())
+                    else {
+                        continue;
+                    };
+                    let clauses = target
+                        .selectors
+                        .iter()
+                        .map(|(column, values)| {
+                            format!("{} IN ({})", quote_ident(column), vec!["?"; values.len()].join(", "))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    let params = target
+                        .selectors
+                        .iter()
+                        .flat_map(|(_, values)| values.iter().cloned().map(SqlValue::Text))
+                        .chain(scope_params);
+                    holds = self
+                        .conn
+                        .query_row(
+                            &format!(
+                                "SELECT 1 FROM {} WHERE {clauses} AND {scope} LIMIT 1",
+                                base_table(&target.table)
+                            ),
+                            rusqlite::params_from_iter(params),
+                            |_| Ok(()),
+                        )
+                        .optional()
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+                        .is_some();
+                    if holds {
+                        break;
+                    }
+                }
+                if holds {
+                    self.record_unit_windows(&mut batch, &unit)?;
+                    batch.status = true;
+                    self.stored(save_unit(
+                        &self.conn,
+                        &UnitRecord {
+                            cursor: Some(-1),
+                            bootstrap_state: None,
+                            seeded: Vec::new(),
+                            restriction: None,
+                            ..unit
+                        },
+                    ))?;
+                }
             }
 
             for (table, ids) in &row_ids {

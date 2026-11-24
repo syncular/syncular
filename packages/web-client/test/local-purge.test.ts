@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { unitId } from '@syncular/core';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -625,5 +626,202 @@ describe('application-authorized local data purge', () => {
     );
     await local.client.close();
     local.db.close();
+  });
+});
+
+describe('local purge and the units over its rows', () => {
+  const BASE = { variable: 'project_id' };
+  type Local = Awaited<ReturnType<typeof makeClient>>;
+  const coverage = (client: Local['client']) =>
+    client.snapshotRead({
+      statements: [],
+      coverage: [{ table: 'tasks', base: BASE, units: ['p1', 'p3'] }],
+    }).coverage;
+  const ids = (db: Local['db']) => tableRows(db, 'tasks').map((row) => row.id);
+  const id = (project: string) => unitId({ project_id: project });
+
+  /** A file replica holding p1 (explicit and windowed), p2 (explicit), p3
+   * (windowed), a revoked p4 with a leftover row, and o1 over docs. */
+  async function seeded(name: string) {
+    const dir = mkdtempSync(join(tmpdir(), `syncular-${name}-`));
+    const databasePath = join(dir, 'client.db');
+    const server = makeServer();
+    server.allowed['actor-1'] = {
+      project_id: ['p1', 'p2', 'p3', 'p4'],
+      projectId: ['*'],
+      org_id: ['*'],
+    };
+    const writer = await makeClient(server, {
+      clientId: `${name}-writer`,
+      actorId: 'writer',
+    });
+    writer.client.mutate(
+      [
+        ['a1', 'p1', 'secret'],
+        ['a2', 'p1', 'plain'],
+        ['b2', 'p2', 'plain'],
+        ['c1', 'p3', 'plain'],
+        ['d4', 'p4', 'plain'],
+      ].map(([row, project, title]) => ({
+        table: 'tasks',
+        op: 'upsert' as const,
+        values: taskValues(row!, project!, title!),
+      })),
+    );
+    await writer.client.syncUntilIdle();
+    await writer.client.close();
+    writer.db.close();
+    const open = () => makeClient(server, { clientId: name, databasePath });
+    const local = await open();
+    local.client.subscribe({ project_id: 'p1' });
+    local.client.subscribe({ project_id: 'p2' });
+    local.client.subscribe({ project_id: 'p4' });
+    local.client.subscribe({ org_id: 'o1' });
+    await local.client.setWindow(BASE, ['p1', 'p3']);
+    await local.client.syncUntilIdle();
+    server.allowed['actor-1'] = {
+      project_id: ['p1', 'p2', 'p3'],
+      projectId: ['*'],
+      org_id: ['*'],
+    };
+    await local.client.syncUntilIdle();
+    expect(local.client.unit(id('p4'))?.status).toBe('revoked');
+    local.db.exec(
+      "INSERT INTO tasks(id,project_id,title,done) VALUES('s4','p4','secret',0)",
+    );
+    const offline = local.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('o1', 'p3', 'o') },
+    ]);
+    return { dir, server, open, local, offline };
+  }
+
+  test('rewinds exactly the units holding a purged row, durably, and refills them on an authorized round', async () => {
+    const { dir, open, local, offline } = await seeded('purge-refill');
+    // A released unit leaves no registration to rewind.
+    local.client.unsubscribe(id('p2'));
+    expect(local.client.unit(id('p2'))).toBeUndefined();
+    const held = {
+      p3: local.client.unit(id('p3')),
+      p4: local.client.unit(id('p4')),
+      o1: local.client.unit(unitId({ org_id: 'o1' })),
+    };
+    expect(local.client.unit(id('p1'))?.cursor).toBeUndefined();
+    expect(coverage(local.client).complete).toBe(true);
+    const windows: string[] = [];
+    local.client.onChange((change) => {
+      for (const window of change.windows) windows.push(...window.units);
+    });
+
+    expect(
+      local.client.purgeLocalData({
+        purgeId: 'purge-refill-001',
+        targets: [{ table: 'tasks', selectors: { title: ['secret'] } }],
+      }),
+    ).toEqual({ alreadyApplied: false, purgedRows: 2, droppedCommits: 0 });
+    expect(ids(local.db)).not.toContain('a1');
+    expect(ids(local.db)).not.toContain('s4');
+    expect(local.client.unit(id('p1'))).toMatchObject({
+      status: 'active',
+      explicit: true,
+      cursor: -1,
+      seeded: [],
+    });
+    expect(local.client.unit(id('p1'))?.bootstrapState).toBeUndefined();
+    expect(local.client.unit(id('p2'))).toBeUndefined();
+    expect({
+      p3: local.client.unit(id('p3')),
+      p4: local.client.unit(id('p4')),
+      o1: local.client.unit(unitId({ org_id: 'o1' })),
+    }).toEqual(held);
+    expect(windows).toEqual(['p1']);
+    await local.client.close();
+    local.db.close();
+
+    // A reader in a new session sees the rewind before any round.
+    const reopened = await open();
+    expect(coverage(reopened.client)).toMatchObject({
+      complete: false,
+      pending: [{ unit: 'p1' }],
+      missing: [],
+    });
+    expect(
+      reopened.client.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([offline]);
+
+    await reopened.client.syncUntilIdle();
+    expect(ids(reopened.db)).toContain('a1');
+    expect(reopened.client.unit(id('p1'))?.cursor).toBeUndefined();
+    expect(coverage(reopened.client).complete).toBe(true);
+    expect(reopened.client.unit(id('p4'))?.status).toBe('revoked');
+    expect(reopened.client.pendingCommits()).toEqual([]);
+    await reopened.client.close();
+    reopened.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.each([
+    [
+      'a scope selector rewinds only the units holding its values',
+      { project_id: ['p1'] },
+      ['p1'],
+    ],
+    [
+      'a selector on no scope column rewinds every covering unit',
+      { title: ['secret'] },
+      ['p1', 'p2', 'p3'],
+    ],
+  ])('legacy repair: %s', async (_name, selectors, rewound) => {
+    const { dir, open, local, offline } = await seeded('purge-legacy');
+    // The 0.105.12 end state: the purge ran, its receipt is recorded, and
+    // the units were left at their cursors.
+    local.client.purgeLocalData({
+      purgeId: 'legacy-002',
+      targets: [{ table: 'tasks', selectors }],
+    });
+    local.db.exec(
+      "UPDATE _syncular_units SET cursor=NULL WHERE status='active' AND cursor=-1",
+    );
+    local.db.exec(
+      "DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:refill'",
+    );
+    const rows = ids(local.db);
+    const held = local.client.units();
+    await local.client.close();
+    local.db.close();
+
+    const reopened = await open();
+    // Opening fetches nothing and keeps rows and pending work.
+    expect(ids(reopened.db)).toEqual(rows);
+    expect(
+      reopened.client.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([offline]);
+    expect(
+      reopened.client
+        .units()
+        .filter((unit) => unit.status === 'active' && unit.cursor === -1)
+        .map((unit) => unit.scopes.project_id)
+        .sort(),
+    ).toEqual(rewound);
+    expect(reopened.client.unit(id('p4'))).toEqual(
+      held.find((unit) => unit.id === id('p4')),
+    );
+    expect(
+      reopened.client.unit(unitId({ org_id: 'o1' }))?.cursor,
+    ).toBeUndefined();
+    await reopened.client.syncUntilIdle();
+    expect(ids(reopened.db)).toContain('a1');
+    await reopened.client.close();
+    reopened.db.close();
+
+    // The marker holds: a second open rewinds nothing.
+    const again = await open();
+    expect(
+      again.client
+        .units()
+        .filter((unit) => unit.status === 'active' && unit.cursor === -1),
+    ).toEqual([]);
+    await again.client.close();
+    again.db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

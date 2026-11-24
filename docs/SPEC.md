@@ -1866,6 +1866,7 @@ table of a revoked fenced record.
 - When a later echo turns a revoked fenced record of an active unit back to
   `active`, the client MUST move the unit to catching up with cursor `-1`:
   the purge removed rows its cursor would otherwise claim (§4.5 C1).
+  The same rule applies to a host-authorized local purge (§7.3.4).
 - **Fail closed**: if the client's generated schema has no local
   scope-column mapping for the table, the client MUST NOT clear the whole
   table as an approximation; it MUST surface `sync.scope_revoked` as a
@@ -7114,6 +7115,29 @@ contribute their deleted content rows to `purgedRows` and preserve source
 rows and outbox commits. The purge receipt and the plan commit together.
 The client runs purge erasure (§5.11) after the transaction and on a retry
 that finds its plan already applied.
+
+**Units over purged rows.** In the purge transaction, the client moves to
+catching up with cursor `-1` every unit with status `active` whose
+current bootstrap has begun (a cursor other than `-1`, or a resume token)
+and whose effective scopes (§4.4) on a target table match a row the purge
+removes. The purge removed rows the unit's cursor would otherwise claim
+(§4.5 C1), so the unit's coverage (§7.5) is pending until the next
+authorized round bootstraps it again. A unit whose effective scopes match
+no removed row keeps its state. A projection target rewinds no unit. The
+purge sends no request; a client in security preflight bootstraps the unit
+after activation. The rewind keeps the unit registered, so a host that
+withdraws the rows for good releases or gates the unit before the purge.
+
+A replica that applied a purge before 0.105.13 has no rewind record. The
+first open by a later client moves to catching up with cursor `-1` every
+such unit that covers the table of a recorded table target, then records the
+repair (`localPurgeRepair:refill`). The removed rows are gone, so the repair
+matches the plan: a unit stays when a selector on one of the table's scope
+columns names none of the unit's effective values for that variable. A
+target whose selectors name no scope column rewinds every covering unit of
+its table, which covers more units than held the purged rows; those units
+download their rows again. A revoked unit and a released unit are never
+rewound.
 
 #### 7.3.5 Client `leaseState`
 

@@ -2887,3 +2887,204 @@ fn declared_indexes_reconcile_in_place_and_an_index_only_bump_keeps_rows_and_uni
     drop(client);
     let _ = std::fs::remove_file(&path);
 }
+
+// -- §7.3.4 a local purge and the units over its rows --------------------------
+
+fn purge_secret(purge_id: &str) -> LocalDataPurgeInput {
+    LocalDataPurgeInput {
+        purge_id: purge_id.into(),
+        targets: vec![LocalDataPurgeTarget::Table {
+            table: "tasks".into(),
+            selectors: BTreeMap::from([("title".into(), vec!["secret".into()])]),
+        }],
+    }
+}
+
+#[test]
+fn a_local_purge_rewinds_exactly_the_units_holding_a_purged_row() {
+    let mut h = Harness::new();
+    h.client.subscribe(p1()).unwrap();
+    h.client.subscribe(p2()).unwrap();
+    h.client.subscribe(org()).unwrap();
+    let p1_pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t1", "p1", "secret"], &["t2", "p1", "plain"]]),
+    ];
+    let p2_pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t3", "p2", "plain"]]),
+    ];
+    let org_pages = vec![h.rows("notes", &[&["n1", "p1", "o1", "x"]])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, p1_pages, vec![]),
+        h.bootstrap(&p2(), 3, p2_pages, vec![]),
+        h.bootstrap(&org(), 3, org_pages, vec![]),
+        live(3, vec![]),
+    ]));
+    let pending = h
+        .client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "o1"), ("project_id", "p2"), ("title", "offline")],
+        )])
+        .unwrap();
+    let (held_p2, held_org) = (h.unit(&p2()), h.unit(&org()));
+    assert_eq!(h.unit(&p1()).cursor, None);
+
+    let result = h
+        .client
+        .purge_local_data(&purge_secret("purge-refill-001"))
+        .unwrap();
+    assert_eq!((result.purged_rows, result.dropped_commits), (1, 0));
+    assert_eq!(h.ids("tasks"), vec!["o1", "t2", "t3"]);
+    let unit = h.unit(&p1());
+    assert_eq!(
+        (unit.status, unit.cursor, unit.bootstrap_state, unit.seeded),
+        (UnitStatus::Active, Some(-1), None, Vec::<String>::new())
+    );
+    assert_eq!((h.unit(&p2()), h.unit(&org())), (held_p2, held_org));
+    let outbox: Vec<String> = h
+        .client
+        .pending_commits()
+        .unwrap()
+        .into_iter()
+        .map(|commit| commit.client_commit_id)
+        .collect();
+    assert_eq!(outbox, vec![pending]);
+
+    // The next authorized round bootstraps p1 again and refills the row.
+    let pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t1", "p1", "secret"], &["t2", "p1", "plain"]]),
+    ];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 4, pages, vec![]),
+        live(4, vec![]),
+    ]));
+    assert_eq!(h.ids("tasks"), vec!["o1", "t1", "t2", "t3"]);
+    assert_eq!(h.unit(&p1()).cursor, None);
+}
+
+/// A file replica purged the 0.105.12 way (the purge ran, its receipt is
+/// recorded, the units stayed at their cursors), then opened by this build.
+fn legacy_repair(name: &str, selectors: BTreeMap<String, Vec<String>>, rewound: &[&str]) {
+    let dir = std::env::temp_dir().join(format!("syncular-{name}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("replica dir");
+    let path = dir.join("client.db");
+    let open = || {
+        SyncClient::open_path_with_identity(
+            Some("refill-client".to_owned()),
+            &schema(),
+            ClientLimits::default(),
+            path.to_str().expect("utf-8 path"),
+        )
+        .expect("file client")
+    };
+    let p4 = scopes(&[("project_id", "p4")]);
+    let mut h = Harness::over(open());
+    for unit in [p1(), p2(), org(), p4.clone()] {
+        h.client.subscribe(unit).unwrap();
+    }
+    let p1_pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t1", "p1", "secret"], &["t2", "p1", "plain"]]),
+    ];
+    let p2_pages = vec![
+        h.rows("notes", &[]),
+        h.rows("tasks", &[&["t3", "p2", "plain"]]),
+    ];
+    let org_pages = vec![h.rows("notes", &[&["n1", "p1", "o1", "x"]])];
+    h.round(concat(vec![
+        h.bootstrap(&p1(), 3, p1_pages, vec![]),
+        h.bootstrap(&p2(), 3, p2_pages, vec![]),
+        h.bootstrap(&org(), 3, org_pages, vec![]),
+        vec![
+            start(&id_of(&p4), SubStatus::Revoked, false, vec![]),
+            end(-1, None),
+        ],
+        live(3, vec![]),
+    ]));
+    assert_eq!(h.unit(&p4).status, UnitStatus::Revoked);
+    let pending = h
+        .client
+        .mutate(vec![upsert(
+            "tasks",
+            &[("id", "o1"), ("project_id", "p2"), ("title", "offline")],
+        )])
+        .unwrap();
+    h.client
+        .purge_local_data(&LocalDataPurgeInput {
+            purge_id: "legacy-002".into(),
+            targets: vec![LocalDataPurgeTarget::Table {
+                table: "tasks".into(),
+                selectors,
+            }],
+        })
+        .unwrap();
+    h.client
+        .conn
+        .execute_batch(
+            "UPDATE _syncular_units SET cursor = NULL WHERE status = 'active' AND cursor = -1;
+             DELETE FROM _syncular_meta WHERE key = 'localPurgeRepair:refill';",
+        )
+        .unwrap();
+    let rows = (h.ids("tasks"), h.ids("notes"));
+    let revoked = h.unit(&p4);
+    drop(h);
+
+    let h = Harness::over(open());
+    // Opening fetches nothing and keeps rows and pending work.
+    assert_eq!((h.ids("tasks"), h.ids("notes")), rows);
+    assert_eq!(
+        h.client.pending_commits().unwrap()[0].client_commit_id,
+        pending
+    );
+    let catching_up = |h: &Harness| -> Vec<String> {
+        h.client
+            .units()
+            .unwrap()
+            .into_iter()
+            .filter(|unit| unit.status == UnitStatus::Active && unit.cursor == Some(-1))
+            .map(|unit| unit.scopes.values().cloned().collect::<Vec<_>>().join(","))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    assert_eq!(catching_up(&h), rewound);
+    assert_eq!(h.unit(&p4), revoked);
+    assert_eq!(h.unit(&org()).cursor, None);
+    drop(h);
+    // The marker holds: a second open rewinds nothing more.
+    let h = Harness::over(open());
+    assert_eq!(catching_up(&h), rewound);
+    h.client
+        .conn
+        .execute(
+            "UPDATE _syncular_units SET cursor = NULL WHERE status = 'active'",
+            [],
+        )
+        .unwrap();
+    drop(h);
+    let h = Harness::over(open());
+    assert!(catching_up(&h).is_empty());
+    drop(h);
+    std::fs::remove_dir_all(&dir).expect("remove replica dir");
+}
+
+#[test]
+fn legacy_repair_with_a_scope_selector_rewinds_only_the_units_holding_its_values() {
+    legacy_repair(
+        "refill-scope",
+        BTreeMap::from([("project_id".into(), vec!["p1".into()])]),
+        &["p1"],
+    );
+}
+
+#[test]
+fn legacy_repair_with_a_selector_on_no_scope_column_rewinds_every_covering_unit() {
+    legacy_repair(
+        "refill-table",
+        BTreeMap::from([("title".into(), vec!["secret".into()])]),
+        &["p1", "p2"],
+    );
+}

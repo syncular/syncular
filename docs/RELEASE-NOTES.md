@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## 0.105.13 release notes
+
+`purgeLocalData` now moves every unit that held a purged row back to catching
+up with cursor `-1`, in the purge transaction, in both cores. Before, the
+purge deleted the rows and left the unit at its cursor, so the unit's query
+coverage stayed `complete` over rows the replica no longer had, and after
+fresh authorization the server held the rows while the device had none and
+never asked for them again. A web app reported it after a key-loss purge of
+one table during security preflight (SYNCULAR-PURGE-UNIT-REFILL-001; SPEC
+§7.3.4, the §3.3 rule for a revoked scope that turns active again). The purge
+itself sends no request: the unit bootstraps on the next authorized round,
+and its coverage reports `pending` until then. A unit whose effective scopes
+match none of the purged rows keeps its cursor, and a projection target moves
+no unit. Other units, their rows, pending commits and the outcome journal are
+unchanged. `rebootstrapLocalData` is not involved.
+
+**Upgrading.** No API changes. The first open of a replica that applied a
+purge with 0.105.12 or earlier moves every active unit covering a table any
+recorded purge targeted back to catching up, once, and records the repair as
+`localPurgeRepair:refill`; the next sync downloads those units again. A
+selector on a scope column limits the repair to the units whose values it
+names; a target with no scope-column selector moves every covering unit of
+its table, so some units download rows they still hold. Revoked and released
+units stay closed, and rows, pending commits and outcomes are kept. A unit
+that still covers rows you mean to withdraw for good must be released or
+gated before the purge, as before.
+
 ## 0.105.12 release notes
 
 0.105.11 counted a batch that changes conflicts, rejections or outcomes as a

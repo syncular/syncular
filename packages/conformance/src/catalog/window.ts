@@ -774,4 +774,98 @@ export const windowScenarios: readonly Scenario[] = [
       checkEqual(await readIds(a), ['t1'], 'the refused value completes');
     },
   },
+  {
+    name: 'window/local-purge-refills-the-units-over-its-rows',
+    specRefs: ['§3.3', '§4.5', '§7.3.4', '§7.5'],
+    async run(ctx) {
+      const P1 = unitId({ project_id: 'p1' });
+      const P3 = unitId({ project_id: 'p3' });
+      await seedTasks(ctx, [
+        task('t1', 'p1', 'secret'),
+        task('t2', 'p1', 'plain'),
+        task('t3', 'p3', 'plain'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p3'] },
+      });
+      if (a.api.setWindow === undefined || a.api.snapshotRead === undefined)
+        throw new ScenarioSkip('the client driver has no window surface');
+      const coverage = async () =>
+        (
+          await a.api.snapshotRead!({
+            statements: [],
+            coverage: [{ table: 'tasks', base: BASE, units: ['p1', 'p3'] }],
+          })
+        ).coverage;
+      // p1 is held by an explicit and a window reference, p3 by the window.
+      await a.api.subscribe({ project_id: 'p1' });
+      await a.api.setWindow(BASE, ['p1', 'p3']);
+      await syncIdle(a);
+      const offline = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t4', 'p3', 'offline') },
+      ]);
+      const held = await a.api.unitState(P3);
+      check((await coverage()).complete, 'both units cover their rows');
+
+      await a.api.drainChangeBatches?.();
+      await a.api.beginSecurityPreflight();
+      checkEqual(
+        await a.api.purgeLocalData('key-loss-001', [
+          { table: 'tasks', selectors: { title: ['secret'] } },
+        ]),
+        { alreadyApplied: false, purgedRows: 1, droppedCommits: 0 },
+        'the purge removes the one row',
+      );
+      await a.api.activateSecurity();
+      const batches = await a.api.drainChangeBatches?.();
+      if (batches !== undefined)
+        checkEqual(
+          batches.flatMap((batch) =>
+            batch.windows.flatMap((window) => window.units),
+          ),
+          ['p1'],
+          'the rewind is a window change of the rewound value only',
+        );
+      // The rewind is durable: a reader in a new session sees it.
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await readIds(a),
+        ['t2', 't3', 't4'],
+        'the purge fetched nothing',
+      );
+      checkEqual(
+        (await a.api.unitState(P1))?.cursor,
+        -1,
+        'the unit holding the purged row catches up from -1',
+      );
+      checkEqual(
+        await a.api.unitState(P3),
+        held,
+        'the unit holding no purged row keeps its state',
+      );
+      const pending = await coverage();
+      check(!pending.complete, 'coverage no longer claims the purged row');
+      checkEqual(
+        pending.pending.map((ref) => ref.unit),
+        ['p1'],
+        'only the rewound unit is pending',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [offline],
+        'the purge keeps the unrelated pending commit',
+      );
+
+      await syncIdle(a);
+      checkEqual(
+        await readIds(a),
+        ['t1', 't2', 't3', 't4'],
+        'the authorized round refills the unit',
+      );
+      check((await coverage()).complete, 'coverage is complete again');
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
 ];

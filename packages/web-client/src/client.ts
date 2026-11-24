@@ -1339,6 +1339,59 @@ export class SyncClient {
         // A registration remains app intent only while its table exists in the
         // running schema. Removed-table registrations would poison every pull.
         pruneUnknownUnits(this.#db, this.#schema);
+        // §7.3.4: a purge before 0.105.13 left the units over its rows at
+        // their cursors. The rows are gone, so once, every unit that covers a
+        // recorded target's table catches up from -1, unless a selector on a
+        // scope column names none of the unit's effective values.
+        if (getMeta(this.#db, `${PURGE_REPAIR_KEY}:refill`) === undefined) {
+          const targets = new Map<
+            string,
+            { table: string; selectors: Map<string, string[]> }
+          >();
+          for (const row of this.#db.query(
+            `SELECT m.key||' '||t.key AS target,json_extract(t.value,'$.table')AS tbl,s.key AS col,v.value FROM ${META_TABLE} m,json_each(m.value) t,json_each(t.value,'$.selectors') s,json_each(s.value) v WHERE m.key LIKE 'localPurge:%' AND json_valid(m.value) AND json_type(m.value)='array' AND json_type(t.value)='object'`,
+          )) {
+            const target = targets.get(String(row.target)) ?? {
+              table: String(row.tbl),
+              selectors: new Map(),
+            };
+            const column = String(row.col);
+            target.selectors.set(column, [
+              ...(target.selectors.get(column) ?? []),
+              String(row.value),
+            ]);
+            targets.set(String(row.target), target);
+          }
+          for (const unit of loadUnits(this.#db))
+            if (
+              unit.status === 'active' &&
+              (unit.cursor !== -1 || unit.bootstrapState !== undefined) &&
+              [...targets.values()].some(({ table: name, selectors }) => {
+                const table = this.#schema.tables.get(name);
+                if (table === undefined || !covers(table, unit.scopes))
+                  return false;
+                const effective = pairScopes(unit.scopes, name, unit.echo);
+                return (
+                  effective !== undefined &&
+                  [...table.scopeColumnByVariable].every(
+                    ([variable, column]) => {
+                      const values = selectors.get(column);
+                      const held = effective[variable];
+                      return (
+                        values === undefined ||
+                        held === undefined ||
+                        held.some(
+                          (value) => value === '*' || values.includes(value),
+                        )
+                      );
+                    },
+                  )
+                );
+              })
+            )
+              saveUnit(this.#db, { ...unit, ...UNIT_RESTART });
+          setMeta(this.#db, `${PURGE_REPAIR_KEY}:refill`, '1');
+        }
       });
       // §5.11: a purge before 0.105.5 left its words in the full-text index;
       // the first open of a replica that applied one erases it before any
@@ -4164,6 +4217,36 @@ export class SyncClient {
             // or move; the re-selected set drives both the next scan and the
             // final row deletion below.
             rowIds = this.#localPurgeRowIds(purge);
+          }
+
+          // §7.3.4: a unit whose cursor claims a purged row catches up from
+          // -1, the §3.3 rule for rows a purge removed (§4.5 C1).
+          for (const unit of loadUnits(this.#db)) {
+            if (
+              unit.status !== 'active' ||
+              (unit.cursor === -1 && unit.bootstrapState === undefined) ||
+              !purge.targets.some(({ table, selectors }) => {
+                const effective = covers(table, unit.scopes)
+                  ? pairScopes(unit.scopes, table.name, unit.echo)
+                  : undefined;
+                if (effective === undefined) return false;
+                const scope = localScopePredicate(table, effective, []);
+                return (
+                  scope !== undefined &&
+                  this.#db.query(
+                    `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${selectors.map(({ column }) => `${quoteIdent(column)} IN(SELECT value FROM json_each(?))`).join(' AND ')} AND ${scope.sql} LIMIT 1`,
+                    [
+                      ...selectors.map(({ values }) => JSON.stringify(values)),
+                      ...scope.params,
+                    ],
+                  ).length > 0
+                );
+              })
+            )
+              continue;
+            saveUnit(this.#db, { ...unit, ...UNIT_RESTART });
+            this.#unitWindow(unit);
+            batch.status();
           }
 
           for (const [tableName, ids] of rowIds) {

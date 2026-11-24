@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-24',
+    title: 'A local purge sends the units over its rows back to catching up',
+    body: '`purgeLocalData` removed rows but left the units that held them at their cursors, so their query coverage stayed complete over rows the replica no longer had and the next sync never downloaded them again. 0.105.13 moves every unit that held a purged row back to catching up in the purge transaction; its coverage reports pending until the next authorized sync refills it, and other units keep their cursors and rows. The first open of a replica purged by an older build moves the units over every purged table back once.',
+    links: [
+      {
+        href: '/concepts-local-data-purge/#what-the-purge-does',
+        label: 'What the purge does',
+      },
+    ],
+  },
+  {
     date: '2026-11-23',
     title: 'A conflict resolved during a sync shows the server row at once',
     body: "0.105.12 covers the restored row and the resolved outcome arriving in separate changes. While a sync attempt imports, live queries defer the import's own row writes. A keep-server resolution restores the row in a change that carries no status, so a query deferred it too and showed the local row until the import ended, after `useCommitOutcomes` had already dropped the conflict. A change to conflicts, rejections or outcomes now counts as a local write, so its queries read at once and the outcome observers wait for them.",

@@ -34,7 +34,7 @@ Authenticate a fresh directive and check its device, subject, key version, expir
 ::checkpoint[Your validator rejects an expired or replayed directive and accepts a fresh one.]
 :::
 :::step{title="Gate the units" time="3 min"}
-Quarantine the affected feature and remove or gate every unit that could download the protected rows again. Purging while the old unit is registered is temporary, because the next sync may download the rows again.
+Quarantine the affected feature and remove or gate every unit that could download the protected rows again. A purge while the old unit is registered is temporary: the purge moves that unit back to catching up, and the next authorized sync downloads the rows again.
 
 ::checkpoint[No registered unit covers the rows you are about to purge.]
 :::
@@ -93,6 +93,7 @@ A failed purge preserves the captured sync round, so its response can still appl
 - rejects each whole pending commit that touches a target with `client.local_data_purged`, so an atomic multi-row commit is never split;
 - restores the last confirmed rows and replays safe later optimistic edits;
 - removes cached blob bodies that no visible row or pending commit references;
+- moves every registered unit that held a purged row back to catching up from cursor `-1`, so its query coverage reports `pending` until the next authorized sync bootstraps it again; a unit that held none of the rows keeps its cursor, and a projection target moves no unit;
 - records the purge id and canonical plan durably;
 - journals the dropped commit outcomes and emits one revisioned change batch. A dropped commit's outcome keeps its `clientCommitId` and one `client.local_data_purged` result per operation, without the operations or their values.
 
@@ -101,6 +102,8 @@ After the transaction commits, the client merges every full-text index (FTS5 `op
 A previous-version container that the client could not delete fails the purge with `client.storage_failure`, because it holds a copy of earlier rows. The client records a finished rewrite with the plan. A retry with the same id and plan returns `alreadyApplied: true` without rewriting again; a retry after a rewrite that failed or was interrupted runs it. A new `purgeId` always rewrites, even when it matches no row: zero matching rows says nothing about freed pages, and the client cannot see writes an older version made. A retry of an applied id returns before any logical deletion, so it removes no row written after the first run. Use a new `purgeId` for every directive that must remove rows which can have arrived since the last purge, for example one per exposure period of a key; an id derived from the key alone is not safe once the same grant can deliver rows again.
 
 A replica that applied a purge with 0.105.4 or earlier can still hold purged words in its full-text index, including a purge the app already acknowledged and a replica of an actor who signed out and never purges again. The first open of such a replica with 0.105.5 runs the index merge, rewrite and checkpoint before the open completes and before any read, and records the repair; a failed or interrupted repair fails the open and runs again at the next open. Rows that were not purged stay and stay searchable.
+
+A purge with 0.105.12 or earlier left its units at their cursors, so their coverage stayed `complete` over the purged rows and a sync never downloaded them again. The first open of such a replica with 0.105.13 moves every active unit that covers a table a recorded purge targeted back to catching up, once, without a request. The purged rows are gone, so the repair matches the recorded plan. When a selector names a scope column, such as `project_id`, only units whose scope values it names move. When no selector names a scope column, such as a selector on `encryption_key_id`, every unit that covers the table moves, including units that held none of the purged rows; those download their rows again on the next sync. Revoked and released units stay as they are, and the replica keeps its rows, pending commits and outcomes.
 
 Outcomes journaled before the purge that name a purged row or carry a matching value, such as an earlier rejection or conflict, lose their operations, rejection details and conflict rows in the same transaction. They keep their commit id, status, resolution, codes and row ids, and a conflict keeps its `serverVersion` with an empty `serverRow`.
 

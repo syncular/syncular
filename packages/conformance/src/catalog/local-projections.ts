@@ -526,6 +526,8 @@ export const localProjectionScenarios: readonly Scenario[] = [
         { op: 'upsert', table: SOURCE, values: sourceRow(2) },
       ]);
       const prePurge = await a.api.projectionPending(PROJECTION, 10);
+      const unit = unitId({ project_id: 'p1' });
+      const held = await a.api.unitState(unit);
       await a.api.beginSecurityPreflight();
       await expectCode(
         a.api.projectionPending(PROJECTION, 10),
@@ -551,6 +553,11 @@ export const localProjectionScenarios: readonly Scenario[] = [
         'preflight permits a projection-only erase',
       );
       await a.api.activateSecurity();
+      checkEqual(
+        await a.api.unitState(unit),
+        held,
+        'a projection-only erase rewinds no unit',
+      );
       await ctx.recreateClient(a, newGeneration);
       await a.api.beginSecurityPreflight();
       checkEqual(
