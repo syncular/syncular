@@ -5008,7 +5008,11 @@ sealed state, and the reveal opens it with the visible rows.
 A sealed row is read-only on the device: `mutate`, `patch` and delete of a
 sealed row fail at once with `client.encryption_key_missing` and the details
 `{ table, keyId }`, before anything enters the outbox. A write could
-otherwise send NULL over ciphertext the device cannot see. The local mirror
+otherwise send NULL over ciphertext the device cannot see. Intent queued
+before the row arrived sealed still replays over it (§7.1): the row stays
+sealed with its marker and envelopes, the replay overlays the operation's
+non-encrypted columns, and every encrypted column stays NULL whatever its
+declared nullability. The operation stays in the outbox unchanged. The local mirror
 declares encrypted columns nullable; a replica created with `NOT NULL`
 encrypted columns or without the reserved columns is rebuilt once at open.
 Generated read types (table rows, query results) type every encrypted column

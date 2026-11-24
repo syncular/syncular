@@ -18,6 +18,18 @@ export const changelog = [
   {
     date: '2026-11-24',
     title:
+      'A pending write over a row that arrives sealed keeps the row sealed',
+    body: "When a row arrived sealed under a key the device lacks while a write to it was still pending, the TypeScript client failed the sync round with `sync.local_corrupt` on a `NOT NULL` encrypted column, and both cores otherwise dropped the row's `_sync_sealed_key`, so it read unsealed and accepted writes. 0.106.0 keeps the row sealed, shows the pending write's plain columns over it, and leaves its encrypted columns NULL until the key arrives.",
+    links: [
+      {
+        href: '/concepts-encryption/#rows-under-a-key-the-device-lacks',
+        label: 'Rows under a key the device lacks',
+      },
+    ],
+  },
+  {
+    date: '2026-11-24',
+    title:
       'Authority queries read protected columns while active and list every row with intent',
     body: 'An `authority query` may now read encrypted columns, `bytes` columns and, on a table with an encrypted column, `_sync_sealed_key`. A request that reads one of those protected columns runs only while the security lifecycle is active and fails in preflight with `client.security_preflight_required`; queries over plain columns run in preflight as before. Every result carries `intent`: each row of its read tables with pending, retained or acknowledged-but-not-pulled intent, at the same revision as the rows, including pending creations, pending deletes and rows an edit moves out of the filter. The accepted base of a retained or acknowledged row also keeps its sealed state, which a reveal opens with the visible rows.',
     links: [

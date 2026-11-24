@@ -919,6 +919,60 @@ fn a_round_start_reveal_that_cannot_decrypt_fails_the_round() {
 
 #[cfg(feature = "e2ee")]
 #[test]
+fn a_pending_plain_patch_replays_over_a_row_that_arrived_sealed() {
+    let mut client = sealing_client();
+    let seen = patient_payload(&client, 5, "k1", "seen");
+    client
+        .apply_commit_changes(&["patients".to_owned()], &[upsert(0, "5", seen)])
+        .unwrap();
+    client.rebuild_overlay_if_dirty().unwrap();
+    client
+        .patch(
+            "patients",
+            "5",
+            Map::from_iter([("encryption_key_id".into(), json!("k1"))]),
+            None,
+        )
+        .unwrap();
+    // The server row moves under k2 while the plain patch is pending.
+    let hidden = patient_payload(&client, 5, "k2", "hidden");
+    client
+        .apply_commit_changes(
+            &["patients".to_owned()],
+            &[ssp2::model::Change {
+                row_version: 2,
+                ..upsert(0, "5", hidden)
+            }],
+        )
+        .expect("the replay keeps the NOT NULL encrypted column NULL");
+    client.rebuild_overlay_if_dirty().unwrap();
+    assert_eq!(
+        patients(&client),
+        vec![("5".to_owned(), Value::Null, Some("k2".to_owned()))]
+    );
+    let refused = client
+        .patch(
+            "patients",
+            "5",
+            Map::from_iter([("encryption_key_id".into(), json!("k1"))]),
+            None,
+        )
+        .expect_err("the replayed row stays read-only");
+    assert_eq!(refused.code, "client.encryption_key_missing");
+    client
+        .add_encryption_keys(std::collections::BTreeMap::from([(
+            "k2".to_owned(),
+            vec![0x2B; 32],
+        )]))
+        .unwrap();
+    assert_eq!(
+        patients(&client),
+        vec![("5".to_owned(), json!("hidden"), None)]
+    );
+}
+
+#[cfg(feature = "e2ee")]
+#[test]
 fn a_sealed_row_is_read_only() {
     let mut client = sealed_row_client();
     let refused = |result: Result<String, ClientError>| {

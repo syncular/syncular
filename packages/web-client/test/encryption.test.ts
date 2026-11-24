@@ -999,12 +999,10 @@ describe('§5.11 rows-segment decrypt', () => {
 });
 
 test('a retained base keeps its sealed state through a restore and reveals with the key', async () => {
-  // Nullable encrypted columns: replaying intent over a sealed row with a
-  // NOT NULL encrypted column fails today (reported separately).
   const table = {
     ...SECRETS_TABLE,
     columns: [
-      ...SECRETS_COLUMNS.map((column) => ({ ...column, nullable: true })),
+      ...SECRETS_COLUMNS,
       { name: 'starts', type: 'integer' as const, nullable: false },
     ],
   };
@@ -1065,9 +1063,13 @@ test('a retained base keeps its sealed state through a restore and reveals with 
     expect(
       reader.db.query('SELECT note,_sync_sealed_key AS k FROM secrets'),
     ).toEqual([{ note: null, k: 'secrets' }]);
-    // The next delivery seals the base again, under its own envelopes.
+    // The next delivery seals the base again, under its own envelopes, and
+    // the replayed intent keeps the visible row sealed.
     await write('fourth');
     await reader.client.syncUntilIdle();
+    expect(
+      reader.db.query('SELECT note,_sync_sealed_key AS k FROM secrets'),
+    ).toEqual([{ note: null, k: 'secrets' }]);
     expect(retained()).toEqual([
       expect.objectContaining({
         sealed: expect.stringContaining('"keyId":"secrets"'),
@@ -1086,3 +1088,70 @@ test('a retained base keeps its sealed state through a restore and reveals with 
     reader.db.close();
   }
 });
+
+for (const nullable of [false, true])
+  test(`a pending plain patch replays over a row that arrived sealed with a ${nullable ? 'nullable' : 'NOT NULL'} encrypted column and keeps its marker`, async () => {
+    const table = {
+      ...SECRETS_TABLE,
+      columns: [
+        ...SECRETS_COLUMNS.map((column) => ({
+          ...column,
+          nullable: column.nullable || nullable,
+        })),
+        { name: 'starts', type: 'integer' as const, nullable: false },
+      ],
+    };
+    const schema: ClientSchema = { version: 1, tables: [table] };
+    const server = makeServer(schema);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const writer = await makeClient(server, {
+      clientId: `replay-writer-${nullable}`,
+      schema,
+      encryption: GOOD,
+    });
+    const reader = await makeClient(server, {
+      clientId: `replay-reader-${nullable}`,
+      schema,
+      encryption: GOOD,
+    });
+    const visible = () =>
+      reader.db.query(
+        'SELECT note,starts,_sync_sealed_key AS k FROM secrets WHERE id=?',
+        ['s1'],
+      );
+    try {
+      writer.client.subscribe({ project_id: 'p1' });
+      reader.client.subscribe({ project_id: 'p1' });
+      writer.client.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: { id: 's1', project_id: 'p1', note: 'first', starts: 1 },
+        },
+      ]);
+      await writer.client.syncUntilIdle();
+      await reader.client.syncUntilIdle();
+      await reader.client.beginSecurityPreflight();
+      await reader.client.activateSecurity({ encryption: { keys: {} } });
+      // The plain patch stays pending while the sealed delivery lands.
+      reader.client.setTransportGate('pull');
+      reader.client.patch('secrets', 's1', { starts: 5 });
+      writer.client.patch('secrets', 's1', { note: 'second' });
+      await writer.client.syncUntilIdle();
+      await reader.client.sync();
+      expect(visible()).toEqual([{ note: null, starts: 5, k: 'secrets' }]);
+      expect(() => reader.client.patch('secrets', 's1', { starts: 6 })).toThrow(
+        expect.objectContaining({ code: 'client.encryption_key_missing' }),
+      );
+      reader.client.setTransportGate('open');
+      await reader.client.syncUntilIdle();
+      expect(reader.client.pendingCommits()).toHaveLength(0);
+      await reader.client.addEncryptionKeys(GOOD.keys);
+      expect(visible()).toEqual([{ note: 'second', starts: 5, k: null }]);
+    } finally {
+      await writer.client.close();
+      await reader.client.close();
+      writer.db.close();
+      reader.db.close();
+    }
+  });

@@ -30,6 +30,16 @@ acknowledged base: restoring that base kept its values and dropped
 columns. The base now keeps the sealed state of the delivery that wrote it,
 and the reveal opens it with the visible rows, as the Rust core already did.
 
+A pending write queued before its row arrived sealed no longer breaks the
+round. The TypeScript client replayed it over the sealed row and failed the
+round with `sync.local_corrupt` when an encrypted column was `NOT NULL`; with
+a nullable column, and in the Rust core always, the replay cleared
+`_sync_sealed_key`, so the row read unsealed and accepted writes over
+ciphertext the device could not see. Both cores now keep the row sealed,
+overlay the write's non-encrypted columns and leave the encrypted columns
+NULL; the write itself goes to the server unchanged
+(SYNCULAR-SEALED-REPLAY-NOTNULL-001; SPEC §5.11).
+
 **Upgrading.**
 
 - A declaration that reads an encrypted column, a `bytes` column or

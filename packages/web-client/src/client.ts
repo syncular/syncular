@@ -7340,8 +7340,18 @@ export class SyncClient {
           deleteLocalRow(this.#db, table, op.rowId, false);
         continue;
       }
+      // §5.11: a row that arrived sealed stays sealed; the replay overlays
+      // its non-encrypted columns and its encrypted columns stay NULL.
+      const sealed =
+        local?.[SEALED_KEY_COLUMN] == null
+          ? undefined
+          : {
+              keyId: String(local[SEALED_KEY_COLUMN]),
+              envelopes: String(local[SEALED_COLUMN]),
+            };
       const values = table.columns.map((column) => {
         const value = opValues[column.name];
+        if (sealed && column.encrypted) return null;
         if (value !== undefined) return jsonToRowValue(value);
         return local === undefined || op.insert === true
           ? null
@@ -7357,6 +7367,9 @@ export class SyncClient {
           encodeRow(
             table.columns.map((column, index) => ({
               ...column,
+              nullable:
+                column.nullable ||
+                (sealed !== undefined && column.encrypted === true),
               type:
                 column.encrypted && values[index] instanceof Uint8Array
                   ? 'bytes'
@@ -7400,7 +7413,7 @@ export class SyncClient {
         ).length
       )
         continue;
-      upsertLocalRow(this.#db, table, values, version);
+      upsertLocalRow(this.#db, table, values, version, sealed);
     }
   }
 

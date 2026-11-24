@@ -14647,16 +14647,43 @@ impl SyncClient {
         if local.is_none() && !full {
             return Ok(());
         }
+        // §5.11: a row that arrived sealed stays sealed; the replay overlays
+        // its non-encrypted columns and its encrypted columns stay NULL.
+        let sealed = if local.is_some() && table.has_encrypted_columns() {
+            let (key_id, envelopes) = self
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT \"_sync_sealed_key\",\"_sync_sealed\" FROM {visible} WHERE {}",
+                        row_id_predicate(table)
+                    ),
+                    rusqlite::params![op.row_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                        ))
+                    },
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            key_id
+                .zip(envelopes)
+                .map(|(key_id, envelopes)| SealedRow { key_id, envelopes })
+        } else {
+            None
+        };
         let mut row: Row = Vec::with_capacity(table.columns.len());
         for (index, column) in table.columns.iter().enumerate() {
-            let incoming = match values.get(&column.name) {
+            let encrypted = table
+                .encrypted_columns
+                .iter()
+                .any(|encrypted| encrypted.index == index);
+            let incoming = match values
+                .get(&column.name)
+                .filter(|_| !(sealed.is_some() && encrypted))
+            {
                 Some(raw) => json_to_column_value(
-                    if raw.get("$bytes").is_some()
-                        && table
-                            .encrypted_columns
-                            .iter()
-                            .any(|encrypted| encrypted.index == index)
-                    {
+                    if raw.get("$bytes").is_some() && encrypted {
                         &table.wire_columns[index]
                     } else {
                         column
@@ -14673,7 +14700,7 @@ impl SyncClient {
             })?);
         }
         let version = local.as_ref().map_or(-1, |(_, version)| *version);
-        self.write_row(&visible, &table.name, &row, version, None)
+        self.write_row(&visible, &table.name, &row, version, sealed.as_ref())
             .map(|_| ())
             .map_err(|error| {
                 if error.starts_with("UNIQUE constraint failed:") {
