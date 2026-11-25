@@ -7,13 +7,15 @@
  * SAH-pool replica on a persistent profile, once per run on a fresh profile.
  *
  *   bun run --cwd bench bench:image-range [--config before|after] [--runs 2] [--scale 1]
- *     [--units 7] [--fts] [--ephemeral] [--max-pages 1]
+ *     [--units 7] [--fts] [--diego] [--ephemeral] [--max-pages 1]
  *     [--browser firefox] [--cpu-throttle 6] [--sync-delay-ms 200] [--write-delay-ms 2]
  *
  * `before` lifts `maxImageSegmentBytes` to 4 GiB (one image per table), `after`
  * keeps the 32 MiB default.
  * `--units` splits the rows into release units (see below), `--fts` adds an FTS5
- * projection on the codes, `--ephemeral` runs in an ephemeral context (OPFS in
+ * projection on the codes, `--diego` gives the tables a web app's catalogue
+ * shape instead (codes with two non-unique indexes and an FTS5 projection over
+ * code, title and description, relations with three indexes), `--ephemeral` runs in an ephemeral context (OPFS in
  * memory, like a private window), and `--max-pages` limits the image ranges per
  * unit and round. `firstUnitMs` is when the first unit finished, `readLagMs` how
  * late a 50 ms timer in the worker ran during the import.
@@ -26,7 +28,11 @@
  * write and post-callback time of its chunks, its wall time from the first progress
  * to the last chunk, the time between chunk commits outside them, and the
  * download time of its segment; `vfs` totals the `xWrite` and `xSync` calls
- * inside `COMMIT` and outside it. `stages` splits the post-callback time
+ * inside `COMMIT` and outside it and per file kind (`main` and `journal`: a
+ * file that ever takes a write shorter than a page or off a page boundary is a
+ * rollback journal). `firstCommitMs` is when each table's first chunk
+ * committed, `dbMiB` and `freeMiB` the replica's size and free pages, and
+ * `ftsHits` the codes a search for `title` finds after the import. `stages` splits the post-callback time
  * into bookkeeping (from the callback's end to `COMMIT`), `COMMIT`, and
  * publication (after `COMMIT`), summed over the import's transactions.
  * The first run builds the images; later runs find them in the segment store,
@@ -60,6 +66,7 @@ const { values } = parseArgs({
     config: { type: 'string', default: 'after' },
     ephemeral: { type: 'boolean', default: false },
     fts: { type: 'boolean', default: false },
+    diego: { type: 'boolean', default: false },
     units: { type: 'string', default: '1' },
     'max-image-mib': { type: 'string' },
     'max-pages': { type: 'string' },
@@ -215,7 +222,8 @@ export default async function init(config) {
   const sqlite3 = await realInit(config);
   globalThis.__sqlite3 = sqlite3;
   const stage = () => ({ writeMs: 0, writeCalls: 0, writeBytes: 0, syncMs: 0, syncCalls: 0 });
-  const totals = (globalThis.__vfs = { commit: false, inCommit: stage(), outside: stage() });
+  const totals = (globalThis.__vfs = { commit: false, inCommit: stage(), outside: stage(), files: {} });
+  const perFile = (pointer) => (totals.files[pointer] ??= { ...stage(), journal: false });
   const Methods = sqlite3.capi.sqlite3_io_methods;
   const wrapped = new Set();
   sqlite3.capi.sqlite3_io_methods = function (pointer) {
@@ -233,6 +241,13 @@ export default async function init(config) {
         into.writeMs += performance.now() - started;
         into.writeCalls++;
         into.writeBytes += bytes;
+        const each = perFile(file);
+        each.writeMs += performance.now() - started;
+        each.writeCalls++;
+        each.writeBytes += bytes;
+        // The main file takes whole pages at page offsets; a journal takes
+        // its header and the page number and checksum of each record.
+        if (bytes < 4096 || Number(offset) % bytes !== 0) each.journal = true;
       }
     });
     methods.installMethod('xSync', (file, flags) => {
@@ -243,6 +258,9 @@ export default async function init(config) {
         const into = totals.commit ? totals.inCommit : totals.outside;
         into.syncMs += performance.now() - started;
         into.syncCalls++;
+        const each = perFile(file);
+        each.syncMs += performance.now() - started;
+        each.syncCalls++;
       }
     });
     return methods;
@@ -361,7 +379,14 @@ for (let run = 1; run <= Number(values.runs); run++) {
           worker.onerror = (event) => reject(new Error(event.message));
           worker.postMessage(options);
         }),
-      { maxSnapshotPages, variable, unitValues, unitScopes, fts: values.fts },
+      {
+        maxSnapshotPages,
+        variable,
+        unitValues,
+        unitScopes,
+        fts: values.fts,
+        diego: values.diego,
+      },
     );
     const { wasmHeapBytes, ...rest } = value;
     runs.push({
@@ -393,6 +418,7 @@ console.log(
       units,
       ephemeral: values.ephemeral,
       fts: values.fts,
+      diego: values.diego,
       maxSnapshotPages: values['max-pages'],
       scale,
       date: new Date().toISOString(),

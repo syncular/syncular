@@ -26,51 +26,108 @@ type VfsStage = {
 
 const scope = globalThis as typeof globalThis & {
   __sqlite3?: { wasm: { heap8u(): Uint8Array } };
-  __vfs?: { commit: boolean; inCommit: VfsStage; outside: VfsStage };
+  __vfs?: {
+    commit: boolean;
+    inCommit: VfsStage;
+    outside: VfsStage;
+    files: Record<string, VfsStage & { journal: boolean }>;
+  };
   postMessage(message: unknown): void;
 };
 
 scope.onmessage = async (event: MessageEvent) => {
   try {
-    const { maxSnapshotPages, variable, unitValues, unitScopes, fts } =
+    const { maxSnapshotPages, variable, unitValues, unitScopes, fts, diego } =
       event.data as {
         maxSnapshotPages?: number;
         variable: string;
         unitScopes?: string[];
         unitValues: string[];
         fts: boolean;
+        diego: boolean;
       };
+    // A web app's catalogue: codes with two non-unique indexes and an FTS5
+    // projection over three string columns, relations with three indexes.
+    const diegoIndexes = {
+      codes: [
+        {
+          name: 'codes_by_set_release_catalogue_code',
+          columns: ['catalogue_set_id', 'release_id', 'catalogue', 'code'],
+          unique: false,
+        },
+        {
+          name: 'codes_by_release_parent',
+          columns: [
+            'catalogue_set_id',
+            'release_id',
+            'parent_code_id',
+            'sort_key',
+            'id',
+          ],
+          unique: false,
+        },
+      ],
+      relations: [
+        ...IMAGE_SCHEMA.tables[1]!.indexes!,
+        {
+          name: 'relations_by_release',
+          columns: ['catalogue_set_id', 'release_id'],
+          unique: false,
+        },
+      ],
+    };
     const schema = {
       ...IMAGE_SCHEMA,
       tables: IMAGE_SCHEMA.tables.map((table) => ({
         ...table,
         ...(unitScopes === undefined ? {} : { scopes: unitScopes }),
-        ...(fts && table.name === 'codes'
+        ...(diego
+          ? { indexes: diegoIndexes[table.name as 'codes' | 'relations'] }
+          : {}),
+        ...(diego && table.name === 'codes'
           ? {
               localProjections: [
                 {
                   name: 'codes_search',
                   generation: '1',
-                  columns: [
-                    {
-                      name: 'title',
-                      declaredType: 'string' as const,
-                      source: 'title',
-                    },
-                    {
-                      name: 'description',
-                      declaredType: 'string' as const,
-                      source: 'description',
-                    },
-                  ],
+                  columns: ['code', 'title', 'description'].map((name) => ({
+                    name,
+                    declaredType: 'string' as const,
+                    source: name,
+                  })),
                   fts: {
-                    tokenize: 'unicode61',
-                    columns: ['title', 'description'],
+                    tokenize: 'unicode61 remove_diacritics 2',
+                    columns: ['code', 'title', 'description'],
                   },
                 },
               ],
             }
-          : {}),
+          : fts && table.name === 'codes'
+            ? {
+                localProjections: [
+                  {
+                    name: 'codes_search',
+                    generation: '1',
+                    columns: [
+                      {
+                        name: 'title',
+                        declaredType: 'string' as const,
+                        source: 'title',
+                      },
+                      {
+                        name: 'description',
+                        declaredType: 'string' as const,
+                        source: 'description',
+                      },
+                    ],
+                    fts: {
+                      tokenize: 'unicode61',
+                      columns: ['title', 'description'],
+                    },
+                  },
+                ],
+              }
+            : {}),
       })),
     };
     const database = await openPersistentWasmDatabase('image-range-lane');
@@ -153,6 +210,9 @@ scope.onmessage = async (event: MessageEvent) => {
         ? {}
         : { limits: { maxSnapshotPages } }),
     });
+    // Per table: time from the import start to its first committed chunk.
+    const firstCommitMs: Record<string, number> = {};
+    let importStarted = 0;
     client.onChange(() => {
       chunks++;
       const progress = current;
@@ -160,6 +220,7 @@ scope.onmessage = async (event: MessageEvent) => {
       const image = perImage.get(progress.segmentId);
       if (image === undefined) return;
       image.last = performance.now();
+      firstCommitMs[image.table] ??= Math.round(image.last - importStarted);
       image.chunks++;
       image.maxChunkRows = Math.max(
         image.maxChunkRows,
@@ -221,6 +282,8 @@ scope.onmessage = async (event: MessageEvent) => {
     for (const table of Object.keys(images)) delete images[table];
     scope.postMessage({ t: 'phase', phase: 'import' });
     const started = performance.now();
+    importStarted = started;
+    for (const table of Object.keys(firstCommitMs)) delete firstCommitMs[table];
     // A reader timer every 50 ms measures how long a local read waits for the
     // worker (its lag past the due time).
     const lags: number[] = [];
@@ -278,6 +341,21 @@ scope.onmessage = async (event: MessageEvent) => {
         Number(client.query(`SELECT count(*) AS n FROM ${name}`)[0]?.n),
       ]),
     );
+    const pages = (pragma: string) =>
+      Number(Object.values(database.query(`PRAGMA ${pragma}`)[0] ?? {})[0]);
+    const pageSize = pages('page_size');
+    const dbMiB = Math.round((pages('page_count') * pageSize) / 1024 ** 2);
+    const freeMiB = Math.round(
+      (pages('freelist_count') * pageSize) / 1024 ** 2,
+    );
+    const ftsHits =
+      diego || fts
+        ? Number(
+            client.query(
+              "SELECT count(*) AS n FROM codes_search WHERE codes_search MATCH 'title'",
+            )[0]?.n,
+          )
+        : 0;
     await client.close();
     const vfs = scope.__vfs!;
     const delta = (stage: 'inCommit' | 'outside') =>
@@ -300,6 +378,10 @@ scope.onmessage = async (event: MessageEvent) => {
       t: 'done',
       value: {
         importMs,
+        firstCommitMs,
+        dbMiB,
+        freeMiB,
+        ftsHits,
         rounds,
         perRound,
         chunks,
@@ -308,7 +390,37 @@ scope.onmessage = async (event: MessageEvent) => {
         firstUnitMs,
         readLagMs,
         cpuProbeMs: Math.round(probe),
-        vfs: { inCommit: delta('inCommit'), outside: delta('outside') },
+        vfs: {
+          inCommit: delta('inCommit'),
+          outside: delta('outside'),
+          // Per file kind: the replica's main file and its rollback journals.
+          ...Object.fromEntries(
+            (['main', 'journal'] as const).map((kind) => {
+              const sum = {
+                writeMs: 0,
+                writeCalls: 0,
+                writeBytes: 0,
+                syncMs: 0,
+                syncCalls: 0,
+              };
+              for (const [pointer, file] of Object.entries(vfs.files)) {
+                if (file.journal !== (kind === 'journal')) continue;
+                const before = vfsBefore.files[pointer];
+                for (const key of Object.keys(sum) as (keyof VfsStage)[])
+                  sum[key] += file[key] - (before?.[key] ?? 0);
+              }
+              return [
+                kind,
+                Object.fromEntries(
+                  Object.entries(sum).map(([key, value]) => [
+                    key,
+                    Math.round(value),
+                  ]),
+                ),
+              ];
+            }),
+          ),
+        },
         stages: {
           transactions: transactions.count,
           writeMs: Math.round(writeMs),
