@@ -115,6 +115,7 @@ import {
   selectRowSql,
   selectRowsSql,
   prefetchRowsBatchSql,
+  selectChangesForRewriteSql,
   selectRowsForRewriteSql,
   upsertSql,
   upsertValues,
@@ -2543,6 +2544,38 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             plan.migrate ? oldLayout : undefined,
             rekey,
           );
+          if (plan.migrate && oldLayout !== undefined) {
+            let after: unknown[] = ['', -1, -1];
+            for (;;) {
+              const { rows } = await client.query<{
+                partition: string;
+                commit_seq: string | number;
+                idx: number;
+                payload: unknown;
+              }>(selectChangesForRewriteSql('postgres'), [
+                table.name,
+                ...after,
+                500,
+              ]);
+              if (rows.length === 0) break;
+              const params = rows.flatMap((row) => [
+                migratePayload(oldLayout, table, asBytes(row.payload)),
+                row.partition,
+                row.commit_seq,
+                row.idx,
+              ]);
+              await client.query(
+                `UPDATE sync_changes AS c SET payload=v.payload
+                   FROM (VALUES ${rows.map((_, i) => `($${i * 4 + 1}::BYTEA,$${i * 4 + 2}::TEXT,$${i * 4 + 3}::BIGINT,$${i * 4 + 4}::INTEGER)`).join(',')})
+                     AS v(payload, partition, commit_seq, idx)
+                  WHERE c.partition=v.partition AND c.commit_seq=v.commit_seq AND c.idx=v.idx`,
+                params,
+              );
+              const last = rows.at(-1)!;
+              if (rows.length < 500) break;
+              after = [last.partition, last.commit_seq, last.idx];
+            }
+          }
         }
         await client.query(
           `INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, $1, $2)

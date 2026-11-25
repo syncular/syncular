@@ -701,6 +701,68 @@ export const schemaBumpScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §9: a server bump that appends a column re-encodes the changes it
+    // logged before the bump. A restricted client at v2 and a schema-window
+    // client at v1 both read a pre-bump change of the bumped table.
+    name: 'schema-bump/appended-column-serves-pre-bump-changes',
+    specRefs: ['§9', '§7.4.3', '§4.3', '§4.5'],
+    requires: ['schema-window'],
+    server: { schema: RESTRICT_V1 },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 't1')]);
+      await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
+      const allowed = { project_id: ['p1'], org_id: ['o1'] };
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: RESTRICT_V1,
+        allowed,
+      });
+      const old = await ctx.newClient({
+        actorId: 'actor-old',
+        clientId: 'client-old',
+        schema: RESTRICT_V1,
+        allowed,
+      });
+      for (const client of [a, old]) {
+        await client.api.subscribe(U1);
+        await syncIdle(client);
+      }
+      const cursor = await a.api.replicaCursor();
+      // Logged under v1, above both clients' cursors.
+      await seedTasks(ctx, [task('t2', 'p1', 't2')]);
+      await seedRows(ctx, 'docs', [doc('d2', 'o1', 'p1')]);
+
+      await ctx.server.restart(RESTRICT_V2, [RESTRICT_V2, RESTRICT_V1]);
+      await ctx.recreateClient(a, RESTRICT_V2);
+      const sent = a.sentRequests.length;
+      await syncIdle(a);
+      checkEqual(
+        restrictsSent(a, sent)[0],
+        { type: 'RESTRICT', cursor, tables: ['docs'] },
+        'the upgraded client restricts U1 to docs at its kept cursor',
+      );
+      await syncIdle(old);
+      for (const client of [a, old]) {
+        checkEqual(
+          (await client.api.readRows('tasks')).map((row) => row.rowId),
+          ['t1', 't2'],
+          'the kept table caught up through the scan',
+        );
+        checkEqual(
+          (await client.api.readRows('docs')).map((row) => row.rowId),
+          ['d1', 'd2'],
+          'the pre-bump docs change reaches the client',
+        );
+      }
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.values.note),
+        [null, null],
+        'the appended column reads NULL on pre-bump rows',
+      );
+    },
+  },
+  {
     // §4.3, §5.6: a server that predates RESTRICT skips it and serves the
     // whole bootstrap, which the client applies; the restriction ends.
     name: 'schema-bump/restrict-skipped-by-older-server-bootstraps-whole',

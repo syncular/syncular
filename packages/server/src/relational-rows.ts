@@ -1208,6 +1208,29 @@ export function selectRowsForRewriteSql(
 }
 
 /**
+ * Keyset-paged scan of a table's logged changes for the migration rewrite:
+ * a column append re-encodes them with the rows, because the live section
+ * serves logged payloads under the current columns (SPEC §2.4). A change at
+ * or below the table's horizon is never served (§4.5) and stays as logged;
+ * a re-key in the same bump puts every earlier change there.
+ * Params: [table, afterPartition, afterSeq, afterIdx, limit].
+ */
+export function selectChangesForRewriteSql(dialect: RelationalDialect): string {
+  const p =
+    dialect === 'sqlite'
+      ? ['?', '?', '?', '?', '?']
+      : ['$1', '$2', '$3', '$4', '$5'];
+  return `SELECT c.partition, c.commit_seq, c.idx, c.payload FROM sync_changes c
+     WHERE c.tbl=${p[0]} AND c.payload IS NOT NULL
+       AND (c.partition, c.commit_seq, c.idx) > (${p[1]}, ${p[2]}, ${p[3]})
+       AND NOT EXISTS (SELECT 1 FROM sync_table_horizons h
+         WHERE h.partition=c.partition AND h.tbl=c.tbl
+           AND h.commit_seq >= c.commit_seq)
+     ORDER BY c.partition, c.commit_seq, c.idx
+     LIMIT ${p[4]}`;
+}
+
+/**
  * §3.1 re-key: the row's stored scopes under the table's current patterns. A
  * row without a value for one of them refuses the bump.
  */

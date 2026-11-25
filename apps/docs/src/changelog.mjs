@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-11-25',
+    title: 'A column append re-encodes the change log',
+    body: 'A schema bump that appended nullable columns re-encoded the stored rows of the table but left its logged changes in the previous column layout. A client upgrading across the bump, and a schema-window client at the previous version, then failed with `sync.invalid_request` on the first change of the table logged before the bump, on every round. The SQLite, PostgreSQL and D1 storages now re-encode the logged changes in the same upgrade. A database bumped by an earlier release needs a one-time table horizon; the 0.107.3 release notes give the statements.',
+    links: [{ href: '/server-storage-reference/', label: 'Storage reference' }],
+  },
+  {
+    date: '2026-11-25',
     title: 'A read-only scope downloads the blobs of the rows it pulls',
     body: 'The server authorized a blob download with the write-path check, so an actor whose only grant was a scope outside every write set pulled a row with its `blob_ref` and then got `blob.forbidden` for the blob. A download now passes when the actor may pull a referencing row, under the same rule as a pull, wildcard fence included.',
     links: [

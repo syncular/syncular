@@ -500,6 +500,40 @@ describe('same-version schema readiness', () => {
       await tx.commit();
     };
 
+    test(`${backend}: a column append re-encodes the logged changes of the table`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      // 40 commits span two D1 rewrite pages (32 statements each).
+      for (let i = 0; i < 40; i++) {
+        await commit(storage, `c${i}`, [taskRow(`t${i}`, 'p1', `v1 ${i}`)], []);
+      }
+      await commit(storage, 'gone', [], ['t0']);
+      // A table horizon (a re-key, or the heal of a database bumped before
+      // 0.107.3) hides commits 1..5; they stay as logged.
+      await db.exec([
+        `INSERT INTO sync_table_horizons(partition, tbl, commit_seq) VALUES ('${PARTITION}', 'tasks', 5)`,
+      ]);
+      await ensure(db.open(), nullableAppendSchema());
+      const columns = nullableAppendSchema().tables[0]!.columns;
+      const logged = await db.all(
+        "SELECT row_id, payload FROM sync_changes WHERE tbl='tasks' AND payload IS NOT NULL ORDER BY commit_seq",
+      );
+      expect(logged).toHaveLength(40);
+      for (const [i, change] of logged.entries()) {
+        const values = decodeRow(
+          i < 5 ? TASK_COLUMNS : columns,
+          change.payload as Uint8Array,
+        );
+        expect([values[0], values[2], values.at(-1)]).toEqual([
+          `t${i}`,
+          `v1 ${i}`,
+          null,
+        ]);
+      }
+      await db.close();
+    });
+
     test(`${backend}: a bump with a changed scope pattern re-keys every row`, async () => {
       const db = await database(backend);
       const storage = db.open();

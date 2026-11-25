@@ -585,10 +585,15 @@ class TsServerInstance implements ServerInstance {
     });
   }
 
-  async restart(schema: DriverSchema): Promise<void> {
+  async restart(
+    schema: DriverSchema,
+    schemaWindow?: readonly DriverSchema[],
+  ): Promise<void> {
     this.#schema = schema;
     this.#serverSchema = toServerSchema(schema);
-    this.#schemaWindow = undefined;
+    this.#schemaWindow = schemaWindow?.map((version, index) =>
+      compileSchema(index === 0 ? this.#serverSchema : toServerSchema(version)),
+    );
     this.#storage = new SqliteServerStorage(this.#storage.db);
     await this.#storage.ensureSchema(compileSchema(this.#serverSchema));
     this.#hub = this.#createHub();

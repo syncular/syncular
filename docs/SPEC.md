@@ -1548,8 +1548,17 @@ refusals are host readiness failures and add no wire error.
 
 A SQLite or PostgreSQL storage that opens a database whose stored schema
 version is lower than the running version applies the DDL, rewrites stored
-rows, re-keys every table whose scope patterns changed (§3.1), and writes the
-new marker in one transaction. The re-key decodes each row's stored payload,
+rows, re-encodes the logged changes of every table that appended columns,
+re-keys every table whose scope patterns changed (§3.1), and writes the
+new marker in one transaction. The live section (§4.5) and the schema window
+(§9) decode logged payloads under the current columns, so a logged change
+left in the previous layout fails every client that reads it with
+`sync.invalid_request`. A change at or below the table's horizon (§4.6) is
+never served and keeps its bytes. D1 re-encodes them in its rewrite phase.
+DECISION (2026-11-25): until 0.107.2 the TypeScript storages re-encoded rows
+only; a client upgrading across the bump, and a schema-window client, failed
+on the first change of the table logged before it. The Rust authority
+re-encoded both. The re-key decodes each row's stored payload,
 because a table with `materialize: false` has no projection columns; it runs
 under the migration lock, so writes wait for it. In that transaction it
 MUST raise the writer fence of every partition in `sync_partitions` to the

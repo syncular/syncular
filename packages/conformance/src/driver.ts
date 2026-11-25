@@ -683,9 +683,14 @@ export interface ServerInstance {
 
   /**
    * A process restart at `schema`: reopen the server over the same database,
-   * running the storage's schema upgrade when the version is newer.
+   * running the storage's schema upgrade when the version is newer. The
+   * restarted server serves `schemaWindow` when given (§9), else only
+   * `schema`.
    */
-  restart(schema: DriverSchema): Promise<void>;
+  restart(
+    schema: DriverSchema,
+    schemaWindow?: readonly DriverSchema[],
+  ): Promise<void>;
 
   close(): Promise<void>;
 }

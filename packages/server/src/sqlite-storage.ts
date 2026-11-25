@@ -45,6 +45,7 @@ import {
   SQLITE_TABLE_INDEXES_SQL,
   type SqliteTableIndexRow,
   sqliteIndexSignatures,
+  selectChangesForRewriteSql,
   selectRowsForRewriteSql,
 } from './relational-rows';
 import type { CompiledSchema, CompiledTable } from './schema';
@@ -695,6 +696,35 @@ END`);
           const rekey = rekeyed.includes(table.name);
           if (!plan.migrate && !plan.backfill && !rekey) continue;
           this.#rewriteRows(table, plan.migrate ? oldLayout : undefined, rekey);
+          if (plan.migrate && oldLayout !== undefined) {
+            const select = this.db.query<
+              {
+                partition: string;
+                commit_seq: number;
+                idx: number;
+                payload: Uint8Array;
+              },
+              [string, string, number, number, number]
+            >(selectChangesForRewriteSql('sqlite'));
+            const update = this.db.query(
+              'UPDATE sync_changes SET payload=? WHERE partition=? AND commit_seq=? AND idx=?',
+            );
+            let after: [string, number, number] = ['', -1, -1];
+            for (;;) {
+              const changes = select.all(table.name, ...after, 500);
+              for (const change of changes) {
+                update.run(
+                  migratePayload(oldLayout, table, change.payload),
+                  change.partition,
+                  change.commit_seq,
+                  change.idx,
+                );
+              }
+              const last = changes.at(-1);
+              if (last === undefined || changes.length < 500) break;
+              after = [last.partition, last.commit_seq, last.idx];
+            }
+          }
         }
         this.db
           .query(

@@ -75,6 +75,7 @@ import {
   sqliteIndexSignatures,
   selectRowSql,
   selectRowsSql,
+  selectChangesForRewriteSql,
   selectRowsForRewriteSql,
   tableColumnNames,
   toSqlValue,
@@ -879,9 +880,14 @@ interface D1MigrationState {
     table: string;
     oldLayout?: readonly StoredColumnLayout[];
     rekey?: true;
+    /** Re-encode the table's logged changes (a column append). */
+    changes?: true;
   }>;
   afterPartition: string;
   afterRowId: string;
+  /** The change-log keyset of a `changes` rewrite, after `afterPartition`. */
+  afterSeq?: number;
+  afterIdx?: number;
 }
 
 interface D1MigrationClaim {
@@ -1425,17 +1431,23 @@ export class D1ServerStorage
             columns.get(table.name),
           );
           const rekey = rekeyed.includes(table.name);
-          return plan.migrate || plan.backfill || rekey
-            ? [
-                {
-                  table: table.name,
-                  ...(plan.migrate
-                    ? { oldLayout: sourceLayouts[table.name] }
-                    : {}),
-                  ...(rekey ? { rekey: true as const } : {}),
-                },
-              ]
-            : [];
+          const oldLayout = sourceLayouts[table.name];
+          return [
+            ...(plan.migrate || plan.backfill || rekey
+              ? [
+                  {
+                    table: table.name,
+                    ...(plan.migrate && oldLayout !== undefined
+                      ? { oldLayout }
+                      : {}),
+                    ...(rekey ? { rekey: true as const } : {}),
+                  },
+                ]
+              : []),
+            ...(plan.migrate && oldLayout !== undefined
+              ? [{ table: table.name, oldLayout, changes: true as const }]
+              : []),
+          ];
         });
         const ddl = [
           ...retiredTableNames(schema, sourceLayouts).flatMap((name) => [
@@ -1505,6 +1517,60 @@ export class D1ServerStorage
         const table = schema.tables.get(plan.table);
         if (table === undefined)
           throw new StorageQueryError('sync.storage.schema_migration_conflict');
+        if (plan.changes === true) {
+          if (remaining < 4) break;
+          const limit = Math.min(32, remaining - 3);
+          statementsExecuted++;
+          const { results } = await this.#db
+            .prepare(`SELECT * FROM (${selectChangesForRewriteSql('sqlite')})
+              WHERE EXISTS (SELECT 1 FROM sync_schema_migration WHERE id=1 AND target=? AND state=?)`)
+            .bind(
+              plan.table,
+              state.afterPartition,
+              state.afterSeq ?? -1,
+              state.afterIdx ?? -1,
+              limit,
+              target,
+              claim.state,
+            )
+            .all<{
+              partition: string;
+              commit_seq: number;
+              idx: number;
+              payload: unknown;
+            }>();
+          const last = results.at(-1);
+          const done = results.length < limit;
+          if (
+            !(await save(
+              {
+                ...state,
+                offset: state.offset + (done ? 1 : 0),
+                afterPartition: done ? '' : last!.partition,
+                afterSeq: done ? -1 : last!.commit_seq,
+                afterIdx: done ? -1 : last!.idx,
+              },
+              results.map((change) =>
+                this.#db
+                  .prepare(
+                    'UPDATE sync_changes SET payload=? WHERE partition=? AND commit_seq=? AND idx=?',
+                  )
+                  .bind(
+                    migratePayload(
+                      plan.oldLayout!,
+                      table,
+                      asUint8Array(change.payload),
+                    ),
+                    change.partition,
+                    change.commit_seq,
+                    change.idx,
+                  ),
+              ),
+            ))
+          )
+            break;
+          continue;
+        }
         // A re-keyed page adds one scope-index statement.
         const rekey = plan.rekey === true;
         if (remaining < (rekey ? 5 : 4)) break;
