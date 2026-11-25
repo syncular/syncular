@@ -157,5 +157,10 @@ crashes, the preflight stays closed, and a tab must call
 `beginSecurityPreflight()` itself, which makes it the owner, before its
 `activateSecurity()` releases the gate. A handle that opens with
 `securityPreflight: true` while the leader tab closes opens in preflight on
-the next core. The leader tab's core ends with its tab: a tab that promotes
-starts its own core in the lifecycle its own `securityPreflight` names.
+the next core.
+
+The preflight is stored in the replica. A client that opens a replica left in
+preflight starts in preflight whatever its `securityPreflight` says and
+installs no configured keyring, so a tab that promotes after the leader tab
+closed during preflight runs a core in preflight with no owner. Closing an
+active client stores nothing, and `activateSecurity()` clears the record.

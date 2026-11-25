@@ -560,7 +560,9 @@ and releases the old keyring before resolving. In multi-tab mode the gate
 belongs to the single shared leader replica, and the tab that entered the
 preflight owns it: `activateSecurity()` from another tab fails with
 `client.security_preflight_owned`. A preflight whose owner tab closed stays
-closed until a tab calls `beginSecurityPreflight()` and then activates. Direct clients take the same
+closed until a tab calls `beginSecurityPreflight()` and then activates. The
+replica stores the preflight: a client that opens a replica left in preflight
+starts in preflight whatever its configuration says. Direct clients take the same
 `{ keys, keyIdColumns }` keyring as Worker handles. A key that arrives while the
 client is active goes through `addEncryptionKeys(keys)`, which extends the
 keyring and reveals the rows sealed under it without a preflight.

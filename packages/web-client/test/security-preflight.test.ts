@@ -182,3 +182,81 @@ test('preflight never accepts key material before activation', () => {
   ).toThrow('securityPreflight and encryption are mutually exclusive');
   db.close();
 });
+
+test('a replica left in preflight reopens in preflight until activation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'syncular-security-reopen-'));
+  roots.push(root);
+  const path = join(root, 'client.db');
+  const schema = {
+    version: 1,
+    tables: [
+      {
+        name: 'secrets',
+        columns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'project_id', type: 'string', nullable: false },
+          {
+            name: 'note',
+            type: 'bytes',
+            nullable: true,
+            encrypted: true,
+            declaredType: 'string',
+          },
+        ],
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+      },
+    ],
+  } as const;
+  const key = { keys: { secrets: new Uint8Array(32).fill(7) } };
+  const open = async (
+    config: { encryption?: typeof key } = {},
+  ): Promise<{ client: SyncClient; close(): Promise<void> }> => {
+    const db = new BunClientDatabase(path);
+    const client = new SyncClient({
+      database: db,
+      schema,
+      transport: async () => new Uint8Array(),
+      ...config,
+    });
+    await client.start();
+    return {
+      client,
+      close: async () => {
+        await client.close();
+        db.close();
+      },
+    };
+  };
+
+  const first = await open();
+  await first.client.beginSecurityPreflight();
+  await first.close();
+
+  const keyed = await open({ encryption: key });
+  expect(keyed.client.securityLifecycle()).toBe('preflight');
+  expectPreflightFailure(() => keyed.client.query('SELECT id FROM secrets'));
+  keyed.client.purgeLocalData({
+    purgeId: 'reopen-1',
+    targets: [{ table: 'secrets', selectors: { project_id: ['p1'] } }],
+  });
+  await keyed.close();
+
+  const plain = await open();
+  expect(plain.client.securityLifecycle()).toBe('preflight');
+  await plain.close();
+
+  // Activation installs only the keyring it carries: another key under the
+  // configured key id is an addition.
+  const activated = await open({ encryption: key });
+  await activated.client.activateSecurity();
+  await activated.client.addEncryptionKeys({
+    secrets: new Uint8Array(32).fill(9),
+  });
+  await activated.close();
+
+  const reopened = await open({ encryption: key });
+  expect(reopened.client.securityLifecycle()).toBe('active');
+  expect(reopened.client.query('SELECT id FROM secrets')).toEqual([]);
+  await reopened.close();
+});

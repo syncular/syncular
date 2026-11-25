@@ -235,7 +235,11 @@ fn new_command_readrows_close_roundtrips() {
         "create",
         json!({ "clientId": "c1", "schema": simple_schema() }),
     );
-    assert_eq!(create["result"], json!({}), "create ok: {create}");
+    assert_eq!(
+        create["result"],
+        json!({ "state": "active" }),
+        "create ok: {create}"
+    );
 
     // subscribe
     let sub = command(

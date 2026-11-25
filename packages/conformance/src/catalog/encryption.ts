@@ -1496,4 +1496,57 @@ export const encryptionScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    // §5.11: the preflight is replica state. A client recreated over a replica
+    // left in preflight opens in preflight whatever its configuration says,
+    // and its configured keyring waits for activation.
+    name: 'encryption/preflight-survives-recreation',
+    specRefs: ['§5.11'],
+    server: E2EE_SERVER,
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'gate',
+        clientId: 'gate',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+        transportGate: 'closed',
+      });
+      const api = client.api;
+      check(
+        api.recreateWithSchema !== undefined,
+        'the client driver keeps its database across recreation',
+      );
+      const codeOf = (promise: Promise<unknown>) =>
+        promise.then(
+          () => '',
+          (error: { code?: string }) => error.code ?? '',
+        );
+      await api.beginSecurityPreflight();
+      const gated = await api.recreateWithSchema(E2EE_SCHEMA);
+      checkEqual(
+        await codeOf(gated.subscribe(U1)),
+        'client.security_preflight_required',
+        'a client recreated during preflight opens in preflight',
+      );
+      await gated.activateSecurity();
+      checkEqual(
+        await codeOf(
+          gated.addEncryptionKeys({ secrets: { $bytes: WRONG_KEY_HEX } }),
+        ),
+        '',
+        'activation installs only the keyring it carries',
+      );
+      check(
+        gated.recreateWithSchema !== undefined,
+        'the recreated client keeps its database across recreation',
+      );
+      const active = await gated.recreateWithSchema(E2EE_SCHEMA);
+      checkEqual(
+        await codeOf(active.subscribe(U1)),
+        '',
+        'a client recreated after activation opens active',
+      );
+    },
+  },
 ];

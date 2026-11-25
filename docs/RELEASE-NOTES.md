@@ -24,10 +24,26 @@ the next core, the tab's own after it promotes or the next leader's after it
 binds, so the handle opens in preflight and owns it
 (SYNCULAR-FOLLOWER-PREFLIGHT-HANDOVER-001; SPEC §7.1).
 
+The preflight is now replica state in both cores. The TypeScript client kept
+it in memory only, so a quarantine reopened when the leader tab closed or
+crashed: the promoted tab started its core in the lifecycle its own
+`securityPreflight` named. Entering preflight now writes the meta record
+`securityPreflightPending`, and `activateSecurity` deletes it. A client that
+opens a replica holding it starts in preflight whatever its configuration
+requests and installs no configured keyring; keys install only through
+`activateSecurity`. The Rust core already kept the record, but its `create`
+command refused a create without `securityPreflight: true` over such a replica
+with `client.security_preflight_required`. It now opens that create in
+preflight, as the TypeScript client does, and every `create` answers
+`{ state }` with the lifecycle it opened in; the Tauri and React Native
+bridges adopt it. The conformance scenario
+`encryption/preflight-survives-recreation` holds both cores to it (SPEC
+§5.11, durable preflight).
+
 The Tauri plugin was not affected: it refuses `activateSecurity` and
 `beginSecurityPreflight` from webviews on a host-created client with
 `client.host_owned`, and a webview-created client serves only the webview
-that created it. The Rust core and the wire do not change.
+that created it. The SSP2 wire does not change.
 
 **Upgrading.**
 
@@ -36,6 +52,14 @@ that created it. The Rust core and the wire do not change.
   A tab that waited for its own activation to open the replica waits for a
   status with `securityLifecycle: 'active'` instead, or enters the preflight
   with `beginSecurityPreflight()` once the owner tab has closed.
+- A TypeScript client that opens a replica left in preflight starts in
+  preflight even when its configuration omits `securityPreflight`, and holds
+  no configured keyring until `activateSecurity`. Replicas from 0.106.1 and
+  earlier hold no record and open as configured.
+- A native `create` over a replica in preflight succeeds in preflight instead
+  of failing with `client.security_preflight_required`; a host that retried
+  with `securityPreflight: true` no longer needs to. Its reply is
+  `{ state }` instead of `{}`.
 - `MULTI_TAB_PROTOCOL_VERSION` moves from 15 to 16. A tab still running an
   older build reports `leader-incompatible` and must reload. The replica
   storage, the server and the SSP2 wire do not change.

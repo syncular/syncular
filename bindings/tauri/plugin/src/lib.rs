@@ -1286,11 +1286,6 @@ impl SyncularState {
                 }
             }
         }
-        let create_preflight = method == "create"
-            && command
-                .pointer("/params/securityPreflight")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
         // Installed before a webview create runs, so its first events reach the
         // channel. A host create keeps the attached webview's channel.
         let previous_events = if method == "create" && webview.is_some() {
@@ -1354,8 +1349,10 @@ impl SyncularState {
             }
         }
         drop(reader);
+        // A create answers with the lifecycle it opened in; a replica left in
+        // preflight opens in preflight whatever the create asked for.
         if succeeded && method == "create" {
-            if !create_preflight {
+            if reply.pointer("/result/state") == Some(&json!("active")) {
                 self.security_gate.activate()?;
             }
         } else if succeeded && method == "activateSecurity" {
@@ -2316,7 +2313,10 @@ mod tests {
             } }))
         };
 
-        assert_eq!(create("actor-a", "client-a")["result"], json!({}));
+        assert_eq!(
+            create("actor-a", "client-a")["result"],
+            json!({ "state": "active" })
+        );
         command(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "upsert", "table": "todo", "values": { "id": "t1", "title": "a" }
         }] } }));
@@ -2329,7 +2329,10 @@ mod tests {
             json!({})
         );
 
-        assert_eq!(create("actor-b", "client-b")["result"], json!({}));
+        assert_eq!(
+            create("actor-b", "client-b")["result"],
+            json!({ "state": "active" })
+        );
         assert_eq!(
             snapshot("SELECT title FROM todo")["result"]["rows"],
             json!([]),
@@ -2347,7 +2350,10 @@ mod tests {
             create("actor-a", "client-b")["error"]["code"],
             "client.identity_mismatch"
         );
-        assert_eq!(create("actor-a", "client-a")["result"], json!({}));
+        assert_eq!(
+            create("actor-a", "client-a")["result"],
+            json!({ "state": "active" })
+        );
         assert_eq!(
             snapshot("SELECT title FROM todo")["result"]["rows"][0]["title"],
             "a"
@@ -2400,7 +2406,11 @@ mod tests {
                 params["database"] = json!(database);
             }
             let created = command("create", params);
-            assert_eq!(created["result"], json!({}), "{database:?}: {created}");
+            assert_eq!(
+                created["result"],
+                json!({ "state": "preflight" }),
+                "{database:?}: {created}"
+            );
             assert_eq!(command("activateSecurity", json!({}))["result"], json!({}));
         };
         let titles = || {
@@ -4405,7 +4415,10 @@ mod tests {
             reply: create_tx,
         })
         .expect("post create");
-        assert_eq!(create_rx.recv().expect("create reply")["result"], json!({}));
+        assert_eq!(
+            create_rx.recv().expect("create reply")["result"],
+            json!({ "state": "active" })
+        );
 
         let (read_tx, read_rx) = channel::<ReadRequest>();
         let read_path = path.to_string_lossy().into_owned();

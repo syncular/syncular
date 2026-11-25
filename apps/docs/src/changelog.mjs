@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-11-25',
     title: 'Only the tab that entered the security preflight releases it',
-    body: "On a shared Worker replica, any tab's `activateSecurity()` released the security preflight another tab had entered. The leader's core now records the owner tab; `activateSecurity()` from another tab fails with `client.security_preflight_owned` and the gate stays closed. A preflight whose owner tab closed stays closed until a tab enters it with `beginSecurityPreflight()` and activates. A follower's `beginSecurityPreflight()` in flight when the leader tab closes runs again on the next core, so a handle opened with `securityPreflight: true` opens in preflight.",
+    body: "On a shared Worker replica, any tab's `activateSecurity()` released the security preflight another tab had entered. The leader's core now records the owner tab; `activateSecurity()` from another tab fails with `client.security_preflight_owned` and the gate stays closed. A preflight whose owner tab closed stays closed until a tab enters it with `beginSecurityPreflight()` and activates. A follower's `beginSecurityPreflight()` in flight when the leader tab closes runs again on the next core, so a handle opened with `securityPreflight: true` opens in preflight. The replica now stores the preflight in both cores: a client that opens a replica left in preflight starts in preflight whatever its configuration says, and a native `create` over it opens in preflight instead of failing.",
     links: [
       {
         href: '/platform-web-reads-writes/#windowed-sync-and-local-purge',

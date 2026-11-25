@@ -1241,11 +1241,14 @@ export async function createSyncClientHandle(
         dispatchEvent: (event) => context.broadcast(event),
       });
       // §7.1: the tab that entered the preflight owns it and alone releases
-      // it. A preflight without an owner is one whose owner tab closed.
+      // it. A preflight without an owner is one whose owner tab closed, or
+      // one the replica kept after its core ended.
       let preflight: { owner: string | undefined } | undefined =
         resolvedConfig.securityPreflight === true
           ? { owner: context.tabId }
-          : undefined;
+          : (await core.invoke('securityLifecycle', [])) === 'preflight'
+            ? { owner: undefined }
+            : undefined;
       return {
         clientId: core.clientId,
         call: async (tabId, method, args) => {

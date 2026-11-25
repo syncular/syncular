@@ -172,8 +172,8 @@ pub struct CreateEffects {
     /// True while a security preflight is pending: a preflighted client was
     /// installed (or entered preflight, or was shut down mid-preflight) and
     /// `activateSecurity` has yet to complete. `dispatch` maintains this so a
-    /// replacement `create` without the `securityPreflight` flag is refused
-    /// across `shutdown`, where the client slot is empty, on a host that reuses
+    /// replacement `create` opens in preflight, whatever it requests, across
+    /// `shutdown`, where the client slot is empty, on a host that reuses
     /// one `CreateEffects` across creates (the Tauri plugin, the conformance
     /// shim, the bench harness).
     ///
@@ -181,9 +181,8 @@ pub struct CreateEffects {
     /// Native native module rebuilds its FFI handle on every `create` — starts
     /// each create with this flag clear. For those hosts the persisted marker
     /// in the client core carries the gate: a file-backed replica reopens in
-    /// preflight, and the `create` path refuses a plain re-create against it.
-    /// This in-memory flag covers the same-handle case where no file persists
-    /// the marker.
+    /// preflight whatever the `create` requests. This in-memory flag covers
+    /// the same-handle case where no file persists the marker.
     pub security_preflight_pending: bool,
     /// §5.11: the native host's authority ceiling, table to permitted
     /// columns. The host sets it from its own configuration, never from the
@@ -755,31 +754,7 @@ pub fn dispatch<T: Transport>(
     method: &str,
     params: &Value,
 ) -> Result<Value, CommandError> {
-    if method == "create" {
-        // Fail-closed against a compromised webview re-issuing `create` (or
-        // `shutdown` + `create`) WITHOUT the securityPreflight flag to exit
-        // the gate: while a preflight is pending — on the live client, or
-        // carried in `effects` across a `shutdown` — a replacement create must
-        // itself request securityPreflight; the gate opens only through
-        // activateSecurity.
-        let requests_preflight = optional(
-            params.get("securityPreflight"),
-            "securityPreflight",
-            Value::as_bool,
-        )
-        .map_err(client_err)?
-        .unwrap_or(false);
-        let preflight_engaged = client.as_ref().map_or(
-            effects.security_preflight_pending,
-            SyncClient::security_preflight,
-        );
-        if preflight_engaged && !requests_preflight {
-            return Err(CommandError::new(
-                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
-                "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity",
-            ));
-        }
-    } else {
+    if method != "create" {
         let allowed_during_preflight = matches!(
             method,
             "authorityRead"
@@ -918,41 +893,43 @@ pub fn dispatch<T: Transport>(
             )
             .map_err(client_err)?
             .unwrap_or(false);
-            // A file-backed replica reopens in preflight when its persisted
-            // quarantine marker is set (client core restores it). Refuse a plain
-            // re-create so a rebuilt host handle — the React Native native module
-            // tears its FFI handle down on every create — cannot downgrade a
-            // quarantined replica to active. A create that itself requests
-            // securityPreflight, or an activated replica whose marker cleared,
-            // proceeds.
-            if instance.security_preflight() && !security_preflight {
-                return Err(CommandError::new(
-                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
-                    "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity",
-                ));
-            }
             if security_preflight && params.get("encryption").is_some() {
                 return Err(client_err(
                     "sync.invalid_request: securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight"
                         .to_owned(),
                 ));
             }
-            if let Some(enc) = params.get("encryption") {
-                let config = parse_encryption(enc).map_err(client_err)?;
-                instance.set_encryption(config);
-            }
-            if security_preflight {
+            let encryption = params
+                .get("encryption")
+                .map(parse_encryption)
+                .transpose()
+                .map_err(client_err)?;
+            // §5.11: the preflight is replica state. A create opens in
+            // preflight whatever it requests while the replica holds the
+            // marker, the replaced client is in preflight, or a preflight
+            // rode `effects` across `shutdown`; its keyring waits for
+            // activateSecurity.
+            if security_preflight
+                || instance.security_preflight()
+                || client.as_ref().map_or(
+                    effects.security_preflight_pending,
+                    SyncClient::security_preflight,
+                )
+            {
                 instance.begin_security_preflight().map_err(client_err)?;
+            } else if let Some(config) = encryption {
+                instance.set_encryption(config);
             }
             if let Some(state) = params.get("transportGate") {
                 instance
                     .set_transport_gate(transport, parse_transport_gate(state)?)
                     .map_err(CommandError::from_client)?;
             }
-            effects.security_preflight_pending = security_preflight;
+            effects.security_preflight_pending = instance.security_preflight();
             transport.set_client_id(instance.client_id());
+            let state = instance.security_lifecycle();
             *client = Some(instance);
-            Ok(json!({}))
+            Ok(json!({ "state": state }))
         }
         "securityLifecycle" => Ok(json!({
             "state": need_client(client)?.security_lifecycle()
@@ -3332,7 +3309,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_refuses_a_replacement_create_without_the_flag() {
+    fn a_replacement_create_without_the_flag_opens_in_preflight() {
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
         let mut effects = CreateEffects::default();
@@ -3345,17 +3322,16 @@ mod tests {
         )
         .expect("preflight create");
 
-        // The escape the gate exists to prevent: a plain re-create must fail.
-        let escape = dispatch(
+        // The escape the gate exists to prevent: a plain re-create opens gated.
+        let replaced = dispatch(
             &mut transport,
             &mut client,
             &mut effects,
             "create",
             &json!({ "schema": schema() }),
         )
-        .expect_err("plain create must be refused during preflight");
-        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
-        // The refused create left the preflighted client installed and gated.
+        .expect("plain create during preflight");
+        assert_eq!(replaced, json!({ "state": "preflight" }));
         let query_error = dispatch(
             &mut transport,
             &mut client,
@@ -3394,7 +3370,7 @@ mod tests {
             &json!({}),
         )
         .expect("activation");
-        dispatch(
+        let created = dispatch(
             &mut transport,
             &mut client,
             &mut effects,
@@ -3402,6 +3378,7 @@ mod tests {
             &json!({ "schema": schema() }),
         )
         .expect("plain create after activation");
+        assert_eq!(created, json!({ "state": "active" }));
         let rows = dispatch(
             &mut transport,
             &mut client,
@@ -3491,9 +3468,9 @@ mod tests {
     #[test]
     fn an_unactivated_replica_stays_quarantined_across_shutdown_on_disk() {
         // The other half, and the reason the marker exists: a replica that
-        // entered preflight and never activated must still refuse a plain
-        // re-create after shutdown, even on a host that rebuilt its handle and
-        // carries no in-memory flag.
+        // entered preflight and never activated opens in preflight after
+        // shutdown, whatever the create requests, even on a host that rebuilt
+        // its handle and carries no in-memory flag.
         let path = temp_db_path("quarantined-reopen");
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
@@ -3517,17 +3494,34 @@ mod tests {
         .expect("shutdown during preflight");
 
         // A fresh host handle: no in-memory pending flag survives here, so only
-        // the persisted marker can hold the gate.
-        let mut rebuilt = CreateEffects::default();
-        let escape = dispatch(
-            &mut transport,
-            &mut client,
-            &mut rebuilt,
-            "create",
-            &json!({ "schema": schema(), "dbPath": path }),
-        )
-        .expect_err("a quarantined replica must refuse a plain re-create");
-        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        // the persisted marker can hold the gate. A keyring in the create waits
+        // for activation.
+        for params in [
+            json!({ "schema": schema(), "dbPath": path }),
+            json!({ "schema": schema(), "dbPath": path, "encryption": { "keys": {} } }),
+        ] {
+            let mut rebuilt = CreateEffects::default();
+            let reopened = dispatch(&mut transport, &mut client, &mut rebuilt, "create", &params)
+                .expect("a quarantined replica opens in preflight");
+            assert_eq!(reopened, json!({ "state": "preflight" }));
+            let gated = dispatch(
+                &mut transport,
+                &mut client,
+                &mut rebuilt,
+                "query",
+                &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+            )
+            .expect_err("protected query stays gated");
+            assert_eq!(gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut rebuilt,
+                "shutdown",
+                &json!({}),
+            )
+            .expect("shutdown during preflight");
+        }
 
         let _ = std::fs::remove_file(&path);
     }
@@ -3556,15 +3550,15 @@ mod tests {
         assert!(client.is_none());
 
         // The pending preflight rides `effects` across the empty client slot.
-        let escape = dispatch(
+        let reopened = dispatch(
             &mut transport,
             &mut client,
             &mut effects,
             "create",
             &json!({ "schema": schema() }),
         )
-        .expect_err("shutdown + plain create must stay refused");
-        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        .expect("shutdown + plain create opens gated");
+        assert_eq!(reopened, json!({ "state": "preflight" }));
 
         dispatch(
             &mut transport,

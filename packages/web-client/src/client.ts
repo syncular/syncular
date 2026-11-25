@@ -882,6 +882,8 @@ function emptySummary(pushed: number): MutableSummary {
 }
 
 const LOG_EPOCH_META_KEY = 'logEpoch';
+/** §5.11: present while the replica is in security preflight. */
+const SECURITY_PREFLIGHT_KEY = 'securityPreflightPending';
 
 /** §7.8: one `syncUntilIdle` drive's default total deadline. */
 const SYNC_IDLE_TIMEOUT_MS = 60_000;
@@ -1316,6 +1318,14 @@ export class SyncClient {
           persisted ?? this.#config.clientId ?? crypto.randomUUID();
         if (persisted === undefined) {
           setMeta(this.#db, 'clientId', this.#clientId);
+        }
+        // §5.11: a replica left in preflight opens in preflight whatever the
+        // configuration says, and a configured keyring waits for activation.
+        if (this.#securityLifecycle === 'preflight')
+          setMeta(this.#db, SECURITY_PREFLIGHT_KEY, '1');
+        else if (getMeta(this.#db, SECURITY_PREFLIGHT_KEY) === '1') {
+          this.#securityLifecycle = 'preflight';
+          this.#encryption = undefined;
         }
         // §7.3.5: restore the persisted lease so leaseState survives restart.
         const leaseJson = getMeta(this.#db, 'leaseState');
@@ -1760,11 +1770,13 @@ export class SyncClient {
   beginSecurityPreflight(): Promise<void> {
     this.#requireStarted();
     if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
-    if (this.#securityLifecycle !== 'preflight')
-      this.#applyBatch((batch) => {
-        this.#securityLifecycle = 'preflight';
-        batch.status();
-      });
+    const entering = this.#securityLifecycle !== 'preflight';
+    // The gate closes before the marker write, so a failed write fails closed.
+    this.#securityLifecycle = 'preflight';
+    this.#applyBatch((batch) => {
+      setMeta(this.#db, SECURITY_PREFLIGHT_KEY, '1');
+      if (entering) batch.status();
+    });
     this.#securityEpoch += 1;
     this.disconnectRealtime();
     const barrier = (async () => {
@@ -1798,6 +1810,9 @@ export class SyncClient {
     await this.#serialize(() => this.#drainPendingEvictions());
     this.#encryption = encryption;
     this.#applyBatch((batch) => {
+      this.#db.exec(`DELETE FROM ${META_TABLE} WHERE key=?`, [
+        SECURITY_PREFLIGHT_KEY,
+      ]);
       this.#securityLifecycle = 'active';
       batch.status();
     });

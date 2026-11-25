@@ -7,6 +7,9 @@
  * the server, the wire — is real.
  */
 import { afterEach, beforeAll, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { unitId } from '@syncular/core';
 import {
   ClientSyncError,
@@ -701,6 +704,39 @@ test('a preflight whose owner tab closed stays closed until another tab enters i
   await leader.beginSecurityPreflight();
   await leader.activateSecurity();
   expect(await leader.securityLifecycle()).toBe('active');
+});
+
+test('a preflight whose leader tab closed stays closed on the promoted core', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-mt-durable-'));
+  try {
+    const group = makeGroup();
+    const database = {
+      mode: 'custom',
+      options: { path: join(directory, 'replica.db') },
+    } as const;
+    const leader = await group.make({
+      clientId: 'mt-durable-lead',
+      database,
+      securityPreflight: true,
+      transportGate: 'closed',
+    });
+    const follower = await group.make({ database, transportGate: 'closed' });
+    const promoted = Promise.withResolvers<string>();
+    follower.onRoleChange(promoted.resolve);
+    await leader.close();
+    expect(await promoted.promise).toBe('leader');
+
+    expect(await follower.securityLifecycle()).toBe('preflight');
+    await expectRejectsWithCode(
+      follower.activateSecurity(),
+      SECURITY_PREFLIGHT_OWNED_CODE,
+    );
+    await follower.beginSecurityPreflight();
+    await follower.activateSecurity();
+    expect(await follower.securityLifecycle()).toBe('active');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 for (const next of ['promoted', 'rebound'] as const) {

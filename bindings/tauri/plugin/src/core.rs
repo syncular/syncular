@@ -151,13 +151,11 @@ impl SyncularCore {
             self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
+        // A create opens in preflight when it asks for it or when the
+        // replica is still in preflight.
         if method == "beginSecurityPreflight"
             || method == "shutdown"
-            || (method == "create"
-                && params
-                    .get("securityPreflight")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false))
+            || (method == "create" && self.effects.security_preflight_pending)
         {
             self.interactive_sync = false;
             self.background_sync_ms = None;
@@ -546,7 +544,11 @@ mod tests {
             "method": "create",
             "params": { "clientId": "c1", "schema": simple_schema() }
         }));
-        assert_eq!(reply["result"], json!({}), "create ok: {reply}");
+        assert_eq!(
+            reply["result"],
+            json!({ "state": "active" }),
+            "create ok: {reply}"
+        );
     }
 
     #[test]
@@ -955,7 +957,11 @@ mod tests {
                 "method": "create",
                 "params": { "clientId": "c1", "schema": simple_schema(), "dbPath": path_str }
             }));
-            assert_eq!(reply["result"], json!({}), "create with dbPath: {reply}");
+            assert_eq!(
+                reply["result"],
+                json!({ "state": "active" }),
+                "create with dbPath: {reply}"
+            );
             core.command(&json!({
                 "method": "mutate",
                 "params": { "mutations": [{
@@ -976,7 +982,11 @@ mod tests {
                 "method": "create",
                 "params": { "schema": simple_schema(), "dbPath": path_str }
             }));
-            assert_eq!(reopened["result"], json!({}), "reopen: {reopened}");
+            assert_eq!(
+                reopened["result"],
+                json!({ "state": "active" }),
+                "reopen: {reopened}"
+            );
             let rows = core.query("SELECT title FROM todo", Value::Null);
             let list = rows["result"]["rows"].as_array().expect("rows");
             assert_eq!(list.len(), 1, "reopened db: {rows}");

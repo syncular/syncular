@@ -4763,6 +4763,21 @@ not yet created. It MAY read the
 creation-time authority policy through `authorityRead(requests)` as defined below.
 No other application-data operation is permitted.
 
+**Durable preflight.** The preflight is replica state. Entering preflight, at
+construction with `securityPreflight: true` or through
+`beginSecurityPreflight()`, writes the meta record `securityPreflightPending`
+with the value `1`; the gate closes before the write, so a failed write fails
+the call with the gate closed. `activateSecurity` deletes the record in the
+step that opens the gate. A client that opens a replica holding the record
+starts in preflight whatever its configuration requests, and holds no
+configured keyring: keys install only through `activateSecurity`. A native
+`create` also opens in preflight when the client it replaces is in preflight
+or a preflight was pending at the preceding `shutdown`, and answers
+`{ state }` with the lifecycle it opened in. Shutdown and close write no
+record, so a client closed while active reopens active. `purgeLocalData`
+keeps the record. A TypeScript replica from 0.106.1 or earlier holds no
+record and opens in the lifecycle its configuration requests.
+
 **Purge erasure.** After `purgeLocalData` applies its plan, the client MUST
 merge every FTS5 index of the replica (`'optimize'`), rewrite the replica
 file (SQLite `VACUUM` with `secure_delete` on) and truncate its WAL. SQLite
@@ -6603,8 +6618,9 @@ any tab other than the owner fails with the non-retryable client-local code
 stays closed. When the owner tab closes or its page ends, the leader learns it
 through the tab's lock; the preflight stays closed and has no owner, and a tab
 releases it only after it calls `beginSecurityPreflight` and so becomes the
-owner. A core lives in its leader tab: when that tab ends, the promoted tab
-starts a new core in the lifecycle its own `securityPreflight` names.
+owner. A preflight outlives its leader tab: the promoted tab's core opens the
+replica in preflight (§5.11, durable preflight), and the preflight has no
+owner.
 
 **Browser preflight handover.** `beginSecurityPreflight` only closes the gate,
 so a follower call in flight when its leader departs runs again on the next

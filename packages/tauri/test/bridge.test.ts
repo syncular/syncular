@@ -575,6 +575,24 @@ describe('createTauriSyncClient', () => {
     });
   }
 
+  test('a create over a replica left in preflight opens the bridge in preflight', async () => {
+    const { tauri } = makeTauri((cmd, args) =>
+      (args.command as { method?: string } | undefined)?.method === 'create'
+        ? { result: { state: 'preflight' } }
+        : defaultResponder(cmd, args),
+    );
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await client.activateSecurity();
+    expect(await client.securityLifecycle()).toBe('active');
+  });
+
   test('preflight blocks fast reads, permits purge, and installs keys only on activation', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     const client = await createTauriSyncClient({
