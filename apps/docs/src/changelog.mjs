@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-25',
+    title: "A unit's first image continues at its table's transaction size",
+    body: "Both clients grew every unit's first SQLite image from 1,024-row transactions by doubling, so a catalogue loaded edition by edition paid the ramp's commits for every edition. The first transaction still holds 1,024 rows, so an empty table shows its first rows as early as before; the second continues at the size the table's transactions reached, 65,536 rows when none did. With every OPFS write held 6 ms and every flush 100 ms longer, a catalogue of 154,569 rows in seven release units imports in 25 transactions and 66.3 s instead of 44 transactions and 89.7 s.",
+    links: [
+      {
+        href: '/concepts-bootstrap/',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-11-25',
     title: 'A column append re-encodes the change log',
     body: 'A schema bump that appended nullable columns re-encoded the stored rows of the table but left its logged changes in the previous column layout. A client upgrading across the bump, and a schema-window client at the previous version, then failed with `sync.invalid_request` on the first change of the table logged before the bump, on every round. The SQLite, PostgreSQL and D1 storages now re-encode the logged changes in the same upgrade. A database bumped by an earlier release needs a one-time table horizon; the 0.107.3 release notes give the statements.',
     links: [{ href: '/server-storage-reference/', label: 'Storage reference' }],

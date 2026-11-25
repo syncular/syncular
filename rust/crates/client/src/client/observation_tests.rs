@@ -8768,11 +8768,11 @@ fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
 }
 
 #[test]
-fn image_chunks_double_and_roll_back_whole_on_failure() {
+fn a_first_page_commits_1024_rows_then_the_rest_and_rolls_back_whole_on_failure() {
     let mut client = client();
     client.image_chunk_ms.set(Some((0.0, 0.0, 0.0)));
     let image = Connection::open_in_memory().unwrap();
-    // Row 5000 lies in the second 1,024 rows of the third chunk.
+    // Row 5000 lies in the second chunk.
     image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
         WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<7268)
         INSERT INTO tasks SELECT printf('%05d',x),CASE WHEN x=5000 THEN NULL ELSE 'p1' END,1 FROM n;
@@ -8796,8 +8796,8 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
         .apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, 7268, 7, "digest")
         .is_err());
     assert!(client.conn.is_autocommit());
-    assert_eq!(count(&client), 3072);
-    assert_eq!(client.drain_change_batches().len(), 2);
+    assert_eq!(count(&client), 1024);
+    assert_eq!(client.drain_change_batches().len(), 1);
     assert_eq!(*seen.lock().unwrap(), vec![0, 1024, 2048, 3072, 4096]);
     image
         .execute("UPDATE tasks SET project_id='p1' WHERE id='05000'", [])
@@ -8808,7 +8808,7 @@ fn image_chunks_double_and_roll_back_whole_on_failure() {
         Ok(7268)
     ));
     assert_eq!(count(&client), 7268);
-    assert_eq!(client.drain_change_batches().len(), 4);
+    assert_eq!(client.drain_change_batches().len(), 2);
     assert_eq!(
         *seen.lock().unwrap(),
         vec![1024, 2048, 3072, 4096, 5120, 6144, 7168, 7268]
@@ -8846,7 +8846,7 @@ fn image_chunks_size_the_next_one_by_the_rows_per_250_ms() {
             .progress
             .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, total, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, false, &scopes, "", "", 0, total, 7, "digest"),
             Ok(applied) if i64::from(applied) == total
         ));
         assert_eq!(*seen.lock().unwrap(), expected);
@@ -8880,7 +8880,7 @@ fn a_slow_image_commit_budgets_the_next_chunk() {
         let scopes = vec![("project_id".into(), vec!["p1".into()])];
         client.progress.start(&client.epoch);
         assert!(matches!(
-            client.apply_sqlite_image(&image, &table, true, &scopes, "", "", 0, total, 7, "digest"),
+            client.apply_sqlite_image(&image, &table, false, &scopes, "", "", 0, total, 7, "digest"),
             Ok(applied) if i64::from(applied) == total
         ));
         assert_eq!(client.drain_change_batches().len(), chunks);
@@ -12582,34 +12582,39 @@ fn security_preflight_and_activation_each_emit_the_status_lifecycle() {
 }
 
 #[test]
-fn a_later_range_image_starts_at_the_chunk_size_its_table_reached() {
-    // §5.3: the first range runs 1,024 rows, then the second chunk's 2,048;
-    // the second range of the table starts at 2,048 instead of 1,024.
-    let mut client = client();
-    client.image_chunk_ms.set(Some((128.0, 0.0, 0.0)));
-    let table = client.schema.table("tasks").unwrap().clone();
-    let scopes = vec![("project_id".into(), vec!["p1".into()])];
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = seen.clone();
-    client.progress.start(&client.epoch);
-    let _subscription = client
-        .progress
-        .subscribe(move |progress| sink.lock().unwrap().push(progress.rows_processed));
-    for (first, from, to) in [(true, 1, 3000), (false, 3001, 8000)] {
-        let total = to - from + 1;
-        let image = Connection::open_in_memory().unwrap();
-        image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
-            WITH RECURSIVE n(x) AS (SELECT {from} UNION ALL SELECT x+1 FROM n WHERE x<{to})
-            INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
-            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
-            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
-        seen.lock().unwrap().clear();
-        assert!(matches!(
-            client.apply_sqlite_image(&image, &table, first, &scopes, "", "", 0, total, 7, "digest"),
-            Ok(applied) if i64::from(applied) == total
-        ));
+fn a_first_page_jumps_to_the_chunk_size_its_table_reached_after_1024_rows() {
+    // §5.3: a first page commits 1,024 rows, then up to 65,536, and the
+    // second range of the table starts at that size: three commits for
+    // 8,000 rows. A later unit's first page continues at the size its table
+    // reached: 1,024, 2,048 and the last 2,928 rows.
+    for (known, images, commits, next) in [
+        (None, vec![(true, 1, 3000), (false, 3001, 8000)], 3, 65_536),
+        (Some(2048), vec![(true, 1, 6000)], 3, 4096),
+    ] {
+        let mut client = client();
+        client.image_chunk_ms.set(Some((128.0, 0.0, 0.0)));
+        if let Some(known) = known {
+            client.image_chunk_rows.insert("tasks".into(), known);
+        }
+        let table = client.schema.table("tasks").unwrap().clone();
+        let scopes = vec![("project_id".into(), vec!["p1".into()])];
+        client.progress.start(&client.epoch);
+        for (first, from, to) in images {
+            let total = to - from + 1;
+            let image = Connection::open_in_memory().unwrap();
+            image.execute_batch(&format!("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+                WITH RECURSIVE n(x) AS (SELECT {from} UNION ALL SELECT x+1 FROM n WHERE x<{to})
+                INSERT INTO tasks SELECT printf('%05d',x),'p1',1 FROM n;
+                CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',{total});")).unwrap();
+            assert!(matches!(
+                client.apply_sqlite_image(&image, &table, first, &scopes, "", "", 0, total, 7, "digest"),
+                Ok(applied) if i64::from(applied) == total
+            ));
+        }
+        assert_eq!(client.drain_change_batches().len(), commits);
+        assert_eq!(client.image_chunk_rows.get("tasks"), Some(&next));
     }
-    assert_eq!(*seen.lock().unwrap(), vec![1024, 2048, 3072, 4096, 5000]);
 }
 
 #[test]

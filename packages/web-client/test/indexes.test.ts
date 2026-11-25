@@ -246,7 +246,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
     }
   });
 
-  test('image transactions double from 1,024 rows and roll back whole on failure', async () => {
+  test('a first page commits 1,024 rows, then the rest, and rolls a chunk back whole on failure', async () => {
     const db = new BunClientDatabase();
     const image = new BunClientDatabase();
     const compiled = compileClientSchema(SCHEMA);
@@ -256,7 +256,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
       image.exec(
         'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
       );
-      // Row 5000 lies in the second statement of the third transaction.
+      // Row 5000 lies in the fifth statement of the second transaction.
       image.exec(
         "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<7268) INSERT INTO tasks SELECT printf('%05d',x),'p1',CASE WHEN x=5000 THEN NULL ELSE 'title '||x END,1 FROM n",
       );
@@ -296,14 +296,14 @@ describe('CREATE INDEX subset — client local DDL', () => {
           },
         );
       await expect(apply()).rejects.toThrow();
-      expect(committed).toEqual([1024, 3072]);
+      expect(committed).toEqual([1024]);
       expect(progress).toEqual([1024, 2048, 3072, 4096]);
-      expect(count()).toBe(3072);
+      expect(count()).toBe(1024);
       image.exec("UPDATE tasks SET title='title 5000' WHERE id='05000'");
       committed = [];
       progress = [];
       await expect(apply()).resolves.toBe(7268);
-      expect(committed).toEqual([1024, 3072, 7168, 7268]);
+      expect(committed).toEqual([1024, 7268]);
       expect(progress).toEqual([
         ...Array.from({ length: 7 }, (_, index) => (index + 1) * 1024),
         7268,
@@ -367,7 +367,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
               scopeDigest: 'digest',
             },
             {
-              clearFirst: true,
+              clearFirst: false,
               effective: { project_id: ['p1'] },
               owners: () => [],
               // The chunk's writes end at onChunk; its COMMIT follows.
@@ -394,73 +394,84 @@ describe('CREATE INDEX subset — client local DDL', () => {
     },
   );
 
-  test('a later range image starts at the chunk size its table reached (§5.3)', async () => {
-    const db = new BunClientDatabase();
-    const compiled = compileClientSchema(SCHEMA);
-    const chunkRows = new Map<string, number>();
-    const committed: number[] = [];
-    let clock = 0;
-    try {
-      ensureLocalSchema(db, compiled);
-      // The first range runs 1,024 rows, then the second chunk's 2,048; the
-      // second range starts at 2,048 instead of 1,024.
-      for (const [clearFirst, from, to] of [
+  test.each([
+    // A first page commits 1,024 rows, then up to 65,536; the second range
+    // starts at that size.
+    [
+      [],
+      [
         [true, 1, 3000],
         [false, 3001, 8000],
-      ] as const) {
-        const image = new BunClientDatabase();
-        try {
-          image.exec(
-            'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
-          );
-          image.exec(
-            `WITH RECURSIVE n(x) AS (SELECT ${from} UNION ALL SELECT x+1 FROM n WHERE x<${to}) INSERT INTO tasks SELECT printf('%05d',x),'p1','title '||x,1 FROM n`,
-          );
-          image.exec(
-            'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
-          );
-          const total = to - from + 1;
-          image.exec(
-            `INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',${total})`,
-          );
-          await applySqliteSegment(
-            db,
-            compiled,
-            compiled.tables.get('tasks')!,
-            image.db.serialize(),
-            {
-              table: 'tasks',
-              rowCount: total,
-              asOfCommitSeq: 7,
-              scopeDigest: 'digest',
-            },
-            {
-              clearFirst,
-              effective: { project_id: ['p1'] },
-              owners: () => [],
-              chunkRows,
-              transaction: (fn) => {
-                const result = db.transaction(() => {
-                  clock += 128;
-                  return fn();
-                });
-                committed.push(
-                  Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
-                );
-                return result;
+      ],
+      [1024, 3000, 8000],
+    ],
+    // A later unit's first page continues at the size its table reached.
+    [[['tasks', 2048]], [[true, 1, 6000]], [1024, 3072, 6000]],
+  ] as const)(
+    'a first page jumps to the chunk size its table reached after 1,024 rows (§5.3, known %j)',
+    async (known, images, expected) => {
+      const db = new BunClientDatabase();
+      const compiled = compileClientSchema(SCHEMA);
+      const chunkRows = new Map<string, number>(known);
+      const committed: number[] = [];
+      let clock = 0;
+      try {
+        ensureLocalSchema(db, compiled);
+        for (const [clearFirst, from, to] of images) {
+          const image = new BunClientDatabase();
+          try {
+            image.exec(
+              'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
+            );
+            image.exec(
+              `WITH RECURSIVE n(x) AS (SELECT ${from} UNION ALL SELECT x+1 FROM n WHERE x<${to}) INSERT INTO tasks SELECT printf('%05d',x),'p1','title '||x,1 FROM n`,
+            );
+            image.exec(
+              'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+            );
+            const total = to - from + 1;
+            image.exec(
+              `INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',${total})`,
+            );
+            await applySqliteSegment(
+              db,
+              compiled,
+              compiled.tables.get('tasks')!,
+              image.db.serialize(),
+              {
+                table: 'tasks',
+                rowCount: total,
+                asOfCommitSeq: 7,
+                scopeDigest: 'digest',
               },
-              now: () => clock,
-            },
-          );
-        } finally {
-          image.close();
+              {
+                clearFirst,
+                effective: { project_id: ['p1'] },
+                owners: () => [],
+                chunkRows,
+                transaction: (fn) => {
+                  const result = db.transaction(() => {
+                    clock += 128;
+                    return fn();
+                  });
+                  committed.push(
+                    Number(db.query('SELECT count(*) AS n FROM tasks')[0]?.n),
+                  );
+                  return result;
+                },
+                now: () => clock,
+              },
+            );
+          } finally {
+            image.close();
+          }
         }
+        expect(committed).toEqual([...expected]);
+      } finally {
+        db.close();
       }
-      expect(committed).toEqual([1024, 3000, 5048, 8000]);
-    } finally {
-      db.close();
-    }
-  });
+    },
+  );
 
   test('image chunks keep their committed prefix and detach after a later failure', async () => {
     const db = new BunClientDatabase();

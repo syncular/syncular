@@ -663,14 +663,16 @@ export async function applySqliteSegment(
     };
     const resumed = options.appliedRows ?? 0;
     let [boundary, where, params] = range(
-      resumed > 0 ? range(undefined, resumed)[0] : undefined,
+      resumed ? range(undefined, resumed)[0] : undefined,
       1024,
     );
     let applied = resumed;
-    // §5.3: a table's first chunk holds 1,024 rows; a later range image
-    // starts at the size its previous range reached. A later chunk holds at least
-    // 1,024 rows, at most twice the rows of the one before and at most 65,536.
-    // The second chunk of an image holds twice the rows of the first. The two
+    // §5.3: the first chunk of a table's first page holds 1,024 rows and the
+    // next one the size the table's chunks reached before (65,536 rows when
+    // none did); a later range image starts at that size. A later chunk holds
+    // at least 1,024 rows, at most twice the rows of the one before and at
+    // most 65,536. The second chunk of a later range image holds twice the
+    // rows of the first. The two
     // latest chunks whose row counts differ by at least half the smaller
     // split write time into a per-row and a fixed part; while sizes repeat,
     // the last split's per-row time holds. A later chunk then holds the rows
@@ -680,16 +682,13 @@ export async function applySqliteSegment(
     let model:
       | { rows: number; write: number; perRow: number | undefined }
       | undefined;
-    for (
-      let size =
-        (!options.clearFirst && options.chunkRows?.get(table.name)) || 1024;
-      ;
-    ) {
+    const carried = options.chunkRows?.get(table.name);
+    for (let size = (!options.clearFirst && carried) || 1024; ;) {
       if (options.isCurrent?.() === false) return applied - resumed;
       const started = now();
       let written = started;
       let chunk = 0;
-      const first = applied === 0;
+      const clear = !applied && options.clearFirst;
       const replay = holdsIntent(db, table);
       const rows = replay
         ? db.query(`SELECT * FROM ${source} WHERE ${where}`, params)
@@ -699,7 +698,7 @@ export async function applySqliteSegment(
           ? []
           : [
               ...(hasUniqueIndex(table) ? [JSON.stringify([table.name])] : []),
-              ...(first && options.clearFirst
+              ...(clear
                 ? bootstrapScope(db, table, options.effective, options.owners())
                 : []),
               ...rows.map((row) =>
@@ -707,7 +706,7 @@ export async function applySqliteSegment(
               ),
             ];
         restoreFailedBases(db, schema, scope);
-        if (first && options.clearFirst)
+        if (clear)
           deleteScopedRows(db, table, options.effective, options.owners());
         const kept = new Set<string>();
         const skipped = new Set<string>();
@@ -776,16 +775,18 @@ export async function applySqliteSegment(
           : model?.perRow;
       model = { rows: chunk, write, perRow };
       const fixed = Math.max(0, write - (perRow ?? 0) * chunk);
-      size = Math.max(
-        1024,
-        Math.min(
-          2 * chunk,
-          65_536,
-          perRow !== undefined && perRow > 0
-            ? Math.floor(Math.max(250, committed, fixed) / perRow)
-            : Infinity,
-        ),
-      );
+      size = clear
+        ? (carried ?? 65_536)
+        : Math.max(
+            1024,
+            Math.min(
+              2 * chunk,
+              65_536,
+              perRow !== undefined && perRow > 0
+                ? Math.floor(Math.max(250, committed, fixed) / perRow)
+                : Infinity,
+            ),
+          );
       options.chunkRows?.set(table.name, size);
       [boundary, where, params] = range(boundary, Math.min(1024, size));
     }

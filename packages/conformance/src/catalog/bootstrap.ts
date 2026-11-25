@@ -85,10 +85,12 @@ export const bootstrapScenarios: readonly Scenario[] = [
           : ['segment-refs', 'server-limits', 'sqlite-image'],
       server: { limits: { inlineSegmentMaxBytes: 0 } },
       async run(ctx) {
-        for (let start = 0; start < 2049; start += 500) {
+        // An image of 4,097 rows commits 1,024 rows, then the other 3,073.
+        const rows = accept === 3 ? 2049 : 4097;
+        for (let start = 0; start < rows; start += 500) {
           await seedTasks(
             ctx,
-            Array.from({ length: Math.min(500, 2049 - start) }, (_, i) =>
+            Array.from({ length: Math.min(500, rows - start) }, (_, i) =>
               task(`task-${start + i}`, 'p1', 'progress'),
             ),
           );
@@ -112,7 +114,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
           accept === 3 ? 3 : 2,
           accept === 3
             ? 'each rows block publishes one committed revision'
-            : 'image transactions of 1,024 and then up to 2,048 rows publish two revisions (§5.3)',
+            : 'a first page commits 1,024 rows, then the rest of the image: two revisions (§5.3)',
         );
         const events = await a.api.drainProgress?.();
         check(events !== undefined, 'driver captures live listener events');
@@ -139,10 +141,10 @@ export const bootstrapScenarios: readonly Scenario[] = [
           'complete',
           'terminal follows import',
         );
-        checkEqual(events?.at(-1)?.rowsProcessed, 2049, 'exact final counter');
+        checkEqual(events?.at(-1)?.rowsProcessed, rows, 'exact final counter');
         checkEqual(
           (await a.api.readRows('tasks')).length,
-          2049,
+          rows,
           'committed rows after completion',
         );
       },

@@ -12705,13 +12705,11 @@ impl SyncClient {
             .filter(|rows| i64::from(*rows) <= actual_count)
             .ok_or_else(|| invalid("applied-segment record exceeds the image".into()))?;
         let mut applied = resumed;
+        let carried = self.image_chunk_rows.get(&table.name).copied();
         let mut limit = if first_fresh_page {
             1024
         } else {
-            self.image_chunk_rows
-                .get(&table.name)
-                .copied()
-                .unwrap_or(1024)
+            carried.unwrap_or(1024)
         };
         let (mut write, mut commit) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
         // Rows, write ms and per-row write ms of the chunk before.
@@ -12725,17 +12723,19 @@ impl SyncClient {
             let reconcile_pending =
                 !protected && pending && table.indexes.iter().any(|index| index.unique);
             let mirror_visible = !protected && !reconcile_pending;
-            // §5.3: a table's first chunk holds 1,024 rows; a later range image
-            // starts at the size its previous range reached. A later chunk holds at
-            // least 1,024 rows, at most twice the rows of the one before and at
-            // most 65,536. The second chunk of an image holds twice the rows of
-            // the first. The two latest chunks whose row counts differ by at
-            // least half the smaller split write time into a per-row and a
-            // fixed part; while sizes repeat, the last split's per-row time
-            // holds. A later chunk then holds the rows whose per-row time fills
-            // the larger of 250 ms, the time from the end of the writes of the
-            // chunk before through its COMMIT, and the fixed part. A chunk that
-            // replays local writes holds at most 1,024.
+            // §5.3: the first chunk of a table's first page holds 1,024 rows
+            // and the next one the size the table's chunks reached before
+            // (65,536 rows when none did); a later range image starts at that
+            // size. A later chunk holds at least 1,024 rows, at most twice the
+            // rows of the one before and at most 65,536. The second chunk of a
+            // later range image holds twice the rows of the first. The two
+            // latest chunks whose row counts differ by at least half the
+            // smaller split write time into a per-row and a fixed part; while
+            // sizes repeat, the last split's per-row time holds. A later chunk
+            // then holds the rows whose per-row time fills the larger of
+            // 250 ms, the time from the end of the writes of the chunk before
+            // through its COMMIT, and the fixed part. A chunk that replays
+            // local writes holds at most 1,024.
             let chunk = if pending || protected {
                 limit.min(1024)
             } else {
@@ -12906,13 +12906,17 @@ impl SyncClient {
                 break;
             }
             // Without a positive per-row time the chunk doubles.
-            limit = (processed * 2)
-                .min(65_536)
-                .min(match per_row {
-                    Some(per_row) if per_row > 0.0 => (budget / per_row) as u32,
-                    _ => u32::MAX,
-                })
-                .max(1024);
+            limit = if clear {
+                carried.unwrap_or(65_536)
+            } else {
+                (processed * 2)
+                    .min(65_536)
+                    .min(match per_row {
+                        Some(per_row) if per_row > 0.0 => (budget / per_row) as u32,
+                        _ => u32::MAX,
+                    })
+                    .max(1024)
+            };
             self.image_chunk_rows.insert(table.name.clone(), limit);
         }
         if i64::from(applied) != actual_count {

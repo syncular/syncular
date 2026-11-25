@@ -1,5 +1,36 @@
 # Syncular release notes
 
+## 0.107.4 release notes
+
+The first page of a unit's SQLite image now commits 1,024 rows and then
+continues at the chunk size its table reached, 65,536 rows when the client
+knows none (SYNCULAR-IMAGE-IMPORT-FTS-AND-BATCH-001). Until 0.107.3 every
+first page grew from 1,024 rows by doubling, so a client that loads a
+catalogue one release unit at a time paid that ramp's commits once per unit,
+and on a slow-flushing device each commit costs seconds.
+`bench/src/image-range-lane.ts --diego --units 7` (67,302 codes with an FTS5
+projection and 87,267 relations in 32 MiB range images, Chromium, OPFS, every
+write held 6 ms and every flush 100 ms longer) imports in 25 commits and
+66.3 s against 44 and 89.7 s; in one unit in 14 commits and 56.3 s against 21
+and 65.3 s. The first committed chunk of an empty table still holds 1,024
+rows and arrives after 1.9 s as before, and the longest wait of a local read
+stays one image chunk. A chunk still holds at most 1,024 rows while local
+writes to its table need replay. The TypeScript and Rust clients change
+alike; the conformance scenario
+`bootstrap/live-progress-intermediate-import-sqlite` now imports 4,097
+rows and expects two revisions (SPEC §5.3).
+
+The client keeps the triggers of a built-in FTS5 projection live while it
+copies an image. Dropping them for the copy and rebuilding the index once
+afterwards saved 5 % of the import, held every read for the 1.1 s rebuild,
+and returned no search hit for the copied rows until then; the SPEC §5.3
+decision of 2026-11-25 records the numbers.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. A replica written by an earlier release
+imports with the new sizes on its next first page.
+
 ## 0.107.3 release notes
 
 A schema bump that appends nullable columns to a table re-encoded the table's

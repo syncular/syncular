@@ -3233,13 +3233,15 @@ gets an image of its own. Consequences, all normative:
   carries the position.)
 
 **Application contract** (the §5.6 rules, specialized): the client
-applies the image in **chunks**, one local transaction each: the first
-chunk of a table's first range image holds 1,024 rows, and the first chunk of a
-later range image of the table holds the size the rule below gave the previous
-range's next chunk, when the client still knows it (1,024 rows otherwise).
+applies the image in **chunks**, one local transaction each. When the image
+is the table's first page (§5.6), its first chunk holds 1,024 rows and its
+second chunk the size the rule below last gave a chunk of the table, 65,536
+rows when the client knows none; a first page that continues a committed
+prefix (§5.6) starts at 1,024 rows and grows by the rule below. The first chunk of a later range image of
+the table holds that last size (1,024 rows when the client knows none).
 Each later chunk holds at least 1,024 rows, at most
 twice the rows of the chunk before, and at most 65,536 rows. The second chunk
-of an image holds twice the rows of the first. The two latest chunks of the
+of a later range image holds twice the rows of the first. The two latest chunks of the
 image whose row counts differ by at least half the smaller count split the
 write time into a per-row part (the difference of their write times divided by
 the difference of their row counts) and a fixed part (the rest of the latest
@@ -3448,6 +3450,41 @@ the per-row part, a chunk's fixed cost counts as overhead to amortize: the
 chunk grows until its per-row time matches the larger of its fixed part and
 its `COMMIT`. When write time is all per-row, the split gives the 2026-11-19
 rule; the second chunk of an image doubles so that a split exists.
+
+DECISION (2026-11-25): a first page commits 1,024 rows, then continues at the
+size its table's chunks reached. Until 0.107.3 every first page grew from
+1,024 rows by doubling, and the first page of each unit started over. A web
+app's first loads in production (catalogue codes with two indexes and a
+built-in FTS5 projection over three columns, relations with three indexes,
+32 MiB range images, OPFS) spent 47 % of a pull round's median and 84 % of
+its longest in the image import, at 11 to 63 commits per round, and one
+commit on a slow-flushing device took 1.4 to 3.7 s.
+`bench/src/image-range-lane.ts --diego` reproduces the shape with 67,302
+codes and 87,267 relations in 12 range images (Apple M5 Pro, Chromium, the
+second of two runs) and holds every `xWrite` 6 ms and every `xSync` 100 ms
+longer. The import is bound by VFS calls: on 0.107.3 it committed 21 times in
+65.3 s, the replica's main file took 5,114 writes (335 MB) and 34 flushes for
+a 245 MiB database, and its rollback journals took 3,803 writes (82 MB) and
+68 flushes. One transaction per image committed 12 times in 55.4 s, and the
+longest wait of the 50 ms reader timer stayed at one relations image (8.8 s,
+against 6.5 to 8.8 s on 0.107.3), because the chunk rule had already grown to
+whole images; the commits it saved were the doubling's. With the rule above
+the import committed 14 times in 56.3 s, with 4,830 main and 2,937 journal
+writes. Spread over seven release units, the way the app loads its
+catalogue editions, 0.107.3 committed 44 times in 89.7 s and the rule above
+25 times in 66.3 s; at 2 ms per write and 50 ms per flush 34.3 s against
+25.4 s, and without delays 2.0 s both. The first committed codes chunk
+arrived after 1.9 s on both, so the 2026-11-12 reason for a 1,024-row first
+chunk stands: a reader sees the first rows of an empty table as early as
+before. A first chunk of up to 65,536 rows saved 8 more commits (58.3 s) and
+moved the first codes chunk to 3.8 s. The client keeps the FTS5
+projection's triggers live during an image copy. Without the projection the
+one-unit import took 60.0 s against 68.3 s in the same session (1,319
+fewer writes, 26 MiB smaller). Copying with the triggers dropped and one
+FTS5 `rebuild` after the load took 65.0 s, including 1.1 s of rebuild that
+holds every read, and a search during the load found no row of the copied
+images; filling the projection by set statements instead of the triggers
+took 65.3 s.
 
 A client whose replica lives in OPFS creates a new database with 64 KiB pages:
 the TypeScript client in `openPersistentWasmDatabase`, the Rust client when it
