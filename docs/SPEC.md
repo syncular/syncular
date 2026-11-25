@@ -4941,9 +4941,9 @@ MUST NOT overtake that barrier. Entering preflight clears pending automatic
 sync/retry intents; activation emits one startup intent when persisted active
 units or outbox work exist. A Worker follower requesting preflight
 applies it to the one shared origin leader, not merely to its local proxy.
-Every tab of that replica then meets the gate until the requesting tab
-activates; the TypeScript realtime supervisor waits for that activation
-(§8.4).
+Every tab of that replica then meets the gate until the tab that owns the
+preflight activates (§7.1, browser security preflight ownership); the
+TypeScript realtime supervisor waits for that activation (§8.4).
 
 Native key buffers MUST be overwritten before replacement/drop where the
 runtime permits deterministic memory ownership. JavaScript hosts release every
@@ -6579,8 +6579,8 @@ changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 0.94.0 and 0.95.0, protocol 6 covers 0.96.0, protocol 7 covers 0.97.0,
 protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
 covers 0.101.0, protocol 11 covers 0.102.0, protocol 12 covers 0.103.0 and
-0.103.1, protocol 13 covers 0.103.2 and 0.104.0, and protocol 14 starts with
-0.105.0.
+0.103.1, protocol 13 covers 0.103.2 and 0.104.0, protocol 14 covers 0.105.x,
+protocol 15 covers 0.106.0 and 0.106.1, and protocol 16 starts with 0.106.2.
 
 **Browser leader promotion.** A follower tab that wins the leader lock starts
 its own core and announces above every epoch it has seen. Epochs are per tab:
@@ -6591,6 +6591,29 @@ when the follower runs its own core and runs the calls it queued there, when
 the start fails or the lock is lost and it waits for a leader again, or when it
 accepts an announce. A permanent floor would hide a legitimate leader whose tab
 saw fewer announces.
+
+**Browser security preflight ownership.** The leader's core records which tab
+owns its security preflight (§5.11). A core that starts with
+`securityPreflight: true` is owned by the tab that starts it.
+`beginSecurityPreflight` from a tab makes that tab the owner when the core is
+active or when the preflight has no owner; while another tab owns it, the call
+enters the same gate and leaves the owner unchanged. `activateSecurity` from
+any tab other than the owner fails with the non-retryable client-local code
+`client.security_preflight_owned` and the details `{ method }`, and the gate
+stays closed. When the owner tab closes or its page ends, the leader learns it
+through the tab's lock; the preflight stays closed and has no owner, and a tab
+releases it only after it calls `beginSecurityPreflight` and so becomes the
+owner. A core lives in its leader tab: when that tab ends, the promoted tab
+starts a new core in the lifecycle its own `securityPreflight` names.
+
+**Browser preflight handover.** `beginSecurityPreflight` only closes the gate,
+so a follower call in flight when its leader departs runs again on the next
+core: the promoted tab's own core, or the next leader's after the follower
+binds to it. The follower becomes the owner there. A follower that opens with
+`securityPreflight: true` therefore opens across a handover in preflight.
+`activateSecurity` in flight at a handover rejects with
+`client.leader_handover`, because the follower cannot tell whether the
+departed core released the gate.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening
@@ -10080,6 +10103,9 @@ worker got a `previousVersionContext` without the
 `client.storage_busy` [§7.5 — a local write hit SQLite `SQLITE_BUSY` or
 `SQLITE_LOCKED`, including extended codes; retryable],
 `client.web_locks_unavailable` [§7.1 — a browser Worker handle without an injected leader lock found no Web Locks; non-retryable],
+`client.security_preflight_owned` [§7.1: a tab called `activateSecurity` on a
+shared Worker core whose security preflight another tab owns, or whose owner
+closed before it activated; details `{ method }`; non-retryable],
 `client.host_owned` [§5.11: a Tauri webview sent `create`,
 `recreateWithSchema`, `shutdown`, `activateSecurity` or
 `beginSecurityPreflight` for a client the Rust host created; details

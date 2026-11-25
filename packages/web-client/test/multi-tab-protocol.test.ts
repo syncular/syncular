@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { MULTI_TAB_PROTOCOL_VERSION } from '../src/multi-tab';
 
 const PINNED = {
-  protocol: 15,
+  protocol: 16,
   fingerprint:
     'ab1b4b252768a36507a531fa2d6c7654e057594c644bb4bbee7221773ecf72fb',
 };

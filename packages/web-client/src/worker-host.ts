@@ -96,6 +96,7 @@ import {
   type LeaderUnreachableEvent,
   type LeadershipState,
   multiTabChannelName,
+  SECURITY_PREFLIGHT_OWNED_CODE,
   TAKEOVER_REFUSED_CODE,
   type TabClock,
   type TabCoordinator,
@@ -1209,8 +1210,13 @@ export async function createSyncClientHandle(
     version: resolvedConfig.schema.version,
     lock,
     // A promoted leader starts a fresh core, so the realtime state a follower
-    // set on the departed core is gone either way.
-    replayOnHandover: ['connectRealtime', 'disconnectRealtime'],
+    // set on the departed core is gone either way. Entering preflight only
+    // closes the gate, so it runs again on whichever core serves next.
+    replayOnHandover: [
+      'connectRealtime',
+      'disconnectRealtime',
+      'beginSecurityPreflight',
+    ],
     ...(resolvedConfig.channelFactory !== undefined
       ? { channelFactory: resolvedConfig.channelFactory }
       : {}),
@@ -1234,9 +1240,36 @@ export async function createSyncClientHandle(
         lease: context.lease,
         dispatchEvent: (event) => context.broadcast(event),
       });
+      // §7.1: the tab that entered the preflight owns it and alone releases
+      // it. A preflight without an owner is one whose owner tab closed.
+      let preflight: { owner: string | undefined } | undefined =
+        resolvedConfig.securityPreflight === true
+          ? { owner: context.tabId }
+          : undefined;
       return {
         clientId: core.clientId,
-        call: (_tabId, method, args) => core.invoke(method, args),
+        call: async (tabId, method, args) => {
+          if (method === 'beginSecurityPreflight') {
+            if (preflight?.owner === undefined) preflight = { owner: tabId };
+          } else if (
+            method === 'activateSecurity' &&
+            preflight !== undefined &&
+            preflight.owner !== tabId
+          ) {
+            throw new ClientSyncError(
+              SECURITY_PREFLIGHT_OWNED_CODE,
+              'another tab holds the security preflight',
+              false,
+              { method },
+            );
+          }
+          const value = await core.invoke(method, args);
+          if (method === 'activateSecurity') preflight = undefined;
+          return value;
+        },
+        tabClosed: (tabId) => {
+          if (preflight?.owner === tabId) preflight.owner = undefined;
+        },
         close: () => core.close(),
       };
     },

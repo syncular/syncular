@@ -557,7 +557,10 @@ await client.activateSecurity({ encryption: acceptedKeyring });
 Use `beginSecurityPreflight()` before a live key rotation/revocation. It gates
 new calls immediately, disconnects realtime, waits for in-flight core/blob work,
 and releases the old keyring before resolving. In multi-tab mode the gate
-belongs to the single shared leader replica. Direct clients take the same
+belongs to the single shared leader replica, and the tab that entered the
+preflight owns it: `activateSecurity()` from another tab fails with
+`client.security_preflight_owned`. A preflight whose owner tab closed stays
+closed until a tab calls `beginSecurityPreflight()` and then activates. Direct clients take the same
 `{ keys, keyIdColumns }` keyring as Worker handles. A key that arrives while the
 client is active goes through `addEncryptionKeys(keys)`, which extends the
 keyring and reveals the rows sealed under it without a preflight.

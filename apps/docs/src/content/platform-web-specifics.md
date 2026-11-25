@@ -137,9 +137,12 @@ next.
 
 A follower call that the departing leader has not answered rejects with
 `client.leader_handover` (retryable): the follower cannot tell whether the old
-core applied it. `connectRealtime()` and `disconnectRealtime()` are the
-exception. The next leader starts a fresh core, so the follower runs them again
-there, and they settle with that core's result.
+core applied it. `connectRealtime()`, `disconnectRealtime()` and
+`beginSecurityPreflight()` are the exception. The next leader starts a fresh
+core, so the follower runs them again there, and they settle with that core's
+result. A handle that opens with `securityPreflight: true` while the leader
+tab closes therefore opens in preflight on the next core and owns that
+preflight ([Windowed sync and local purge](/platform-web-reads-writes/#windowed-sync-and-local-purge)).
 
 ### Leader probes
 

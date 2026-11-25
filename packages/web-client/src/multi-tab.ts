@@ -94,13 +94,16 @@ export const LEADERSHIP_TAKEN_CODE = 'client.leadership_taken';
 /** Client-local: `takeOver()` was called while its conditions do not hold. */
 export const TAKEOVER_REFUSED_CODE = 'client.takeover_refused';
 
+/** Client-local: another tab entered the security preflight and alone releases it. */
+export const SECURITY_PREFLIGHT_OWNED_CODE = 'client.security_preflight_owned';
+
 /**
  * Version of the leader/follower wire and the forwarded handle API. Bump it
  * with every change to a message shape or to a forwarded method's arguments
  * or result, so tabs of different builds never serve each other;
  * test/multi-tab-protocol.test.ts pins the surface's fingerprint to it.
  */
-export const MULTI_TAB_PROTOCOL_VERSION = 15;
+export const MULTI_TAB_PROTOCOL_VERSION = 16;
 
 /** What a tab must share with its leader to be served by it. */
 export interface TabIdentity {

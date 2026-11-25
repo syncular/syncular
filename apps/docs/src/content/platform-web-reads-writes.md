@@ -141,7 +141,21 @@ handle with `securityPreflight: true`. A follower's request applies to the one
 shared origin leader. Diagnostics stay closed during preflight: an
 `onDiagnostics` listener registered on the handle receives its first snapshot
 when `activateSecurity()` completes. The gate belongs to the shared core, so
-every tab meets it until the tab that requested preflight activates; a
+every tab meets it until the tab that owns the preflight activates; a
 realtime supervisor in another tab waits in phase `protected` meanwhile
 ([Realtime & lifecycle](/platform-web-realtime/)). The lifecycle is defined in
 [Authorized local purge](/concepts-local-data-purge/).
+
+The tab that enters the preflight owns it: the tab whose handle started the
+core with `securityPreflight: true`, or the tab whose
+`beginSecurityPreflight()` closed an open gate. A second tab's
+`beginSecurityPreflight()` enters the same gate and leaves the owner as it
+is. `activateSecurity()` from any other tab fails with
+`client.security_preflight_owned` and the gate stays closed; that tab waits
+for a status with `securityLifecycle: 'active'`. When the owner tab closes or
+crashes, the preflight stays closed, and a tab must call
+`beginSecurityPreflight()` itself, which makes it the owner, before its
+`activateSecurity()` releases the gate. A handle that opens with
+`securityPreflight: true` while the leader tab closes opens in preflight on
+the next core. The leader tab's core ends with its tab: a tab that promotes
+starts its own core in the lifecycle its own `securityPreflight` names.

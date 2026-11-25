@@ -28,6 +28,7 @@ import {
   NOT_LEADER_CODE,
   RealtimeSupervisor,
   registerDevtools,
+  SECURITY_PREFLIGHT_OWNED_CODE,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
@@ -641,6 +642,128 @@ test('a follower preflight request gates the already-running shared leader', asy
   expect(await leader.securityLifecycle()).toBe('active');
   expect(await leader.query('SELECT id FROM tasks')).toEqual([]);
 });
+
+test('only the tab that entered the preflight releases it', async () => {
+  const group = makeGroup();
+  const leader = await group.make({
+    clientId: 'mt-owned-lead',
+    securityPreflight: true,
+    transportGate: 'closed',
+  });
+  await leader.activateSecurity();
+  const follower = await group.make({
+    securityPreflight: false,
+    transportGate: 'closed',
+  });
+  expect(follower.role).toBe('follower');
+
+  await leader.beginSecurityPreflight();
+  expect(await leader.securityLifecycle()).toBe('preflight');
+  let refusal: unknown;
+  await follower.activateSecurity().catch((error: unknown) => {
+    refusal = error;
+  });
+  expect(refusal).toBeInstanceOf(ClientSyncError);
+  expect(refusal).toMatchObject({
+    code: SECURITY_PREFLIGHT_OWNED_CODE,
+    details: { method: 'activateSecurity' },
+  });
+  // Entering the held preflight again changes neither the gate nor its owner.
+  await follower.beginSecurityPreflight();
+  await expectRejectsWithCode(
+    follower.activateSecurity(),
+    SECURITY_PREFLIGHT_OWNED_CODE,
+  );
+  expect(await leader.securityLifecycle()).toBe('preflight');
+
+  await leader.activateSecurity();
+  expect(await follower.securityLifecycle()).toBe('active');
+});
+
+test('a preflight whose owner tab closed stays closed until another tab enters it', async () => {
+  const group = makeGroup();
+  const leader = await group.make({ clientId: 'mt-orphan-lead' });
+  const follower = await group.make();
+  await follower.beginSecurityPreflight();
+  await expectRejectsWithCode(
+    leader.activateSecurity(),
+    SECURITY_PREFLIGHT_OWNED_CODE,
+  );
+
+  await follower.close();
+  // The coordinator learns the closed tab through its tab lock.
+  await drain();
+  expect(await leader.securityLifecycle()).toBe('preflight');
+  await expectRejectsWithCode(
+    leader.activateSecurity(),
+    SECURITY_PREFLIGHT_OWNED_CODE,
+  );
+  await leader.beginSecurityPreflight();
+  await leader.activateSecurity();
+  expect(await leader.securityLifecycle()).toBe('active');
+});
+
+for (const next of ['promoted', 'rebound'] as const) {
+  test(`a follower whose preflight request outlives the leader opens ${next}`, async () => {
+    const group = makeGroup();
+    const leader = await group.make({
+      clientId: `mt-preflight-handover-${next}`,
+      securityPreflight: true,
+      transportGate: 'closed',
+    });
+    await leader.activateSecurity();
+    const other =
+      next === 'rebound'
+        ? await group.make({ transportGate: 'closed' })
+        : undefined;
+    const held = Promise.withResolvers<void>();
+    let holding = true;
+    const opening = group.make({
+      securityPreflight: true,
+      transportGate: 'closed',
+      // The departing leader never receives the follower's first request.
+      channelFactory: (name) => {
+        const channel = new BroadcastChannel(
+          name,
+        ) as unknown as CrossTabChannel;
+        return {
+          postMessage: (message) => {
+            if (
+              holding &&
+              message.t === 'req' &&
+              message.method === 'beginSecurityPreflight'
+            ) {
+              holding = false;
+              held.resolve();
+              return;
+            }
+            channel.postMessage(message);
+          },
+          addEventListener: (type, listener) =>
+            channel.addEventListener(type, listener),
+          removeEventListener: (type, listener) =>
+            channel.removeEventListener(type, listener),
+          close: () => channel.close(),
+        };
+      },
+    });
+    await held.promise;
+    await leader.close();
+
+    const tab = await opening;
+    expect(tab.role).toBe(next === 'promoted' ? 'leader' : 'follower');
+    expect(await tab.securityLifecycle()).toBe('preflight');
+    if (other !== undefined) {
+      // The replayed request made the opening tab the owner on the next leader.
+      await expectRejectsWithCode(
+        other.activateSecurity(),
+        SECURITY_PREFLIGHT_OWNED_CODE,
+      );
+    }
+    await tab.activateSecurity();
+    expect(await tab.securityLifecycle()).toBe('active');
+  });
+}
 
 test('a key a follower adds reveals the sealed row on the leader for every tab', async () => {
   const secrets = {

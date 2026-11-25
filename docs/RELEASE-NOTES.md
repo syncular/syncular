@@ -1,5 +1,45 @@
 # Syncular release notes
 
+## 0.106.2 release notes
+
+On a shared Worker replica, any tab's `activateSecurity()` released the
+security preflight another tab had entered. A tab that needs a quarantine
+across tabs, such as a rights-loss check, could not keep the gate closed while
+a second tab activated after its own startup. The leader's core now records the
+tab that owns the preflight: the tab whose handle started the core with
+`securityPreflight: true`, or the tab whose `beginSecurityPreflight()` closed
+an open gate or entered a preflight without an owner. Another tab's
+`beginSecurityPreflight()` enters the same gate and leaves the owner as it is,
+and its `activateSecurity()` fails with the
+new non-retryable code `client.security_preflight_owned` (details
+`{ method }`) while the gate stays closed. When the owner tab closes or
+crashes, the preflight stays closed until a tab calls
+`beginSecurityPreflight()`, which makes it the owner, and then activates
+(SYNCULAR-FOLLOWER-PREFLIGHT-ACTIVATION-001; SPEC §5.11, §7.1).
+
+A handle that opened with `securityPreflight: true` as a follower failed to
+open with `client.leader_handover` when the leader tab closed before it
+answered the follower's `beginSecurityPreflight`. The call now runs again on
+the next core, the tab's own after it promotes or the next leader's after it
+binds, so the handle opens in preflight and owns it
+(SYNCULAR-FOLLOWER-PREFLIGHT-HANDOVER-001; SPEC §7.1).
+
+The Tauri plugin was not affected: it refuses `activateSecurity` and
+`beginSecurityPreflight` from webviews on a host-created client with
+`client.host_owned`, and a webview-created client serves only the webview
+that created it. The Rust core and the wire do not change.
+
+**Upgrading.**
+
+- `activateSecurity()` from a tab that does not own the shared preflight
+  fails with `client.security_preflight_owned` instead of releasing the gate.
+  A tab that waited for its own activation to open the replica waits for a
+  status with `securityLifecycle: 'active'` instead, or enters the preflight
+  with `beginSecurityPreflight()` once the owner tab has closed.
+- `MULTI_TAB_PROTOCOL_VERSION` moves from 15 to 16. A tab still running an
+  older build reports `leader-incompatible` and must reload. The replica
+  storage, the server and the SSP2 wire do not change.
+
 ## 0.106.1 release notes
 
 The TypeScript client left a drained commit's local values in a row for good
