@@ -209,15 +209,16 @@ test('a replica left in preflight reopens in preflight until activation', async 
     ],
   } as const;
   const key = { keys: { secrets: new Uint8Array(32).fill(7) } };
+  let current: { version: number; tables: typeof schema.tables } = schema;
   const open = async (
     config: { encryption?: typeof key } = {},
   ): Promise<{ client: SyncClient; close(): Promise<void> }> => {
     const db = new BunClientDatabase(path);
     const client = new SyncClient({
       database: db,
-      schema,
       transport: async () => new Uint8Array(),
       ...config,
+      schema: current,
     });
     await client.start();
     return {
@@ -244,7 +245,17 @@ test('a replica left in preflight reopens in preflight until activation', async 
 
   const plain = await open();
   expect(plain.client.securityLifecycle()).toBe('preflight');
+  // Rebootstrap is refused in preflight, so it cannot clear the record.
+  expectPreflightFailure(() =>
+    plain.client.rebootstrapLocalData({ rebootstrapId: 'reopen-repair' }),
+  );
   await plain.close();
+
+  // A schema bump resets the synced tables and keeps the record.
+  current = { ...schema, version: 2 };
+  const bumped = await open();
+  expect(bumped.client.securityLifecycle()).toBe('preflight');
+  await bumped.close();
 
   // Activation installs only the keyring it carries: another key under the
   // configured key id is an addition.

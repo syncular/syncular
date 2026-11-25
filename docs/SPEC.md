@@ -6595,7 +6595,7 @@ changed between them; protocol 4 covers 0.92.0 and 0.93.0, protocol 5 covers
 protocol 8 covers 0.98.0 and 0.99.0, protocol 9 covers 0.100.0, protocol 10
 covers 0.101.0, protocol 11 covers 0.102.0, protocol 12 covers 0.103.0 and
 0.103.1, protocol 13 covers 0.103.2 and 0.104.0, protocol 14 covers 0.105.x,
-protocol 15 covers 0.106.0 and 0.106.1, and protocol 16 starts with 0.106.2.
+protocol 15 covers 0.106.0 and 0.106.1, and protocol 16 starts with 0.107.0.
 
 **Browser leader promotion.** A follower tab that wins the leader lock starts
 its own core and announces above every epoch it has seen. Epochs are per tab:

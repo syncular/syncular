@@ -1,6 +1,6 @@
 # Syncular release notes
 
-## 0.106.2 release notes
+## 0.107.0 release notes
 
 On a shared Worker replica, any tab's `activateSecurity()` released the
 security preflight another tab had entered. A tab that needs a quarantine
