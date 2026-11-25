@@ -1575,10 +1575,14 @@ if (!available) {
         ).rejects.toMatchObject({ code: 'client.native_client_exists' });
         await client.close();
         // The escape the gate exists to prevent: re-issuing create WITHOUT
-        // the securityPreflight flag must be refused by the real router.
-        await expect(
-          createTauriSyncClient({ schema, tauri: host.api }),
-        ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+        // the securityPreflight flag opens the replica in preflight, and the
+        // bridge adopts the lifecycle the real router answers.
+        const plain = await createTauriSyncClient({ schema, tauri: host.api });
+        expect(await plain.securityLifecycle()).toBe('preflight');
+        await expect(plain.query('SELECT id FROM todos')).rejects.toMatchObject(
+          { code: SECURITY_PREFLIGHT_REQUIRED_CODE },
+        );
+        await plain.close();
         // A preflighted replacement is permitted and stays gated.
         const replacement = await createTauriSyncClient({
           schema,
