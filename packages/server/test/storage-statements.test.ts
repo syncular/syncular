@@ -1200,3 +1200,82 @@ test('a PostgreSQL segment download reads the registry and the checkpoint versio
     code: 'sync.segment_expired',
   });
 });
+
+for (const kind of KINDS) {
+  test(`${kind} picks the live keys of 40 catalogue units in one statement per probe round (§4.5)`, async () => {
+    // Diego's shape: 40 releases in 4 content sets of one availability, and
+    // 10 workspaces. The change-scope index holds one entry per commit and
+    // value: r0 has 300 commits, the other releases one of 100 changes. A
+    // new storage starts with no pick.
+    const { storage, drain } = await backend(kind);
+    const release = (i: number) => ({
+      availability: 'offered',
+      release_id: `r${i}`,
+      set_id: `s${i % 4}`,
+    });
+    const commits = [
+      ...Array.from({ length: 300 }, () => 0),
+      ...Array.from({ length: 49 }, (_, i) => i + 1),
+    ];
+    for (const [seq, i] of commits.entries()) {
+      const tx = await storage.begin(PARTITION);
+      await tx.appendCommit({
+        clientId: 'c',
+        clientCommitId: `k${seq}`,
+        actorId: 'a',
+        createdAtMs: NOW + seq,
+        changes: Array.from(
+          { length: i === 0 ? 1 : i < 40 ? 100 : 2 },
+          (_, j) => ({
+            table: i < 40 ? 'docs' : 'tasks',
+            rowId: `r${seq}-${j}`,
+            op: 'upsert' as const,
+            rowVersion: 1,
+            scopes: i < 40 ? release(i) : { workspace_id: `w${i - 40}` },
+            payload: new Uint8Array(1),
+          }),
+        ),
+      });
+      await tx.commit();
+    }
+    const units = [
+      ...Array.from({ length: 40 }, (_, i) => ({
+        scopes: release(i),
+        afterSeq: 349,
+        tables: new Map([
+          [
+            'docs',
+            Object.fromEntries(
+              Object.entries(release(i)).map(([name, value]) => [
+                name,
+                [value],
+              ]),
+            ),
+          ],
+        ]),
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        scopes: { workspace_id: `w${i}` },
+        afterSeq: 349,
+        tables: new Map([['tasks', { workspace_id: [`w${i}`] }]]),
+      })),
+    ];
+    const pull = async () => {
+      drain();
+      await storage.readLiveWindow(PARTITION, {
+        units,
+        throughSeq: 349,
+        limitChanges: 1000,
+        limitBytes: 16 * 1024 * 1024,
+      });
+      return drain().length;
+    };
+    // A quiet pull reads one candidate statement; D1 runs each behind its
+    // published-schema guard. The first pull adds one probe statement per
+    // round for all 50 units: r0 ties with its set and availability at the
+    // caps 64 and 256, so it takes three rounds; the others decide in one.
+    const per = kind === 'd1' ? 2 : 1;
+    expect(await pull()).toBe(4 * per);
+    expect(await pull()).toBe(per);
+  });
+}

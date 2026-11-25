@@ -500,6 +500,33 @@ export const unitScenarios: readonly Scenario[] = [
         [[unitId(P1), 'reset']],
         'only the reached unit resets (§4.6)',
       );
+      // The reset unit leaves the live units with cursor -1; the other unit
+      // stays live and the replica cursor joins the live section.
+      checkEqual(
+        (await a.api.unitState(unitId(P1)))?.cursor,
+        -1,
+        'the reset unit catches up from -1 (§4.6)',
+      );
+      checkEqual(
+        (await a.api.unitState(unitId(P2)))?.cursor,
+        undefined,
+        'the other unit stays live',
+      );
+      checkEqual(
+        await a.api.replicaCursor(),
+        responseLive(atA()[0]!).end.throughSeq,
+        'the replica cursor joins the live section',
+      );
+      const again = captureResponses(ctx, a);
+      await syncOk(a);
+      checkEqual(
+        [...responseSections(again()[0]!)].map(([id, section]) => [
+          id,
+          section.start.bootstrap,
+        ]),
+        [[unitId(P1), true]],
+        'only the reset unit bootstraps again',
+      );
       await syncIdle(d);
       await syncIdle(a);
       await expectConverged(ctx, 'docs', [a]);

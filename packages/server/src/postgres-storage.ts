@@ -3334,8 +3334,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     query: LiveWindowQuery,
   ): Promise<LiveWindow> {
-    // A unit of several variables first picks its key with one capped count
-    // per variable over `sync_change_scopes_by_key`, memoized per scope map.
+    // Units of several variables first pick their keys: one statement per
+    // probe round counts the capped `sync_change_scopes_by_key` entries of
+    // each variable of every unit whose pick is not memoized.
     // Then two statements per page. The candidate read takes one LATERAL range of
     // `sync_change_scopes_by_key` per unit key, each DISTINCT and LIMITed at
     // the index, merged in commit order and LIMITed again into one array.
@@ -3352,21 +3353,15 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       partition,
       query,
       this.#scanVariables,
-      // The probes of concurrent units leave as one statement.
-      (probes, cap) =>
-        Promise.all(
-          probes.map(async (probe) => {
-            const [row] = await this.#batchedPage<{ n: unknown }>(
-              'liveProbe',
-              `SELECT p.i AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_change_scopes
-                 WHERE partition=$1 AND var=p.var AND value=ANY(p.vals) LIMIT p.lim) x) AS n
-               FROM jsonb_to_recordset($2::text::jsonb) AS p(i int, var text, vals text[], lim int)`,
-              partition,
-              { var: probe.var, vals: probe.vals, lim: cap },
-            );
-            return { sub: probe.i, n: row?.n };
-          }),
-        ),
+      async (probes, cap) =>
+        (
+          await this.#exec.query<{ sub: unknown; n: unknown }>(
+            `SELECT p.i AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_change_scopes
+               WHERE partition=$1 AND var=p.var AND value=ANY(p.vals) LIMIT $3) x) AS n
+             FROM jsonb_to_recordset($2::text::jsonb) AS p(i int, var text, vals text[])`,
+            [partition, JSON.stringify(probes), cap],
+          )
+        ).rows,
       async (keys, limit, budget) => {
         const { rows } = await this.#exec.query<{
           commit_seq: unknown;

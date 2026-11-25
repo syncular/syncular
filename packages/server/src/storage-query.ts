@@ -236,6 +236,56 @@ export async function readLiveWindowPages(
 ): Promise<LiveWindow> {
   const bounds = new Map<string, { key: LiveKey; tables: Set<string> }>();
   const unitKeys: (number | undefined)[] = [];
+  // The units count each round together: every probe queued in one
+  // microtask turn leaves in one `probe` call per cap. All units start
+  // their first round at once, and the units a round leaves tied queue
+  // their next round while its answers resume them.
+  type Counted = readonly { readonly sub: unknown; readonly n: unknown }[];
+  let queued: {
+    readonly probes: readonly ScanProbe[];
+    readonly cap: number;
+    readonly resolve: (rows: Counted) => void;
+    readonly reject: (error: unknown) => void;
+  }[] = [];
+  const batched = (probes: readonly ScanProbe[], cap: number) =>
+    new Promise<Counted>((resolve, reject) => {
+      if (queued.length === 0) {
+        queueMicrotask(() => {
+          const batch = queued;
+          queued = [];
+          for (const round of new Set(batch.map((entry) => entry.cap))) {
+            const entries = batch.filter((entry) => entry.cap === round);
+            const offsets = entries.map((_, e) =>
+              entries
+                .slice(0, e)
+                .reduce((sum, entry) => sum + entry.probes.length, 0),
+            );
+            probe(
+              entries.flatMap((entry, e) =>
+                entry.probes.map((p) => ({ ...p, i: offsets[e]! + p.i })),
+              ),
+              round,
+            ).then(
+              (rows) =>
+                entries.forEach((entry, e) =>
+                  entry.resolve(
+                    rows.flatMap((row) => {
+                      const sub = Number(row.sub) - offsets[e]!;
+                      return sub >= 0 && sub < entry.probes.length
+                        ? [{ sub, n: row.n }]
+                        : [];
+                    }),
+                  ),
+                ),
+              (error: unknown) => {
+                for (const entry of entries) entry.reject(error);
+              },
+            );
+          }
+        });
+      }
+      queued.push({ probes, cap, resolve, reject });
+    });
   const variables = await Promise.all(
     query.units.map((unit) =>
       unit.tables.size === 0
@@ -253,7 +303,7 @@ export async function readLiveWindowPages(
               limit: 0,
             },
             chosen,
-            probe,
+            batched,
           ),
     ),
   );

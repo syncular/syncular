@@ -1025,8 +1025,9 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     query: LiveWindowQuery,
   ): Promise<LiveWindow> {
-    // A unit of several variables first picks its key with one capped count
-    // per variable over `sync_change_scopes_by_key`, memoized per scope map.
+    // Units of several variables first pick their keys: one statement per
+    // probe round counts the capped `sync_change_scopes_by_key` entries of
+    // each variable of every unit whose pick is not memoized.
     // Then two statements per page. The candidate read binds the unit keys as one
     // JSON array; the CROSS JOIN keeps them the outer loop, so each key seeks
     // one range of `sync_change_scopes_by_key` (INDEXED BY fails loudly when
