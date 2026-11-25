@@ -1025,21 +1025,34 @@ export abstract class SqliteFamilyStorage {
     partition: string,
     query: LiveWindowQuery,
   ): Promise<LiveWindow> {
-    // Two statements per page. The candidate read binds the unit keys as one
+    // A unit of several variables first picks its key with one capped count
+    // per variable over `sync_change_scopes_by_key`, memoized per scope map.
+    // Then two statements per page. The candidate read binds the unit keys as one
     // JSON array; the CROSS JOIN keeps them the outer loop, so each key seeks
     // one range of `sync_change_scopes_by_key` (INDEXED BY fails loudly when
     // the index is missing). `walk` then sizes the candidates one at a time,
     // in commit order, and stops after the one that reaches the budget: per
     // key, the count and byte size of the commit's changes the key reads.
     // Each change's scopes expand once and join the keys on (var, value)
-    // through an automatic index; `length()` of a blob reads the record
-    // header, never the payload. Every walked commit LEFT JOINs its meta
+    // through an automatic index; a change counts for a key when its scopes
+    // carry the key's whole scope map. `length()` of a blob reads the
+    // record header, never the payload. Every walked commit LEFT JOINs its meta
     // (NULL when the commit vanished, which still advances the scan). The
     // change read then seeks only the commits the byte budget admits,
     // through the primary key, matching each change to the keys by the same
     // join.
     return readLiveWindowPages(
+      partition,
       query,
+      this.scanVariables,
+      (probes, cap) =>
+        this.guardedAll<{ sub: number; n: number }>(
+          `SELECT json_extract(p.value, '$.i') AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_change_scopes INDEXED BY sync_change_scopes_by_key
+             WHERE partition=?1 AND var=json_extract(p.value, '$.var')
+               AND value IN (SELECT value FROM json_each(p.value, '$.vals')) LIMIT ?3)) AS n
+           FROM json_each(?2) AS p`,
+          [partition, JSON.stringify(probes), cap],
+        ),
       async (keys, limit, budget) =>
         (
           await this.guardedAll<{
@@ -1050,7 +1063,7 @@ export abstract class SqliteFamilyStorage {
             bytes: number | null;
             changes: number | null;
           }>(
-            `WITH RECURSIVE k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2)),
+            `WITH RECURSIVE k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables, json_extract(value, '$.scopes') AS scopes FROM json_each(?2)),
              c AS MATERIALIZED (SELECT row_number() OVER (ORDER BY commit_seq) AS n, commit_seq FROM (SELECT DISTINCT s.commit_seq AS commit_seq
                FROM k CROSS JOIN sync_change_scopes AS s INDEXED BY sync_change_scopes_by_key
                  ON s.partition=?1 AND s.var=k.var AND s.value=k.value
@@ -1066,6 +1079,7 @@ export abstract class SqliteFamilyStorage {
                    CROSS JOIN k ON k.var=e.key AND k.value=e.value
                    WHERE ch.partition=?1 AND ch.commit_seq=c.commit_seq
                      AND ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables))
+                     AND NOT EXISTS (SELECT 1 FROM json_each(k.scopes) AS u WHERE NOT EXISTS (SELECT 1 FROM json_each(ch.scopes) AS v WHERE v.key=u.key AND v.value=u.value))
                    GROUP BY k.i) AS g),
                  w.changes + (SELECT total(value ->> 2) FROM json_each(w.sizes)),
                  w.bytes + (SELECT total(value ->> 1) FROM json_each(w.sizes))
@@ -1109,12 +1123,13 @@ export abstract class SqliteFamilyStorage {
       async (keys, commitSeqs) =>
         (
           await this.guardedAll<SqliteChangeRecord & { commit_seq: number }>(
-            `WITH k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables FROM json_each(?2))
+            `WITH k AS MATERIALIZED (SELECT json_extract(value, '$.i') AS i, json_extract(value, '$.var') AS var, json_extract(value, '$.value') AS value, json_extract(value, '$.after') AS after, json_extract(value, '$.tables') AS tables, json_extract(value, '$.scopes') AS scopes FROM json_each(?2))
              SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
                ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
              FROM json_each(?3) AS c CROSS JOIN sync_changes AS ch ON ch.partition=?1 AND ch.commit_seq=c.value
              WHERE EXISTS (SELECT 1 FROM json_each(ch.scopes) AS e CROSS JOIN k ON k.var=e.key AND k.value=e.value
-               WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables)))
+               WHERE ch.commit_seq>k.after AND ch.tbl IN (SELECT value FROM json_each(k.tables))
+                 AND NOT EXISTS (SELECT 1 FROM json_each(k.scopes) AS u WHERE NOT EXISTS (SELECT 1 FROM json_each(ch.scopes) AS v WHERE v.key=u.key AND v.value=u.value)))
              ORDER BY ch.commit_seq, ch.idx`,
             [partition, JSON.stringify(keys), JSON.stringify(commitSeqs)],
           )

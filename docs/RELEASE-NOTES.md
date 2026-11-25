@@ -1,5 +1,39 @@
 # Syncular release notes
 
+## 0.107.1 release notes
+
+The TypeScript server keyed the live scan of every unit on its alphabetically
+first scope variable. Units that share that variable's value, such as every
+catalogue unit `{ catalogue_availability: 'offered', catalogue_content_set_id,
+catalogue_content_release_id }`, shared one key, so one commit that expired a
+release (188,831 deletes, 21.16 MiB of row ids and scopes) passed
+`maxLiveSectionBytes` for every replica, including replicas that hold no unit
+of that release. A live unit named oversized then reset the whole live section,
+and every live unit of the replica, workspace units included, bootstrapped
+again (SYNCULAR-LIVE-WINDOW-SELECTIVE-KEY-001).
+
+Each unit now seeks the change log by the scope variable whose value has the
+fewest entries in `sync_change_scopes`, picked by the capped probe
+`scanRows` already uses and memoized per scope map, and the storage sizes a
+change for a unit only when its scopes carry the unit's whole scope map. A
+commit past the budget resets only the units it reaches, each with
+`SUB_START.status = reset` and `sync.cursor_expired`, and the live section
+stays `active` for the other units. A replica that holds no reached unit
+reads the commit as any other commit outside its units. The Rust authority
+applies no live byte budget and matches every unit's whole scope map already;
+it does not change. The conformance scenarios
+`units/oversized-commit-resets-the-units-it-reaches` and
+`units/oversized-commit-spares-units-sharing-a-variable` hold the server to
+it with both client cores (SPEC §4.6, live byte budget).
+
+**Upgrading.**
+
+- A live unit that an oversized commit reaches gets a unit reset instead of
+  `LIVE_START.status = reset`. Clients already handle a live unit answered
+  `reset` (a re-keyed table resets live units the same way), so clients of
+  any supported version need no change. The SSP2 wire, the storage schema and
+  the client packages do not change.
+
 ## 0.107.0 release notes
 
 On a shared Worker replica, any tab's `activateSecurity()` released the

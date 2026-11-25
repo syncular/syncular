@@ -2570,17 +2570,19 @@ Servers prune the commit log. The contract:
 - **Live byte budget.** A server MAY bound the stored bytes (payload, row
   id, scopes) of the changes it loads for one live section; the reference
   server's `maxLiveSectionBytes` defaults to 16 MiB. It sizes candidate
-  commits before it loads any payload, counting the changes of a covered
-  table whose stored scopes carry a unit's first scope value. The section
-  stops before the commit that would pass the budget, which cuts it (§4.5).
-  A commit whose sized changes pass the budget on their own cannot be served
-  from the log: the server removes units from the scan set, those whose
-  first scope value carries the most of the commit's bytes first, until the
-  rest fits. A removed live unit resets the live section and a removed
-  post-bootstrap or completing unit gets `SUB_START.status = reset`, both
-  with `reasonCode = "sync.cursor_expired"` and the client rules above; the
-  server then reads the section again. A reset unit bootstraps at a pin at
-  or above the commit, so the commit never reaches it through the log.
+  commits before it loads any payload, counting for a unit the changes of a
+  covered table whose stored scopes carry every value of the unit's scope
+  map. The section stops before the commit that would pass the budget,
+  which cuts it (§4.5). A commit whose sized changes pass the budget on
+  their own cannot be served from the log: the server removes units from
+  the scan set, those whose scope maps reach the most of the commit's bytes
+  first, until the rest fits. A unit the commit does not reach is never
+  removed. Every removed unit, live, post-bootstrap or completing, gets the
+  unit reset above: `SUB_START.status = reset` with
+  `reasonCode = "sync.cursor_expired"` and the client rules above. The
+  server then reads the section again for the units that remain, and the
+  live section stays `active`. A reset unit bootstraps at a pin at or
+  above the commit, so the commit never reaches it through the log.
 - **Tombstones** (§2.2) prune in the same pass: a pruning run deletes every
   tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
   precedence rule of §6.2 no longer sees the delete, and the ordinary insert

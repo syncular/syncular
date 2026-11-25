@@ -1,4 +1,4 @@
-import type { ScopeMap } from '@syncular/core';
+import type { ScopeMap, UnitScopes } from '@syncular/core';
 import type { CompiledTable, IndexSchema } from './schema';
 import { matchesEffective } from './scopes';
 import type {
@@ -48,7 +48,7 @@ export interface ScanProbe {
  */
 export async function chooseScanVariable(
   partition: string,
-  query: RowScanQuery,
+  query: Pick<RowScanQuery, 'table' | 'scopeFilter' | 'limit'>,
   chosen: Map<string, string>,
   count: (
     probes: readonly ScanProbe[],
@@ -56,7 +56,7 @@ export async function chooseScanVariable(
   ) => Promise<readonly { readonly sub: unknown; readonly n: unknown }[]>,
 ): Promise<string | undefined> {
   const scopeFilter = (
-    query as RowScanQuery & { readonly scopeFilter?: ScopeMap | null }
+    query as typeof query & { readonly scopeFilter?: ScopeMap | null }
   ).scopeFilter;
   const variables =
     scopeFilter === undefined || scopeFilter === null
@@ -150,12 +150,16 @@ export async function transactionQuery(
 
 /**
  * One index range of the live scan: a unit key, its exclusive lower bound,
- * and the tables its units cover. `i` is the key's position in the list.
+ * and the tables its units cover. The range seeks `var` = `value`; a
+ * change counts for the key when its stored scopes carry every entry of
+ * `scopes`, the scope map of the key's units. `i` is the key's position
+ * in the list.
  */
 export interface LiveKey {
   readonly i: number;
   readonly var: string;
   readonly value: string;
+  readonly scopes: UnitScopes;
   readonly after: number;
   readonly tables: readonly string[];
 }
@@ -164,7 +168,7 @@ export interface LiveKey {
  * One row of a live-window candidate page: a candidate commit joined to its
  * metadata (absent when the commit vanished) and, per key, the count and
  * stored bytes (payload, row id, scopes) of its changes that key reads: a
- * covered table and the key's value in the stored scopes. A commit with no
+ * covered table and the key's scope map in the stored scopes. A commit with no
  * such change comes back once without `key`. Rows are in (commitSeq, key)
  * order.
  */
@@ -186,9 +190,15 @@ export interface LiveCandidateRow {
  * loads the changes the keys read in the given candidate commits, in
  * (commitSeq, change index) order; it never visits a commit outside that
  * list, so the cost of a page follows its candidates and not the length of
- * the change log below them. Each distinct unit key (the first variable, keys sorted)
- * becomes one index range starting at the lowest bound of the units that
- * share it. A change is kept when a unit covers its table, the pair's
+ * the change log below them. A unit's key is the variable of its scope map
+ * that `chooseScanVariable` picks over the change log: `probe` counts the
+ * change-scope index entries of each variable's value, so the key seeks the
+ * shortest range. The empty table name memoizes those picks apart from the
+ * row scans; a stale pick only costs index reads. A unit whose value of some
+ * variable no change carries reads nothing and takes no key. Units share a
+ * key only when their scope maps are equal, so a key's sizes count exactly
+ * the changes its units' scope map reaches. Each key becomes one index range
+ * starting at the lowest bound of the units that share it. A change is kept when a unit covers its table, the pair's
  * effective scopes match it, and its commit lies above that unit's own
  * bound. Every candidate advances the scan, so a page of non-matching
  * candidates never repeats.
@@ -205,7 +215,13 @@ export interface LiveCandidateRow {
  * fits (§4.6).
  */
 export async function readLiveWindowPages(
+  partition: string,
   query: LiveWindowQuery,
+  chosen: Map<string, string>,
+  probe: (
+    probes: readonly ScanProbe[],
+    cap: number,
+  ) => Promise<readonly { readonly sub: unknown; readonly n: unknown }[]>,
   readCandidates: (
     keys: readonly LiveKey[],
     limit: number,
@@ -220,17 +236,37 @@ export async function readLiveWindowPages(
 ): Promise<LiveWindow> {
   const bounds = new Map<string, { key: LiveKey; tables: Set<string> }>();
   const unitKeys: (number | undefined)[] = [];
-  for (const unit of query.units) {
-    if (unit.tables.size === 0) {
+  const variables = await Promise.all(
+    query.units.map((unit) =>
+      unit.tables.size === 0
+        ? undefined
+        : chooseScanVariable(
+            partition,
+            {
+              table: '',
+              scopeFilter: Object.fromEntries(
+                Object.entries(unit.scopes).map(([name, value]) => [
+                  name,
+                  [value],
+                ]),
+              ),
+              limit: 0,
+            },
+            chosen,
+            probe,
+          ),
+    ),
+  );
+  for (const [index, unit] of query.units.entries()) {
+    const variable = variables[index];
+    if (variable === undefined) {
       unitKeys.push(undefined);
       continue;
     }
-    const variable = Object.keys(unit.scopes).sort()[0];
-    const value = variable === undefined ? undefined : unit.scopes[variable];
-    if (variable === undefined || value === undefined) {
-      throw new StorageQueryError('sync.storage.scan_requires_scope');
-    }
-    const id = JSON.stringify([variable, value]);
+    const scopes = Object.fromEntries(
+      Object.entries(unit.scopes).sort(([x], [y]) => (x < y ? -1 : 1)),
+    );
+    const id = JSON.stringify(scopes);
     const prior = bounds.get(id);
     const tables = new Set([...(prior?.tables ?? []), ...unit.tables.keys()]);
     const i = prior?.key.i ?? bounds.size;
@@ -238,7 +274,8 @@ export async function readLiveWindowPages(
       key: {
         i,
         var: variable,
-        value,
+        value: scopes[variable]!,
+        scopes,
         after: Math.min(prior?.key.after ?? unit.afterSeq, unit.afterSeq),
         tables: [...tables],
       },

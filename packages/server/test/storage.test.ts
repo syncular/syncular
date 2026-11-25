@@ -13,6 +13,8 @@ import {
   decodeRow,
   decodeRowsSegment,
   encodeRow,
+  encodeSparseRow,
+  type PushOperation,
   registrationDigest,
   type SegmentInlineFrame,
   unitId,
@@ -41,14 +43,18 @@ import { BunSQL, bunSqlExecutor, PG_URL, resetPublicSchema } from './pg-real';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
 import { deleteSqliteRowScopesSql } from '../src/relational-rows';
 import {
+  del,
   live,
+  liveChanges,
   makeContext,
   pullFrames,
   pushCommit,
   pushResults,
   section,
+  sections,
   sync,
   TEST_LOG_EPOCH,
+  TestReplica,
   taskRow,
   upsert,
 } from './helpers';
@@ -1988,3 +1994,142 @@ test('pglite pool statements wait behind an open transaction (§6.4)', async () 
     { id: 'other' },
   ]);
 });
+
+for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+  test(`${backend} an oversized commit resets only the units it reaches, keyed on their selective variable (§4.6)`, async () => {
+    // Two catalogue tables scoped by availability, content set and release,
+    // and a workspace table. Release r1 expires in one commit of 240
+    // deletes whose row ids and scopes pass the 16 KiB live budget; r2 and
+    // r3 share its availability and set.
+    const catalogue = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'availability', type: 'string', nullable: false },
+      { name: 'set_id', type: 'string', nullable: false },
+      { name: 'release_id', type: 'string', nullable: false },
+    ] as const;
+    const notes = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'workspace_id', type: 'string', nullable: false },
+    ] as const;
+    const scopes = [
+      'avail:{availability}',
+      'set:{set_id}',
+      'release:{release_id}',
+    ];
+    const schema = {
+      version: 1,
+      tables: [
+        { name: 'items', columns: catalogue, primaryKey: 'id', scopes },
+        { name: 'prices', columns: catalogue, primaryKey: 'id', scopes },
+        {
+          name: 'notes',
+          columns: notes,
+          primaryKey: 'id',
+          scopes: ['ws:{workspace_id}'],
+        },
+      ],
+    };
+    const pg = backend === 'postgres' ? await PGlite.create() : undefined;
+    const storage: ServerStorage = pg
+      ? new PostgresServerStorage(pgliteExecutor(pg))
+      : backend === 'sqlite'
+        ? new SqliteServerStorage(new BunSqliteDatabase())
+        : new D1ServerStorage(new D1DatabaseDouble(), {
+            pushApplySerialized: true,
+          });
+    if (storage instanceof D1ServerStorage) {
+      while (!(await storage.migrateSchema(compileSchema(schema))).complete) {}
+    } else {
+      await storage.ensureSchema(compileSchema(schema));
+    }
+    const t = makeContext({
+      storage,
+      schema,
+      limits: { maxLiveSectionBytes: 16 * 1024 },
+      resolveScopes: () => ({
+        availability: ['offered'],
+        set_id: ['s1'],
+        release_id: ['r1', 'r2', 'r3'],
+        workspace_id: ['w1'],
+      }),
+    });
+    await storage.touchPartition('part-1', t.now.ms, TEST_LOG_EPOCH);
+    const unit = (release: string) => ({
+      availability: 'offered',
+      release_id: release,
+      set_id: 's1',
+    });
+    const row = (table: string, id: string, release: string) =>
+      upsert(
+        table,
+        id,
+        encodeSparseRow(catalogue, 0, [id, 'offered', 's1', release]),
+      );
+    const expired = ['items', 'prices'].flatMap((table) =>
+      Array.from({ length: 120 }, (_, i) => [table, `${table}-r1-${i}`]),
+    );
+    const push = async (id: string, operations: PushOperation[]) =>
+      expect(
+        pushResults(await sync(t, [pushCommit(id, operations)]))[0]?.status,
+      ).toBe('applied');
+    try {
+      await push('seed', [
+        ...expired.map(([table, id]) => row(table!, id!, 'r1')),
+        row('items', 'items-r2', 'r2'),
+        row('items', 'items-r3', 'r3'),
+        upsert('notes', 'n1', encodeSparseRow(notes, 0, ['n1', 'w1'])),
+      ]);
+      const d = new TestReplica('device-d').register(unit('r2'), {
+        workspace_id: 'w1',
+      });
+      const a = new TestReplica('device-a').register(
+        unit('r1'),
+        unit('r2'),
+        unit('r3'),
+        { workspace_id: 'w1' },
+      );
+      for (const replica of [d, a]) {
+        await replica.pull(t);
+        await replica.pull(t);
+        expect(replica.idle).toBe(true);
+      }
+      await push(
+        'expire',
+        expired.map(([table, id]) => del(table!, id!)),
+      );
+      await push('after', [
+        row('items', 'items-r2', 'r2'),
+        upsert('notes', 'n1', encodeSparseRow(notes, 0, ['n1', 'w1'])),
+      ]);
+
+      // D holds no r1 unit: its keys never read the expiry commit.
+      const atD = await d.pull(t);
+      expect(live(atD).start.status).toBe('active');
+      expect(sections(atD).size).toBe(0);
+      expect(liveChanges(atD)).toEqual([
+        'items/items-r2/upsert',
+        'notes/n1/upsert',
+      ]);
+      expect(d.idle).toBe(true);
+
+      // A resets the r1 unit alone; r2, r3 and the workspace stay live.
+      const atA = await a.pull(t);
+      expect(live(atA).start.status).toBe('active');
+      expect([...sections(atA)].map(([id, s]) => [id, s.start.status])).toEqual(
+        [[unitId(unit('r1')), 'reset']],
+      );
+      expect(liveChanges(atA)).toEqual([
+        'items/items-r2/upsert',
+        'notes/n1/upsert',
+      ]);
+      expect([...a.catching.keys()]).toEqual([unitId(unit('r1'))]);
+      const rebootstrap = await a.pull(t);
+      expect(
+        [...sections(rebootstrap)].map(([id, s]) => [id, s.start.bootstrap]),
+      ).toEqual([[unitId(unit('r1')), true]]);
+      expect(a.idle).toBe(true);
+    } finally {
+      await pg?.close();
+    }
+  });
+}

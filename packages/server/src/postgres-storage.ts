@@ -3334,19 +3334,39 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     partition: string,
     query: LiveWindowQuery,
   ): Promise<LiveWindow> {
-    // Two statements per page. The candidate read takes one LATERAL range of
+    // A unit of several variables first picks its key with one capped count
+    // per variable over `sync_change_scopes_by_key`, memoized per scope map.
+    // Then two statements per page. The candidate read takes one LATERAL range of
     // `sync_change_scopes_by_key` per unit key, each DISTINCT and LIMITed at
     // the index, merged in commit order and LIMITed again into one array.
     // `walk` then sizes the candidates one at a time and stops after the one
     // that reaches the budget: per key, the count and byte size of the
     // commit's changes the key reads. Each change's scopes expand once and
-    // hash-join the keys on (var, value); `octet_length` of a TOASTed payload
+    // hash-join the keys on (var, value); a change counts for a key when its
+    // scopes contain the key's whole scope map. `octet_length` of a TOASTed payload
     // reads its pointer, never the value. Every walked commit LEFT JOINs its
     // meta (NULL when the commit vanished, which still advances the scan).
     // The change read then seeks only the commits the byte budget admits,
     // matching each change to the keys by the same join.
     return readLiveWindowPages(
+      partition,
       query,
+      this.#scanVariables,
+      // The probes of concurrent units leave as one statement.
+      (probes, cap) =>
+        Promise.all(
+          probes.map(async (probe) => {
+            const [row] = await this.#batchedPage<{ n: unknown }>(
+              'liveProbe',
+              `SELECT p.i AS sub, (SELECT count(*) FROM (SELECT 1 FROM sync_change_scopes
+                 WHERE partition=$1 AND var=p.var AND value=ANY(p.vals) LIMIT p.lim) x) AS n
+               FROM jsonb_to_recordset($2::text::jsonb) AS p(i int, var text, vals text[], lim int)`,
+              partition,
+              { var: probe.var, vals: probe.vals, lim: cap },
+            );
+            return { sub: probe.i, n: row?.n };
+          }),
+        ),
       async (keys, limit, budget) => {
         const { rows } = await this.#exec.query<{
           commit_seq: unknown;
@@ -3356,7 +3376,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           bytes: unknown;
           changes: unknown;
         }>(
-          `WITH RECURSIVE k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb)),
+          `WITH RECURSIVE k AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::text::jsonb) AS k(i int, var text, value text, after bigint, tables jsonb, scopes jsonb)),
            c AS MATERIALIZED (SELECT coalesce(array_agg(d.commit_seq ORDER BY d.commit_seq), '{}') AS seqs
              FROM (SELECT DISTINCT s.commit_seq
                FROM k CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
@@ -3365,7 +3385,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
                  ORDER BY commit_seq LIMIT $4) s
                ORDER BY s.commit_seq LIMIT $4) d),
            km AS MATERIALIZED (SELECT jsonb_object_agg(x.var, x.vals) AS m
-             FROM (SELECT var, jsonb_object_agg(value, jsonb_build_array(i, after, tables)) AS vals FROM k GROUP BY var) x),
+             FROM (SELECT var, jsonb_object_agg(value, ks) AS vals
+               FROM (SELECT var, value, jsonb_agg(jsonb_build_array(i, after, tables, scopes)) AS ks FROM k GROUP BY var, value) v GROUP BY var) x),
            walk(n, commit_seq, changes, bytes, sizes) AS (
              SELECT 0, NULL::bigint, 0::numeric, 0::numeric, NULL::jsonb
              UNION ALL
@@ -3376,10 +3397,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
                FROM (SELECT (x.kv->>0)::int AS key, count(*) AS changes,
                    sum(coalesce(octet_length(ch.payload), 0) + octet_length(ch.row_id) + octet_length(ch.scopes::text)) AS bytes
                  FROM sync_changes ch
-                 CROSS JOIN LATERAL jsonb_each_text(CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END) e
-                 CROSS JOIN LATERAL (SELECT km.m->e.key->e.value AS kv) x
+                 CROSS JOIN LATERAL (SELECT CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END AS sc) n
+                 CROSS JOIN LATERAL jsonb_each_text(n.sc) e
+                 CROSS JOIN LATERAL jsonb_array_elements(km.m->e.key->e.value) x(kv)
                  WHERE ch.partition=$1 AND ch.commit_seq=c.seqs[w.n+1]
-                   AND ch.commit_seq>(x.kv->>1)::bigint AND x.kv->2 @> to_jsonb(ch.tbl)
+                   AND ch.commit_seq>(x.kv->>1)::bigint AND x.kv->2 @> to_jsonb(ch.tbl) AND n.sc @> (x.kv->3)
                  GROUP BY 1) g) z
              WHERE w.n<cardinality(c.seqs) AND w.changes<$5 AND w.bytes<=$6)
            SELECT w.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
@@ -3422,15 +3444,17 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           StoredChangeRecord & { commit_seq: unknown }
         >(
           `WITH km AS MATERIALIZED (SELECT jsonb_object_agg(x.var, x.vals) AS m
-             FROM (SELECT var, jsonb_object_agg(value, jsonb_build_array(after, tables)) AS vals
-               FROM jsonb_to_recordset($2::text::jsonb) AS k(var text, value text, after bigint, tables jsonb) GROUP BY var) x)
+             FROM (SELECT var, jsonb_object_agg(value, ks) AS vals
+               FROM (SELECT var, value, jsonb_agg(jsonb_build_array(after, tables, scopes)) AS ks
+                 FROM jsonb_to_recordset($2::text::jsonb) AS k(var text, value text, after bigint, tables jsonb, scopes jsonb) GROUP BY var, value) v GROUP BY var) x)
            SELECT ch.commit_seq AS commit_seq, ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op,
              ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
            FROM sync_changes ch CROSS JOIN km
            WHERE ch.partition=$1 AND ch.commit_seq=ANY(ARRAY(SELECT jsonb_array_elements_text($3::text::jsonb)::bigint))
-             AND EXISTS (SELECT 1 FROM jsonb_each_text(CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END) e
-               CROSS JOIN LATERAL (SELECT km.m->e.key->e.value AS kv) x
-               WHERE ch.commit_seq>(x.kv->>0)::bigint AND x.kv->1 @> to_jsonb(ch.tbl))
+             AND EXISTS (SELECT 1 FROM (SELECT CASE jsonb_typeof(ch.scopes) WHEN 'string' THEN (ch.scopes#>>'{}')::jsonb ELSE ch.scopes END AS sc) n
+               CROSS JOIN LATERAL jsonb_each_text(n.sc) e
+               CROSS JOIN LATERAL jsonb_array_elements(km.m->e.key->e.value) x(kv)
+               WHERE ch.commit_seq>(x.kv->>0)::bigint AND x.kv->1 @> to_jsonb(ch.tbl) AND n.sc @> (x.kv->2))
            ORDER BY ch.commit_seq, ch.idx`,
           [partition, JSON.stringify(keys), JSON.stringify(commitSeqs)],
         );

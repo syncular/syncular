@@ -24,6 +24,7 @@ import {
   responseLive,
   responsePushResults,
   responseSection,
+  responseSections,
 } from '../raw';
 import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
 import {
@@ -380,8 +381,9 @@ export const unitScenarios: readonly Scenario[] = [
 
   {
     // A commit whose changes for a live unit pass the server's live byte
-    // budget cannot be served from the log: the live section resets, and
-    // the units bootstrap from the stored rows.
+    // budget cannot be served from the log: the unit it reaches resets and
+    // bootstraps from the stored rows, and the live section stays active
+    // for the other unit.
     name: 'units/oversized-commit-resets-the-units-it-reaches',
     specRefs: ['§4.6', '§4.5'],
     requires: ['server-limits', 'live-byte-budget'],
@@ -405,17 +407,106 @@ export const unitScenarios: readonly Scenario[] = [
       await seedTasks(ctx, [task('b2', 'p2')]);
       const responses = captureResponses(ctx, a);
       await syncOk(a);
+      const first = responses()[0]!;
       checkEqual(
-        responses()[0]?.frames.find((frame) => frame.type === 'LIVE_START'),
-        {
-          type: 'LIVE_START',
-          status: 'reset',
-          reasonCode: 'sync.cursor_expired',
-        },
-        'the live section behind the oversized commit resets (§4.6)',
+        responseLive(first).start.status,
+        'active',
+        'the live section behind the oversized commit stays active (§4.6)',
+      );
+      checkEqual(
+        [...responseSections(first)].map(([id, section]) => [
+          id,
+          section.start.status,
+        ]),
+        [[unitId(U1), 'reset']],
+        'only the unit the oversized commit reaches resets (§4.6)',
+      );
+      checkEqual(
+        responseLive(first).commits.flatMap((commit) =>
+          commit.changes.map((change) => change.rowId),
+        ),
+        ['b2'],
+        'the other unit receives its commit through the log',
       );
       await syncIdle(a);
       await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+
+  {
+    // Units of several variables key the live scan on their selective
+    // variable: an oversized commit of one project never reaches a replica
+    // whose units hold another project of the same org, and a replica that
+    // holds both resets only the reached unit.
+    name: 'units/oversized-commit-spares-units-sharing-a-variable',
+    specRefs: ['§4.6', '§4.5'],
+    requires: ['server-limits', 'live-byte-budget'],
+    server: { limits: { maxLiveSectionBytes: 16 * 1024 } },
+    async run(ctx) {
+      const allowed = { org_id: ['o1'], projectId: ['p1', 'p2'] };
+      const P1 = { org_id: 'o1', projectId: 'p1' };
+      const P2 = { org_id: 'o1', projectId: 'p2' };
+      const d = await ctx.newClient({
+        actorId: 'actor-d',
+        clientId: 'client-d',
+        allowed,
+      });
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed,
+      });
+      await d.api.subscribe(P2);
+      await a.api.subscribe(P1);
+      await a.api.subscribe(P2);
+      await seedRows(ctx, 'docs', [
+        doc('a1', 'o1', 'p1'),
+        doc('b1', 'o1', 'p2'),
+      ]);
+      await syncIdle(d);
+      await syncIdle(a);
+      await seedRows(
+        ctx,
+        'docs',
+        Array.from({ length: 8 }, (_, i) =>
+          doc(`big${i}`, 'o1', 'p1', 'x'.repeat(4096)),
+        ),
+      );
+      await seedRows(ctx, 'docs', [doc('b2', 'o1', 'p2')]);
+      const atD = captureResponses(ctx, d);
+      await syncOk(d);
+      checkEqual(
+        responseLive(atD()[0]!).start.status,
+        'active',
+        'a replica without the reached unit keeps its live section (§4.6)',
+      );
+      checkEqual(
+        responseSections(atD()[0]!).size,
+        0,
+        'a replica without the reached unit resets no unit',
+      );
+      const atA = captureResponses(ctx, a);
+      await syncOk(a);
+      checkEqual(
+        responseLive(atA()[0]!).start.status,
+        'active',
+        'the live section of the other units stays active (§4.6)',
+      );
+      checkEqual(
+        [...responseSections(atA()[0]!)].map(([id, section]) => [
+          id,
+          section.start.status,
+        ]),
+        [[unitId(P1), 'reset']],
+        'only the reached unit resets (§4.6)',
+      );
+      await syncIdle(d);
+      await syncIdle(a);
+      await expectConverged(ctx, 'docs', [a]);
+      await expectConverged(ctx, 'docs', [d], {
+        variable: 'projectId',
+        values: ['p2'],
+      });
     },
   },
 

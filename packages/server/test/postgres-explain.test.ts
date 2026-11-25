@@ -144,6 +144,7 @@ test('readLiveWindow ranges the key index once per unit (no Seq Scan)', async ()
       i,
       var: 'project_id',
       value: unit.scopes.project_id,
+      scopes: unit.scopes,
       after: 0,
       tables: ['tasks'],
     })),

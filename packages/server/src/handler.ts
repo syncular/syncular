@@ -1133,11 +1133,10 @@ async function* streamResponse(
             limitBytes: limitsOf(ctx).maxLiveSectionBytes,
           });
           // §4.6: a commit past the byte budget on its own cannot be served
-          // from the log; the units it reaches reset and bootstrap.
+          // from the log; the units it reaches reset and bootstrap, and the
+          // live section of the others stays active.
           for (const at of live.oversized?.units ?? []) {
-            const index = scanned[at]!.index;
-            if (states[index]!.kind === 'live') liveReset = true;
-            else states[index] = { kind: 'reset' };
+            states[scanned[at]!.index] = { kind: 'reset' };
           }
           if (live.oversized !== undefined) {
             live = undefined;

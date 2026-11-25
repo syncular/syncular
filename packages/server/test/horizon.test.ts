@@ -182,7 +182,7 @@ describe('commits past the live byte budget (§4.6)', () => {
     return t;
   };
 
-  test('a live replica behind an oversized commit resets and re-bootstraps to its state', async () => {
+  test('a live unit behind an oversized commit resets alone and re-bootstraps to its state', async () => {
     const t = budget();
     const replica = new TestReplica().register(P1);
     await replica.pull(t);
@@ -191,11 +191,12 @@ describe('commits past the live byte budget (§4.6)', () => {
     expect(replica.cursor).toBe(1);
     await seedTask(t, 'c2', 't2', 'p1', 'x'.repeat(4096));
     const reset = await replica.pull(t);
-    expect(live(reset).start).toEqual({
-      type: 'LIVE_START',
+    expect(section(reset, P1).start).toMatchObject({
       status: 'reset',
       reasonCode: 'sync.cursor_expired',
     });
+    expect(section(reset, P1).end.nextCursor).toBe(1);
+    expect(live(reset).start.status).toBe('active');
     expect(live(reset).commits).toHaveLength(0);
     expect(replica.cursor).toBe(-1);
     const again = await replica.pull(t);

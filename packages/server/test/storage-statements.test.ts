@@ -496,6 +496,7 @@ for (const kind of KINDS) {
         i,
         var: 'project_id',
         value: unit.scopes.project_id,
+        scopes: unit.scopes,
         after: 0,
         tables: ['tasks'],
       })),
@@ -577,6 +578,7 @@ for (const kind of KINDS) {
         i,
         var: 'project_id',
         value: unit.scopes.project_id,
+        scopes: unit.scopes,
         after: 0,
         tables: ['tasks'],
       })),
@@ -992,6 +994,7 @@ test('an idle SQLite storage runs a call before a close in the same tick', async
 test('the live change read loads only the candidate commits, whatever the log holds below them (§4.5)', async () => {
   const calls: (readonly number[])[] = [];
   const window = await readLiveWindowPages(
+    PARTITION,
     {
       units: [
         {
@@ -1003,6 +1006,10 @@ test('the live change read loads only the candidate commits, whatever the log ho
       throughSeq: 26,
       limitChanges: 1000,
       limitBytes: 16 * 1024 * 1024,
+    },
+    new Map(),
+    async () => {
+      throw new Error('a single-variable unit needs no probe');
     },
     async (keys) =>
       keys[0]!.after < 26
@@ -1096,6 +1103,7 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
     const calls: (readonly number[])[] = [];
     const sized: number[] = [];
     const window = await readLiveWindowPages(
+      PARTITION,
       {
         units: [
           {
@@ -1107,6 +1115,10 @@ test('a live page loads candidates only up to its cut, so a far-behind client re
         throughSeq: 40,
         limitChanges: 5,
         limitBytes: 16 * 1024 * 1024,
+      },
+      new Map(),
+      async () => {
+        throw new Error('a single-variable unit needs no probe');
       },
       async (keys, _limit, budget) => {
         const rows = Array.from({ length: 40 - keys[0]!.after }, (_, i) => ({

@@ -809,7 +809,10 @@ export interface PartitionHorizons {
 
 /** One unit of the §4.5 scan set. */
 export interface LiveScanUnit {
-  /** The unit's scope map; its first variable (keys sorted) is its index key. */
+  /**
+   * The unit's scope map; the variable whose value has the fewest entries in
+   * the change log is its index key (`readLiveWindowPages`).
+   */
   readonly scopes: UnitScopes;
   /** Exclusive lower bound: `R`, the unit's cursor `P`, or its pin. */
   readonly afterSeq: number;
