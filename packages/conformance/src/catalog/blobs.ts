@@ -23,7 +23,7 @@ import {
   type Scenario,
   type ScenarioContext,
 } from '../scenario';
-import { syncFails, syncIdle } from './util';
+import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const U1 = { project_id: 'p1' } as const;
@@ -48,6 +48,28 @@ const BLOB_SCHEMA: DriverSchema = {
 };
 
 const BLOB_SERVER = { schema: BLOB_SCHEMA } as const;
+
+/** Writes stay with the workspace; the sieve scope only reads (§3.4). */
+const READ_SCOPE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'documents',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'workspace_id', type: 'string', nullable: false },
+        { name: 'sieve_id', type: 'string', nullable: true },
+        { name: 'file', type: 'blob_ref', nullable: true },
+      ],
+      primaryKey: 'id',
+      scopes: [
+        { pattern: 'workspace:{workspace_id}' },
+        { pattern: 'sieve-read:{sieve_id}' },
+      ],
+      writeScopeVariables: ['workspace_id'],
+    },
+  ],
+};
 
 function bytesOf(text: string): Uint8Array {
   return new TextEncoder().encode(text);
@@ -1738,6 +1760,80 @@ export const blobScenarios: readonly Scenario[] = [
         1,
         'the download endpoint was reached and refused (not a client short-circuit)',
       );
+    },
+  },
+
+  {
+    // §5.9.5: download authorization follows the read rule (§3.2). A reader
+    // whose only grant is a scope outside the write sets downloads the blob
+    // of a row it pulls, is still refused on writes, and is denied once the
+    // grant is revoked.
+    name: 'blobs/read-only-scope-fetches-pulled-row-blob',
+    specRefs: ['§5.9.5', '§3.2', '§3.4'],
+    requires: ['blobs'],
+    server: { schema: READ_SCOPE_SCHEMA },
+    async run(ctx: ScenarioContext) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'client-owner',
+        schema: READ_SCOPE_SCHEMA,
+        allowed: { workspace_id: ['w1'] },
+      });
+      await requireBlobs(owner);
+      await owner.api.subscribe({ workspace_id: 'w1' });
+      const ref = await owner.api.uploadBlob!(bytesOf('sieve bytes'));
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'documents',
+          values: { id: 'd1', workspace_id: 'w1', sieve_id: 'host', file: ref },
+        },
+      ]);
+      await syncIdle(owner);
+
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'client-reader',
+        schema: READ_SCOPE_SCHEMA,
+        allowed: { sieve_id: ['host'] },
+      });
+      await reader.api.subscribe({ sieve_id: 'host' });
+      await syncIdle(reader);
+      const fileRef = (await reader.api.readRows('documents'))[0]?.values
+        .file as string;
+      checkEqual(
+        decode(await reader.api.fetchBlob!(fileRef)),
+        'sieve bytes',
+        'the read-only scope downloads the blob of a row it pulls',
+      );
+      const write = await reader.api.mutate([
+        {
+          op: 'upsert',
+          table: 'documents',
+          values: { id: 'd1', workspace_id: 'w1', sieve_id: 'host', file: ref },
+        },
+      ]);
+      checkEqual(
+        (await syncOk(reader)).rejected,
+        [write],
+        'the read-only scope still does not authorize writes',
+      );
+
+      // A second reader with the same grant, revoked before it downloads.
+      const revoked = await ctx.newClient({
+        actorId: 'revoked',
+        clientId: 'client-revoked',
+        schema: READ_SCOPE_SCHEMA,
+        allowed: { sieve_id: ['host'] },
+      });
+      await ctx.server.setAllowedScopes('revoked', { sieve_id: ['other'] });
+      let code = '';
+      try {
+        await revoked.api.fetchBlob!(fileRef);
+      } catch (error) {
+        code = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(code, 'blob.forbidden', 'a revoked reader is denied');
     },
   },
 

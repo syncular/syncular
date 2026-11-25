@@ -1070,7 +1070,7 @@ stores (memory / sqlite) count on demand and omit the marker.
 Setting `blobSignedUrls: s3PresignedBlobUrls(blobs)` makes the server issue a
 provider-presigned GET URL for a blob download — **but only after the
 row-derived authorization check passes** (`handleBlobDownload` resolves the
-actor's scopes and tests the referencing rows first; a `blobId` is never a
+actor's scopes and tests whether it may pull a referencing row first; a `blobId` is never a
 bearer capability minted from the id alone). The signed object key embeds the
 `blobId`, TTL SHOULD be ≤ 15 min (default 900 s), and the URL is a short-lived
 grant to exactly those immutable bytes. When `blobSignedUrls` is set, the

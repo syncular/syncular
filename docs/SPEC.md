@@ -4136,24 +4136,29 @@ MUST verify the actor is authorized to see the blob, and authorization
 **derives from the referencing rows, not the blob id**:
 
 > The actor may download `blobId` iff **at least one row in the reference
-> index for (partition, blobId) is authorized for the actor** under the
-> write-path scope check (§3.4 steps 1–3): resolve the actor's allowed
-> scopes once under the request's authentication context (§3.2 step 3,
-> §1.1), and for each candidate referencing row, test
-> the row's stored scope values against the allowed values for the write
-> variables of that row's table. The first row that passes
-> authorizes the download; if none pass (or the index is empty, or
-> `resolveScopes` threw), the download is **HTTP 403 `blob.forbidden`**
-> (never 404 — leaking existence-vs-authorization is the same class of
-> footgun §5.5 closes for segments).
+> index for (partition, blobId) is one the actor may pull** under the read
+> rule (§3.2): resolve the actor's allowed scopes once under the request's
+> authentication context (§3.2 step 3, §1.1), and for each candidate
+> referencing row, test whether some unit on one of the row's declared
+> variables, requesting the row's stored value, is active (§3.2 rules 4–6,
+> wildcard fence included) and its effective scopes match the row's stored
+> scopes. The first row that passes authorizes the download; if none pass
+> (or the index is empty, or `resolveScopes` threw), the download is
+> **HTTP 403 `blob.forbidden`** (never 404 — leaking
+> existence-vs-authorization is the same class of footgun §5.5 closes for
+> segments).
 
-Rationale for reusing the §3.4 stored-row check rather than a segment-style
-scope digest: a blob is referenced by *rows across potentially several
-scopes*, not built for one effective-scope set, so there is no single
-digest to bind. The reference index makes the check a bounded indexed
-lookup (candidate rows for the blob) followed by the existing per-row scope
-test — the same machinery write authorization already runs. `'*'` in the
-actor's allowed values passes as everywhere else.
+A one-variable unit decides the rule: every row a unit over several
+variables delivers, some one-variable unit on one of those variables
+delivers too. Write sets (§3.4) play no part, so a read-only scope (a
+declared variable outside every write set) downloads the blobs of the rows
+it pulls. A blob is referenced by rows across potentially several scopes,
+not built for one effective-scope set, so there is no single scope digest
+to bind as segments do. The reference index makes the check a bounded
+indexed lookup (candidate rows for the blob) followed by the per-row test.
+DECISION (2026-11-25): until 0.107.1 the check was the §3.4 write-path
+check, so an actor holding only a read-only scope pulled a row and its
+`blob_ref` and then got `blob.forbidden` for the blob.
 
 - **Inline delivery.** Without signed URLs the server checks that the blob
   exists, runs the authorization rule above, and only then reads the

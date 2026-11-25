@@ -114,7 +114,7 @@ The server refuses an upload larger than `maxBlobBytes` with HTTP 413 `blob.too_
 
 ## Download authorization
 
-Every blob download re-authorizes against the rows that reference the blob, on every request. The server keeps a commit-to-blob reference index, and it denies a download with `blob.forbidden` when the actor holds no referencing row ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)). The server reads no blob byte before that check passes. An inline download streams the stored bytes with identity encoding. When `fetchBlob` receives a `blob_ref` string, the client stops reading once the body exceeds the reference's `byteLength` and fails with `sync.invalid_request`; a bare `blobId` declares no size.
+Every blob download re-authorizes against the rows that reference the blob, on every request. The server keeps a commit-to-blob reference index, and it denies a download with `blob.forbidden` when the actor may pull no referencing row. The check is the pull rule: a scope that only reads a table, outside every write set (`writeScopeVariables`), downloads the blobs of the rows it pulls ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)). The server reads no blob byte before that check passes. An inline download streams the stored bytes with identity encoding. When `fetchBlob` receives a `blob_ref` string, the client stops reading once the body exceeds the reference's `byteLength` and fails with `sync.invalid_request`; a bare `blobId` declares no size.
 
 ### Media type
 

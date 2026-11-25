@@ -17,7 +17,11 @@ import {
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
-import { authorizeWrite, type ResolvedScopes } from './scopes';
+import {
+  computeEffective,
+  matchesEffective,
+  type ResolvedScopes,
+} from './scopes';
 import { bytesStream } from './segment-store';
 import { issueBlobUploadUrl, issueBlobUrl } from './signed-url';
 
@@ -141,8 +145,8 @@ export async function handleBlobUpload(
 
 /**
  * `GET <mount>/blobs/{blobId}` (§5.9.5). Authorization derives from the
- * referencing rows: the actor may download iff at least one row in the
- * reference index passes the §3.4 scope check for the actor.
+ * referencing rows: the actor may download iff it may pull at least one row
+ * in the reference index (§3.2).
  */
 export async function handleBlobDownload(
   ctx: SyncRequestContext,
@@ -242,15 +246,27 @@ async function downloadBlob(
   // request has run (Workers): make sure the row tables exist first.
   await ctx.storage.ensureSchema(schema, ctx.checkpoints);
   const rows = await listRows.call(ctx.storage, ctx.partition, blobId);
-  let authorized = false;
-  for (const row of rows) {
+  // A row is pullable when a one-variable unit on one of its stored values
+  // is active and its effective scopes (with the §3.2 wildcard fence) match
+  // the row. Every row a wider unit delivers, some one-variable unit delivers.
+  const authorized = rows.some((row) => {
     const table = schema.tables.get(row.table);
-    if (table === undefined) continue;
-    if (authorizeWrite(table, row.scopes, resolved)) {
-      authorized = true;
-      break;
-    }
-  }
+    if (table === undefined) return false;
+    const declared = new Set(table.scopePatterns.map((p) => p.variable));
+    return [...declared].some((variable) => {
+      const value = row.scopes[variable];
+      if (value === undefined) return false;
+      const outcome = computeEffective(
+        declared,
+        { [variable]: [value] },
+        resolved,
+      );
+      return (
+        outcome.status === 'active' &&
+        matchesEffective(row.scopes, outcome.effective)
+      );
+    });
+  });
   if (!authorized) {
     // Never 404 here: existence-vs-authorization must not leak (§5.9.5).
     throw syncError(

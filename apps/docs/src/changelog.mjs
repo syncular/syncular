@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-25',
+    title: 'A read-only scope downloads the blobs of the rows it pulls',
+    body: 'The server authorized a blob download with the write-path check, so an actor whose only grant was a scope outside every write set pulled a row with its `blob_ref` and then got `blob.forbidden` for the blob. A download now passes when the actor may pull a referencing row, under the same rule as a pull, wildcard fence included.',
+    links: [
+      {
+        href: '/concepts-blobs/#download-authorization',
+        label: 'Download authorization',
+      },
+    ],
+  },
+  {
+    date: '2026-11-25',
     title: 'An oversized commit resets only the units it reaches',
     body: "The TypeScript server keyed the live scan of every unit on its alphabetically first scope variable, so units sharing that value shared one key: a commit past `maxLiveSectionBytes` for one catalogue release reset the live section of every replica holding any unit with the same availability, and every live unit bootstrapped again. Each unit now seeks the change log by its scope variable with the fewest log entries, and the storage counts a change for a unit only when it carries the unit's whole scope map. An oversized commit resets only the units it reaches, and the live section stays active for the rest.",
     links: [{ href: '/guide-server/#request-limits', label: 'Request limits' }],

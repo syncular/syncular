@@ -226,8 +226,8 @@ Unconfirmed leads: silent delta loss if Bun's `ws.send` drops past its
 backpressure limit; SigV4 `canonicalPath` leaves `:@+=` raw; `hub.connect`
 reads the max sequence before adding the session; rehydration subrequest
 limits; no FIFO deadline for a hung host callback; frames dropped before
-`hub.connect` resolves in the documented Bun wiring; blob read authorization
-uses write variables.
+`hub.connect` resolves in the documented Bun wiring. (Blob read authorization
+used write variables; fixed in 0.107.2.)
 
 Checked and sound: the native segment token (MAC before parse, constant-time
 compare, `exp`/`seg`/`sd`/`aud`), §5.5 re-authorization per request, blob

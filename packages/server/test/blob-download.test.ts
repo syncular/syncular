@@ -6,6 +6,7 @@
  * size cap holds before and while the body is read.
  */
 import { describe, expect, test } from 'bun:test';
+import { PGlite } from '@electric-sql/pglite';
 import { encodeRow } from '@syncular/core';
 import {
   type BlobStore,
@@ -15,12 +16,15 @@ import {
   handleBlobUpload,
   handleBlobUploadGrant,
   MemoryBlobStore,
+  PostgresServerStorage,
   S3BlobStore,
+  type ServerStorage,
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
   s3PresignedBlobUrls,
 } from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
 import { startS3Stub } from './s3-stub';
 
 const PARTITION = 'part-1';
@@ -63,7 +67,7 @@ async function seedReferencedBlob(
 }
 
 function baseCtx(
-  storage: SqliteServerStorage,
+  storage: ServerStorage,
   blobs: BlobStore,
   overrides?: Partial<SyncRequestContext>,
 ): SyncRequestContext {
@@ -213,6 +217,82 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
     ).toEqual(bytes);
   });
 });
+
+/** Writes stay with the workspace; the sieve scope only reads. */
+const READ_SCOPE_SCHEMA: ServerSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'documents',
+      primaryKey: 'id',
+      scopes: ['workspace:{workspace_id}', 'sieve-read:{sieve_id}'],
+      writeScopeVariables: ['workspace_id'],
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'workspace_id', type: 'string', nullable: false },
+        { name: 'sieve_id', type: 'string', nullable: true },
+        { name: 'file', type: 'blob_ref', nullable: true },
+      ],
+    },
+  ],
+};
+
+for (const backend of ['SQLite', 'PostgreSQL/PGlite'] as const) {
+  test(`${backend}: a read-only scope downloads the blobs of rows it pulls (§5.9.5)`, async () => {
+    const pg = backend === 'SQLite' ? undefined : await PGlite.create();
+    const storage =
+      pg === undefined
+        ? new SqliteServerStorage()
+        : new PostgresServerStorage(pgliteExecutor(pg));
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([3, 1, 4]);
+    const blobId = await blobIdFor(bytes);
+    await blobs.put(PARTITION, blobId, bytes, NOW);
+    await storage.ensureSchema(compileSchema(READ_SCOPE_SCHEMA));
+    const tx = await storage.begin(PARTITION);
+    if (tx.setBlobRefs === undefined) throw new Error('no setBlobRefs');
+    await tx.upsertRow('documents', {
+      rowId: 'doc-1',
+      serverVersion: 1,
+      scopes: { workspace_id: 'private-host', sieve_id: 'host' },
+      payload: encodeRow(READ_SCOPE_SCHEMA.tables[0]!.columns, [
+        'doc-1',
+        'private-host',
+        'host',
+        null,
+      ]),
+    });
+    await tx.setBlobRefs('documents', 'doc-1', [blobId]);
+    await tx.commit();
+    const download = (allowed: Record<string, string[]>) =>
+      handleBlobDownload(
+        baseCtx(storage, blobs, {
+          schema: READ_SCOPE_SCHEMA,
+          resolveScopes: () => allowed,
+        }),
+        blobId,
+      );
+
+    const served = await download({ sieve_id: ['host'] });
+    if ('url' in served) throw new Error('expected inline delivery');
+    expect(
+      new Uint8Array(await new Response(served.body).arrayBuffer()),
+    ).toEqual(bytes);
+    // Revoked: the reader holds another sieve value only.
+    await expect(download({ sieve_id: ['other'] })).rejects.toMatchObject({
+      code: 'blob.forbidden',
+    });
+    // §3.2 wildcard fence: a workspace '*' grant never lifts the sieve list,
+    // so a pull would not deliver the row and the download is denied too.
+    await expect(
+      download({ workspace_id: ['*'], sieve_id: ['other'] }),
+    ).rejects.toMatchObject({ code: 'blob.forbidden' });
+    const owner = await download({ workspace_id: ['*'] });
+    if ('url' in owner) throw new Error('expected inline delivery');
+    await owner.body.cancel();
+    await pg?.close();
+  });
+}
 
 describe('handleBlobUpload size cap (§5.9.3)', () => {
   const upload = (body: BodyInit | ReadableStream, headers: HeadersInit) =>
