@@ -1,5 +1,34 @@
 # Syncular release notes
 
+## 0.107.2 release notes
+
+The server authorized a blob download with the write-path check (§3.4): a
+referencing row passed only when the actor held a write set of its table. On
+a table with `scopes: ['workspace:{workspace_id}',
+'sieve-read:{sieve_read_facility_id}']` and `writeScopeVariables:
+['workspace_id']`, an actor allowed only `sieve_read_facility_id: ['host']`
+pulled the row and its `blob_ref` and then got `blob.forbidden` from
+`fetchBlob` (SYNCULAR-BLOB-READ-SCOPE-001).
+
+A download now passes when the actor may pull a referencing row: some unit on
+one of the row's declared variables, requesting the row's stored value, is
+active under §3.2 and its effective scopes match the row (SPEC §5.9.5). The
+conformance scenario `blobs/read-only-scope-fetches-pulled-row-blob` holds
+the server to it with both client cores; the server test runs it on SQLite and
+PostgreSQL.
+
+**Upgrading.**
+
+- A read-only scope downloads the blobs of the rows it pulls. An app that
+  added the read-only variable as a second write set only to admit those
+  downloads can drop that set, and the commit validator that refused the
+  writes it allowed.
+- The §3.2 wildcard fence now applies to downloads. An actor allowed `'*'` on
+  the owner variable and a list on another declared variable downloads only
+  the blobs of rows inside that list, as a pull delivers only those rows.
+  Before, the write check admitted every row of the owner variable.
+- The wire, the storage schema and the client packages do not change.
+
 ## 0.107.1 release notes
 
 The TypeScript server keyed the live scan of every unit on its alphabetically
