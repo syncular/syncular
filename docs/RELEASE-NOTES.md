@@ -1,5 +1,56 @@
 # Syncular release notes
 
+## 0.107.3 release notes
+
+A schema bump that appends nullable columns to a table re-encoded the table's
+stored rows under the new columns but left its logged changes in
+`sync_changes` in the previous layout. The live section and the schema window
+decode logged payloads under the current columns, so a client upgrading
+across the bump (its kept tables at the old replica cursor, the bumped table
+in `RESTRICT`) and a schema-window client at the previous version both failed
+with `sync.invalid_request` (`truncated input`) on the first pre-bump change
+of the table, every round, without advancing their cursor
+(SYNCULAR-SERVER-CHANGE-LOG-SCHEMA-MIGRATION-001).
+
+The SQLite and PostgreSQL storages now re-encode the logged changes of every
+table that appended columns in the upgrade transaction, after its rows; D1
+does it in its rewrite phase, up to 32 changes per batch. A change at or below the
+table's horizon is never served and keeps its bytes, so a table healed as
+below takes later column appends cleanly. The Rust authority already
+re-encoded both. The conformance scenario
+`schema-bump/appended-column-serves-pre-bump-changes` holds the server to it
+with a restricted client at the new version and a schema-window client at the
+previous one; the storage test runs on SQLite, PostgreSQL and D1 (SPEC §2.4,
+schema upgrade writer fence).
+
+A restricted bootstrap still scans its restricted tables from the kept cursor:
+the scan re-delivers the changes up to the pin and the version guard skips
+them (SPEC §4.7). That scan is not changed.
+
+**Upgrading.**
+
+- A bump that runs on 0.107.3 or later needs nothing.
+- A database already bumped by 0.107.2 or earlier holds the old-layout
+  changes and the new marker, so 0.107.3 does not rewrite it. For each table
+  whose columns grew in such a bump, while the log still held changes of the
+  table logged before it, give the table a table horizon once, with every
+  writer stopped (PostgreSQL, SQLite and D1 accept the same statements; replace
+  `docs` with the table name):
+
+  ```sql
+  UPDATE sync_partitions SET max_commit_seq = max_commit_seq + 1;
+  INSERT INTO sync_table_horizons(partition, tbl, commit_seq)
+    SELECT partition, 'docs', max_commit_seq FROM sync_partitions
+    ON CONFLICT(partition, tbl) DO UPDATE SET commit_seq = excluded.commit_seq;
+  ```
+
+  The live section then serves the table only above the horizon. A unit over
+  the table whose cursor lies below it is answered `reset` with
+  `sync.cursor_expired` and bootstraps again (SPEC §4.6), which also frees a
+  client stuck on the old-layout change. Pruning removes the old changes
+  later.
+- The wire, the client packages and the storage schema do not change.
+
 ## 0.107.2 release notes
 
 The server authorized a blob download with the write-path check (§3.4): a
