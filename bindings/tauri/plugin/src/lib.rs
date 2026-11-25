@@ -1840,7 +1840,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_refuses_plain_replacement_creates_through_the_plugin() {
+    fn preflight_holds_plain_replacement_creates_through_the_plugin() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let app = mock_builder()
@@ -1862,8 +1862,8 @@ mod tests {
         }));
         assert!(created.get("error").is_none(), "{created}");
 
-        // The escape attempt: a plain re-create must be refused by the shared
-        // router, and the plugin's fast-read gate must stay engaged.
+        // The escape attempt: a plain re-create opens in preflight through the
+        // shared router, and the plugin's fast-read gate stays engaged.
         let escape = command(json!({
             "method": "create",
             "params": {
@@ -1872,8 +1872,8 @@ mod tests {
             }
         }));
         assert_eq!(
-            escape["error"]["code"],
-            Value::from("client.security_preflight_required"),
+            escape["result"],
+            json!({ "state": "preflight" }),
             "{escape}"
         );
         let read = tauri::async_runtime::block_on(syncular_query(
@@ -3202,7 +3202,7 @@ mod tests {
         assert_eq!(
             call(json!({ "method": "create", "params": { "clientId": "c1", "schema": schema } }))
                 ["result"],
-            json!({})
+            json!({ "state": "active" })
         );
         call(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "upsert", "table": "todo", "values": { "id": "t1", "title": "hi" }
@@ -4609,7 +4609,7 @@ mod tests {
             command(json!({ "method": "create", "params": {
                 "clientId": "c1", "schema": schema.clone()
             } }))["result"],
-            json!({})
+            json!({ "state": "active" })
         );
         // §2.4: authored row integers are bounded to the JavaScript safe range
         // (±(2^53−1)); the boundary value must queue a commit.
@@ -4711,7 +4711,7 @@ mod tests {
             memory_command(json!({ "method": "create", "params": {
                 "clientId": "c2", "schema": schema
             } }))["result"],
-            json!({})
+            json!({ "state": "active" })
         );
         let memory_ok = memory_read(json!([{ "sql": "SELECT 7 AS n" }]));
         assert_eq!(memory_ok["result"]["queries"][0][0]["n"], 7, "{memory_ok}");
@@ -4809,7 +4809,7 @@ mod tests {
                 "clientId": "read-routes",
                 "schema": { "version": 1, "tables": [] },
             } }))["result"],
-            json!({})
+            json!({ "state": "active" })
         );
         let owner = json!({ "id": "queries:routes", "tables": ["tasks"] });
 
@@ -5143,7 +5143,7 @@ mod tests {
                 "clientId": "read-routes",
                 "schema": { "version": 1, "tables": [] },
             } }))["result"],
-            json!({}),
+            json!({ "state": "active" }),
             "the config db_path opens the replica the sidecar reads"
         );
 
