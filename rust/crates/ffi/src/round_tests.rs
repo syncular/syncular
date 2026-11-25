@@ -423,7 +423,7 @@ fn ffi_realtime_client(port: u16) -> *mut crate::Handle {
         "create",
         json!({ "schema": simple_schema(), "clientId": "c1" }),
     );
-    assert_eq!(created["result"], json!({}), "{created}");
+    assert_eq!(created["result"], json!({ "state": "active" }), "{created}");
     let subscribed = command(
         handle,
         "subscribe",

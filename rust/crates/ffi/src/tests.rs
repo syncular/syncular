@@ -107,7 +107,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
         handle.command(&json!({"method": "create", "params": {
             "schema": simple_schema(), "clientId": "query-allocation-test"
         }}))["result"],
-        json!({})
+        json!({ "state": "active" })
     );
     let sql = "SELECT ? AS text, x'0001ff' AS bytes, 9223372036854775807 AS big, 1.25 AS real, NULL AS empty";
     let bind = vec![Value::from("λ".repeat(1024 * 1024))];
@@ -642,7 +642,11 @@ fn add_encryption_keys_extends_an_active_client_until_shutdown() {
         "create",
         json!({ "clientId": "ffi-add-keys", "schema": simple_schema() }),
     );
-    assert_eq!(created["result"], json!({}), "create: {created}");
+    assert_eq!(
+        created["result"],
+        json!({ "state": "active" }),
+        "create: {created}"
+    );
     let keys = json!({ "keys": { "k2": { "$bytes": "2b".repeat(32) } } });
     let added = command(handle, "addEncryptionKeys", keys.clone());
     assert_eq!(added["result"], json!({}), "add while active: {added}");
@@ -656,7 +660,7 @@ fn add_encryption_keys_extends_an_active_client_until_shutdown() {
 }
 
 #[test]
-fn preflight_refuses_plain_replacement_creates_and_activation_headers() {
+fn preflight_holds_plain_replacement_creates_and_refuses_activation_headers() {
     let config = CString::new("{}").unwrap();
     let handle = syncular_client_new(config.as_ptr());
     let created = command(
@@ -668,17 +672,22 @@ fn preflight_refuses_plain_replacement_creates_and_activation_headers() {
             "securityPreflight": true
         }),
     );
-    assert_eq!(created["result"], json!({}), "preflight create: {created}");
+    assert_eq!(
+        created["result"],
+        json!({ "state": "preflight" }),
+        "preflight create: {created}"
+    );
 
     // The escape the gate exists to prevent: re-issuing create WITHOUT the
-    // securityPreflight flag must be refused by the shared router.
+    // securityPreflight flag opens the replacement in preflight.
     let escape = command(
         handle,
         "create",
         json!({ "clientId": "ffi-preflight-escape", "schema": simple_schema() }),
     );
     assert_eq!(
-        escape["error"]["code"], "client.security_preflight_required",
+        escape["result"],
+        json!({ "state": "preflight" }),
         "{escape}"
     );
     let gated = command(
@@ -717,7 +726,7 @@ fn preflight_refuses_plain_replacement_creates_and_activation_headers() {
     );
     assert_eq!(
         recreated["result"],
-        json!({}),
+        json!({ "state": "active" }),
         "plain create after activation: {recreated}"
     );
     syncular_client_close(handle);
@@ -940,10 +949,10 @@ fn remove_db(path: &str) {
 
 /// The React Native escape: the native module rebuilds its FFI handle on every
 /// create, so the in-memory gate does not survive teardown. A file-backed
-/// replica left in preflight must refuse a plain re-create through a fresh
-/// handle, because the quarantine marker persists in the replica itself.
+/// replica left in preflight opens a plain re-create through a fresh handle in
+/// preflight, because the quarantine marker persists in the replica itself.
 #[test]
-fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
+fn plain_recreate_against_a_preflighted_file_replica_opens_in_preflight() {
     let path = temp_db_path();
     remove_db(&path);
     let config = CString::new("{}").unwrap();
@@ -956,7 +965,11 @@ fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
         "create",
         json!({ "clientId": "rn-replica", "schema": simple_schema(), "dbPath": path }),
     );
-    assert_eq!(created["result"], json!({}), "initial create: {created}");
+    assert_eq!(
+        created["result"],
+        json!({ "state": "active" }),
+        "initial create: {created}"
+    );
     let mutate = command(
         h1,
         "mutate",
@@ -974,9 +987,8 @@ fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
     // Handle teardown — exactly what the RN native module does per create.
     syncular_client_close(h1);
 
-    // H2: a rebuilt handle (fresh CreateEffects) attempts a PLAIN create against
-    // the same file. Pre-fix this succeeded and exposed the row; the persisted
-    // marker now forces a refusal.
+    // H2: a rebuilt handle (fresh CreateEffects) issues a PLAIN create against
+    // the same file. The persisted marker opens it in preflight.
     let h2 = syncular_client_new(config.as_ptr());
     assert!(!h2.is_null());
     let escape = command(
@@ -985,18 +997,18 @@ fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
         json!({ "clientId": "rn-replica", "schema": simple_schema(), "dbPath": path }),
     );
     assert_eq!(
-        escape["error"]["code"], "client.security_preflight_required",
-        "plain re-create against a preflighted replica must be refused: {escape}"
+        escape["result"],
+        json!({ "state": "preflight" }),
+        "plain re-create against a preflighted replica opens gated: {escape}"
     );
-    // No client installed, so the protected row stays unreachable on H2.
     let gated = command(
         h2,
         "query",
         json!({ "sql": "SELECT id FROM todo", "params": [] }),
     );
-    assert!(
-        gated.get("error").is_some(),
-        "query must not run without a client: {gated}"
+    assert_eq!(
+        gated["error"]["code"], "client.security_preflight_required",
+        "the protected row stays gated: {gated}"
     );
     syncular_client_close(h2);
 
@@ -1013,7 +1025,7 @@ fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
     );
     assert_eq!(
         reopened["result"],
-        json!({}),
+        json!({ "state": "preflight" }),
         "preflight reopen: {reopened}"
     );
     let activated = command(h3, "activateSecurity", json!({}));

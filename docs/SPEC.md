@@ -4773,7 +4773,8 @@ starts in preflight whatever its configuration requests, and holds no
 configured keyring: keys install only through `activateSecurity`. A native
 `create` also opens in preflight when the client it replaces is in preflight
 or a preflight was pending at the preceding `shutdown`, and answers
-`{ state }` with the lifecycle it opened in. Shutdown and close write no
+`{ state }` with the lifecycle it opened in. A native `recreateWithSchema` runs
+in preflight and keeps the lifecycle. Shutdown and close write no
 record, so a client closed while active reopens active. `purgeLocalData`
 keeps the record. A TypeScript replica from 0.106.1 or earlier holds no
 record and opens in the lifecycle its configuration requests.

@@ -770,6 +770,7 @@ pub fn dispatch<T: Transport>(
                 | "localAuthorityState"
                 | "drainRealtime"
                 | "shutdown"
+                | "recreateWithSchema"
         );
         if client
             .as_ref()

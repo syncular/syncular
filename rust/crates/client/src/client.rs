@@ -4587,8 +4587,11 @@ impl SyncClient {
                 self.save_unit_scope_schema()?;
                 // The conformance recreate is the in-memory equivalent of reopening
                 // a durable client. Apply the same startup catch-up contract even
-                // when the schema itself did not change.
-                self.enqueue_startup_sync_if_needed()?;
+                // when the schema itself did not change; a client in preflight
+                // gets it at activation (§5.11).
+                if !self.security_preflight {
+                    self.enqueue_startup_sync_if_needed()?;
+                }
                 self.projection_pending_queue
                     .extend(self.collect_projection_pending()?);
                 Ok(())
