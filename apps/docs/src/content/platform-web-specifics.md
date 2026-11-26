@@ -133,7 +133,10 @@ While `retrying` is true it asks for the lock again behind every other waiting
 tab. The third failed start sets `retrying` to false: a core that fails the
 same way each time, such as one whose worker bundle changed, would otherwise
 take and drop the lock in a loop. The tab then follows whichever tab leads
-next.
+next. A follower whose lock request the browser rejects reports the same state
+with `client.worker_failed` and counts the rejection as a failed start; a
+follower still bound to its leader returns to `follower` and keeps serving
+calls.
 
 A follower call that the departing leader has not answered rejects with
 `client.leader_handover` (retryable): the follower cannot tell whether the old

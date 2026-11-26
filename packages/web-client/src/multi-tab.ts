@@ -1326,12 +1326,15 @@ export async function createTabCoordinator<E>(
       ...(leader.tabClosed !== undefined
         ? {
             onFirstCall: (from: string) => {
-              void lock
-                .acquire(tabLockName(config.name, from))
-                .then(async (gone) => {
+              void lock.acquire(tabLockName(config.name, from)).then(
+                async (gone) => {
                   await gone.release();
                   if (current) leader.tabClosed?.(from);
-                });
+                },
+                // A rejected request never learns that the tab closed; the
+                // core keeps that tab's state until the core closes.
+                () => {},
+              );
             },
           }
         : {}),
@@ -1491,44 +1494,65 @@ export async function createTabCoordinator<E>(
   // Granted only when the lock is released: the leader's tab closed, or this
   // tab's own failed takeover let go of it.
   const contest = (): void => {
-    void lock.acquire(config.name).then(async (promoted) => {
-      if (closed || follower !== link) {
-        // Closed, or this tab already leads through takeOver(): promoting
-        // would hold the lock forever.
-        await promoted.release();
-        return;
-      }
-      // The new leader must exceed every epoch this tab saw, so stale replies
-      // and events are discarded everywhere.
-      const epoch = link.maxEpochSeen + 1;
-      link.unbind();
-      try {
-        await lead(promoted, epoch, false);
-      } catch (error) {
-        // Release so the next waiting tab tries, then queue behind it. Three
-        // failed starts stop the contest: a core that fails the same way each
-        // time (a changed worker bundle, an unreadable database) would
-        // otherwise take and drop the lock in a loop while this tab is alone.
-        await promoted.release();
-        link.awaitLeader();
-        failedStarts += 1;
-        const retrying = failedStarts < 3 && !closed;
-        setState({
-          state: 'waiting',
-          reason: 'leader-start-failed',
-          error:
+    // A start that fails, or a lock request the browser rejects, releases
+    // what it holds and queues behind every other waiting tab again. Three
+    // failures stop the contest: a core that fails the same way each time (a
+    // changed worker bundle, an unreadable database) would otherwise take and
+    // drop the lock in a loop while this tab is alone.
+    const fail = async (
+      error: ClientSyncError,
+      promoted?: LeaderLease,
+    ): Promise<void> => {
+      await promoted?.release();
+      if (closed || follower !== link) return;
+      link.awaitLeader();
+      failedStarts += 1;
+      const retrying = failedStarts < 3;
+      setState({
+        state: 'waiting',
+        reason: 'leader-start-failed',
+        error,
+        attempt: failedStarts,
+        retrying,
+      });
+      // A follower still bound to its leader keeps serving calls.
+      if (link.bound) setState(link.leadershipState);
+      if (retrying) contest();
+    };
+    lock.acquire(config.name).then(
+      async (promoted) => {
+        if (closed || follower !== link) {
+          // Closed, or this tab already leads through takeOver(): promoting
+          // would hold the lock forever.
+          await promoted.release();
+          return;
+        }
+        // The new leader must exceed every epoch this tab saw, so stale
+        // replies and events are discarded everywhere.
+        const epoch = link.maxEpochSeen + 1;
+        link.unbind();
+        try {
+          await lead(promoted, epoch, false);
+        } catch (error) {
+          await fail(
             error instanceof ClientSyncError
               ? error
               : new ClientSyncError(
                   WORKER_FAILED_CODE,
                   'the core failed to start',
                 ),
-          attempt: failedStarts,
-          retrying,
-        });
-        if (retrying) contest();
-      }
-    });
+            promoted,
+          );
+        }
+      },
+      () =>
+        fail(
+          new ClientSyncError(
+            WORKER_FAILED_CODE,
+            'the browser rejected the leader lock request',
+          ),
+        ),
+    );
   };
   contest();
   // Return bound: an event the leader fans out before binding is dropped.

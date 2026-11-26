@@ -2916,6 +2916,61 @@ test('a promoted tab whose core fails to start reports it and contests the lock 
   }
 });
 
+test('a follower whose lock request rejects reports it, keeps following and follows the next leader', async () => {
+  const group = coordinatorGroup();
+  const states: LeadershipState[] = [];
+  let rejected = 0;
+  const leader = await group.open([]);
+  const follower = await group.open([], {
+    onStateChange: (state) => states.push(state),
+    lock: {
+      tryAcquire: (name) => group.lock.tryAcquire!(name),
+      acquire: (name) => {
+        if (!name.startsWith('tabs-') || name.includes(':')) {
+          return group.lock.acquire(name);
+        }
+        rejected += 1;
+        return Promise.reject(
+          new DOMException('document is not fully active', 'InvalidStateError'),
+        );
+      },
+    },
+  });
+  try {
+    await drain();
+    expect(rejected).toBe(3);
+    expect(states.filter((state) => state.state === 'waiting')).toMatchObject([
+      { reason: 'leader-start-failed', attempt: 1, retrying: true },
+      { reason: 'leader-start-failed', attempt: 2, retrying: true },
+      { reason: 'leader-start-failed', attempt: 3, retrying: false },
+    ]);
+    const failed = states.find((state) => state.state === 'waiting');
+    const error =
+      failed?.state === 'waiting' && failed.reason === 'leader-start-failed'
+        ? failed.error
+        : undefined;
+    expect(error?.code).toBe('client.worker_failed');
+    expect(error?.message).toBe('the browser rejected the leader lock request');
+    // Still bound to the leader: the failure does not stop its calls.
+    expect(follower.state).toMatchObject({
+      state: 'follower',
+      leaderClientId: `core-${leader.tabId}`,
+    });
+    expect(await follower.call('open', [])).toBe(`open@${leader.tabId}`);
+    await leader.close();
+    const next = await group.open([]);
+    await drain();
+    expect(rejected).toBe(3);
+    expect(next.state.state).toBe('leader');
+    expect(follower.state).toMatchObject({
+      state: 'follower',
+      leaderClientId: `core-${next.tabId}`,
+    });
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
 test('a tab whose core fails three starts stops contesting and follows the next leader', async () => {
   const group = coordinatorGroup();
   let starts = 0;
