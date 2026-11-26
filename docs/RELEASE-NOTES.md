@@ -1,5 +1,27 @@
 # Syncular release notes
 
+## 0.108.2 release notes
+
+A follower tab whose `activateSecurity()` was in flight when the leader tab
+reloaded or closed rejected with `client.leader_handover`, so an app that
+opens a second tab behind `securityPreflight: true` failed its startup when
+the first tab reloaded (SYNCULAR-HANDOVER-ACTIVATE-SECURITY-001). The next
+leader opens the durable preflight with no owner, and the follower's earlier
+`beginSecurityPreflight()` had run on the departed core only. The follower
+handle now calls `beginSecurityPreflight()` on the next core and then
+`activateSecurity()`, so the tab owns that preflight before it releases it. A
+preflight another tab owns on the next core still refuses with
+`client.security_preflight_owned` (SPEC §7.1). Test:
+`packages/web-client/test/multi-tab.test.ts` (a follower whose activation
+outlives the leader activates promoted, and rebound), which fails on 0.108.1.
+The Tauri and native hosts have one owner per client and no handover.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. An app that caught `client.leader_handover`
+around `activateSecurity()` and re-entered the preflight itself can drop that
+handling.
+
 ## 0.108.1 release notes
 
 The segment download endpoint read the segment store before it checked the
