@@ -16,6 +16,12 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-26',
+    title: 'A local purge plan carries up to 1,024 targets',
+    body: 'Both clients refused a `purgeLocalData` plan of more than 64 targets, so a directive over a dozen workspaces of 17 tables each had to be split across several calls, and a crash between them left the device half purged. A plan now carries up to 1,024 targets and still runs in one transaction.',
+    links: [{ href: '/concepts-local-data-purge/', label: 'Local data purge' }],
+  },
+  {
     date: '2026-11-25',
     title: "A unit's first image continues at its table's transaction size",
     body: "Both clients grew every unit's first SQLite image from 1,024-row transactions by doubling, so a catalogue loaded edition by edition paid the ramp's commits for every edition. The first transaction still holds 1,024 rows, so an empty table shows its first rows as early as before; the second continues at the size the table's transactions reached, 65,536 rows when none did. With every OPFS write held 6 ms and every flush 100 ms longer, a catalogue of 154,569 rows in seven release units imports in 25 transactions and 66.3 s instead of 44 transactions and 89.7 s.",

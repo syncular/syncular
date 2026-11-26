@@ -11,7 +11,7 @@
 import { invalidRequest, projectionUnknown } from './errors';
 import type { CompiledClientSchema, CompiledClientTable } from './schema';
 
-const MAX_TARGETS = 64;
+const MAX_TARGETS = 1024;
 const MAX_SELECTORS_PER_TARGET = 8;
 const MAX_VALUES_PER_SELECTOR = 128;
 const MAX_ROUTING_VALUE_LENGTH = 256;

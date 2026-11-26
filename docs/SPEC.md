@@ -7241,7 +7241,10 @@ purge runs on that recovered round, as always.
 
 **Local purge targets.** The host's `purgeLocalData({ purgeId, targets })`
 accepts table targets `{ table, selectors }` and whole-projection targets
-`{ projection }` in the same plan. A projection target has no selectors.
+`{ projection }` in the same plan. A plan carries 1 to 1,024 targets
+(DECISION: 64 refused a directive over 12 workspaces of 17 tables, and a
+host that split it lost atomicity), and every target runs in the one purge
+transaction. A projection target has no selectors.
 An unknown name fails with `client.projection_unknown` and its `name` detail.
 Projection targets are permitted during security preflight. The client
 clears the index with FTS5 `delete-all`, clears content and mapping, gives

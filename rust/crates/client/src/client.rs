@@ -495,7 +495,7 @@ impl ChangeAccumulator {
 /// included IN ORDER until the operation budget is spent, the rest wait for
 /// the next round.
 const PUSH_OPS_PER_REQUEST: usize = 500;
-const MAX_LOCAL_PURGE_TARGETS: usize = 64;
+const MAX_LOCAL_PURGE_TARGETS: usize = 1024;
 const MAX_LOCAL_PURGE_SELECTORS: usize = 8;
 const MAX_LOCAL_PURGE_VALUES: usize = 128;
 const MAX_LOCAL_PURGE_VALUE_LENGTH: usize = 256;

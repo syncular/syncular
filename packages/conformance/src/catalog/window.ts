@@ -868,4 +868,48 @@ export const windowScenarios: readonly Scenario[] = [
       await expectConverged(ctx, 'tasks', [a]);
     },
   },
+  {
+    name: 'window/local-purge-carries-a-plan-of-1024-targets',
+    specRefs: ['§7.3.4'],
+    async run(ctx) {
+      const titles = Array.from({ length: 288 }, (_, i) => `w${i}`);
+      await seedTasks(ctx, [
+        ...titles.map((title, i) => task(`t${i}`, 'p1', title)),
+        task('kept', 'p1', 'kept'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      await a.api.subscribe({ project_id: 'p1' });
+      await syncIdle(a);
+      const targets = (count: number) =>
+        Array.from({ length: count }, (_, i) => ({
+          table: 'tasks',
+          selectors: { title: [`w${i}`] },
+        }));
+      try {
+        await a.api.purgeLocalData('too-many', targets(1025));
+        throw new Error('expected sync.invalid_request');
+      } catch (error) {
+        checkEqual(
+          (error as { code?: string }).code,
+          'sync.invalid_request',
+          'a plan over 1,024 targets fails before it runs',
+        );
+      }
+      checkEqual(
+        (await readIds(a)).length,
+        289,
+        'the refused plan removes nothing',
+      );
+      checkEqual(
+        await a.api.purgeLocalData('many-workspaces', targets(1024)),
+        { alreadyApplied: false, purgedRows: 288, droppedCommits: 0 },
+        'one call removes the rows of every target',
+      );
+      checkEqual(await readIds(a), ['kept'], 'only the unmatched row stays');
+    },
+  },
 ];

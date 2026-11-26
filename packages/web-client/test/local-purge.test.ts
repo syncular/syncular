@@ -592,7 +592,7 @@ describe('application-authorized local data purge', () => {
         expect((error as Error).message).toMatch(message);
       }
     };
-    invalid({ purgeId: 'empty', targets: [] }, /between 1 and 64 targets/);
+    invalid({ purgeId: 'empty', targets: [] }, /between 1 and 1024 targets/);
     invalid(
       {
         purgeId: 'no-selectors',

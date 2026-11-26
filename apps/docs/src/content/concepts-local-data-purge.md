@@ -61,7 +61,7 @@ console.log(result.alreadyApplied, result.purgedRows, result.droppedCommits);
 
 Selectors inside one target combine with AND, and targets combine with OR. The example deletes `patient_notes` rows that match both the clinic and the key version. A selector names a plaintext string schema column and holds one or more exact, code-like values. No empty target, wildcard, expression, encrypted selector, or full-table mode exists.
 
-Inputs are bounded: at most 64 targets, 8 selectors per target, and 128 values per selector. `purgeId` is a code-like id of 1 to 128 characters, and routing values are 1 to 256 characters. The client canonicalizes the plan, so selector order and duplicate values do not change its identity.
+Inputs are bounded: at most 1,024 targets, 8 selectors per target, and 128 values per selector. The client removes the rows of every target in one transaction, so a plan over many workspaces either applies whole or not at all. One target can also name several workspaces: a selector `{ workspace_id: [...] }` matches any of its values. `purgeId` is a code-like id of 1 to 128 characters, and routing values are 1 to 256 characters. The client canonicalizes the plan, so selector order and duplicate values do not change its identity.
 
 | Host | Call |
 |---|---|
