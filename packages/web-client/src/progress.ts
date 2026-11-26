@@ -62,6 +62,16 @@ export class ProgressEmitter {
   }
 
   emit(progress: SyncProgress): void {
+    const before = this.#snapshot;
+    // §7.7: an equal snapshot is no change; it keeps its identity and
+    // notifies no one.
+    if (
+      before !== undefined &&
+      (
+        Object.keys({ ...before, ...progress }) as Array<keyof SyncProgress>
+      ).every((key) => before[key] === progress[key])
+    )
+      return;
     const snapshot = Object.freeze({ ...progress });
     this.#snapshot = snapshot;
     for (const listener of [...this.#listeners]) {

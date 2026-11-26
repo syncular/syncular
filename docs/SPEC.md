@@ -8414,7 +8414,10 @@ delay does not classify the failure.
 TS and Rust clients expose a client-local progress snapshot and a listener API.
 Progress is ephemeral, bounded to the latest snapshot, and independent of the
 revisioned post-commit change stream. Listening immediately delivers the latest
-snapshot when one exists. Listener failures must not fail a sync operation.
+snapshot when one exists. A snapshot equal field by field to the latest one
+is no change: the latest snapshot keeps its identity and no listener is
+called, on either side of a bridge. Listener failures must not fail a sync
+operation.
 Bridges forward progress while the operation is running, without waiting for
 its command response. Unsubscribing stops observation and does not cancel sync.
 

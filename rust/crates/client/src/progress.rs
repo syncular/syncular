@@ -185,6 +185,10 @@ impl ProgressObserver {
     fn emit(&self, snapshot: SyncProgress) {
         let (revision, listeners) = {
             let mut inner = self.0.lock().expect("progress lock");
+            // §7.7: an equal snapshot is no change and notifies no one.
+            if inner.snapshot.as_ref() == Some(&snapshot) {
+                return;
+            }
             inner.snapshot = Some(snapshot.clone());
             inner.revision += 1;
             (
@@ -201,6 +205,19 @@ impl ProgressObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_equal_update_notifies_no_one() {
+        let observer = ProgressObserver::default();
+        observer.start("e");
+        let events = Arc::new(Mutex::new(0));
+        let counted = events.clone();
+        let _subscription = observer.subscribe(move |_| *counted.lock().unwrap() += 1);
+        observer.update(|p| p.bytes_received = 0);
+        assert_eq!(*events.lock().unwrap(), 1);
+        observer.update(|p| p.bytes_received = 1);
+        observer.update(|p| p.bytes_received = 1);
+        assert_eq!(*events.lock().unwrap(), 2);
+    }
     #[test]
     fn observes_running_work_and_unsubscribes_without_affecting_sync() {
         let observer = ProgressObserver::default();

@@ -30,3 +30,28 @@ test('progress listeners replay the snapshot, isolate errors and unsubscribe', (
   emitter.clear();
   expect(emitter.snapshot()).toBeUndefined();
 });
+
+test('an equal snapshot keeps its identity and notifies no one', () => {
+  const emitter = new ProgressEmitter();
+  const progress: SyncProgress = {
+    epoch: 'e1',
+    attempt: 1,
+    state: 'running',
+    phase: 'download',
+    unitId: undefined,
+    bytesReceived: 10,
+    rowsProcessed: 0,
+  };
+  emitter.emit(progress);
+  const updates: SyncProgress[] = [];
+  emitter.on((snapshot) => updates.push(snapshot));
+  const first = emitter.snapshot();
+  emitter.emit({ ...progress, unitId: undefined });
+  const { unitId: _absent, ...withoutUnit } = progress;
+  emitter.emit(withoutUnit);
+  emitter.update({ bytesReceived: 10 });
+  expect(emitter.snapshot()).toBe(first);
+  expect(updates).toEqual([progress]);
+  emitter.update({ bytesReceived: 11 });
+  expect(updates.map((snapshot) => snapshot.bytesReceived)).toEqual([10, 11]);
+});
