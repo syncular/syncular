@@ -42,8 +42,8 @@
  * `sync.segment_expired`, and `find` filters them out itself. Bucket
  * lifecycle expiration is garbage collection only: configure it comfortably
  * ABOVE `ttlMs` (e.g. 2 days for the 24 h default) so clients normally see
- * the precise, retryable `sync.segment_expired` and hit `sync.not_found` only
- * long after. Never set lifecycle below `ttlMs`.
+ * the precise, retryable `sync.segment_expired` and the unknown-segment
+ * refusal only long after. Never set lifecycle below `ttlMs`.
  */
 import type { ObjectBucket } from './object-bucket';
 import type {

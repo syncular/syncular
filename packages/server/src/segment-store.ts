@@ -4,7 +4,7 @@
  * Segments are cache entries, not durable state: identical bytes share one
  * `segmentId` (`"sha256:" + hex`), entries expire on a TTL (default 24 h),
  * and `get` returns expired records so the download path can distinguish
- * `sync.segment_expired` from `sync.not_found` (§5.5).
+ * `sync.segment_expired` from an unknown segment (§5.5).
  */
 import { sha256Hex } from './scopes';
 

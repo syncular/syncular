@@ -1267,7 +1267,8 @@ export const scopeScenarios: readonly Scenario[] = [
       );
       check(ok.ok, 'authorized download succeeded');
 
-      // Unknown segment: not_found, never a byte.
+      // Unknown segment: the same refusal as a segment the caller may not
+      // read, never a byte.
       const missing = await ctx.server.downloadSegment(
         'dl-actor',
         `sha256:${'0'.repeat(64)}`,
@@ -1277,8 +1278,8 @@ export const scopeScenarios: readonly Scenario[] = [
       if (!missing.ok) {
         checkEqual(
           missing.error.code,
-          'sync.not_found',
-          'unknown segment code',
+          'sync.forbidden',
+          'an unknown segment is refused like a foreign one',
         );
       }
 
@@ -1292,11 +1293,11 @@ export const scopeScenarios: readonly Scenario[] = [
         canonicalScopeJson({ project_id: ['p2'] }),
       );
       check(!mismatched.ok, 'digest mismatch rejected');
-      if (!mismatched.ok) {
+      if (!mismatched.ok && !missing.ok) {
         checkEqual(
-          mismatched.error.code,
-          'sync.forbidden',
-          'scope digest mismatch is forbidden (§3.5)',
+          mismatched.error,
+          missing.error,
+          'a foreign segment and an absent one answer the same refusal (§5.5)',
         );
       }
 

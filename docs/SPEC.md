@@ -3758,11 +3758,20 @@ for clients without signed-URL support.
   live epoch. A `segmentId` is the hash of the segment bytes (§5.1), so
   byte-identical content published under two scopes is one stored segment
   that records both publications; either scope authorizes a download of
-  it inside its own partition. A publication in another partition or an
-  older epoch is `sync.not_found` (no existence leak). Mismatch, revoked
-  status, or resolution failure ⇒ HTTP
-  403 `sync.forbidden`. A segment reference obtained earlier is not a
-  bearer capability; only signed URLs are (deliberately, with short TTL).
+  it inside its own partition. An unknown segment, a segment whose only
+  publications lie in another partition or an older epoch, a digest
+  mismatch, revoked status, and a resolution failure all answer the same
+  HTTP 403 `sync.forbidden` with the static message `segment not
+  authorized (§5.5)`, so a caller cannot tell absent content from content
+  it may not read. A segment reference obtained earlier is not a bearer
+  capability; only signed URLs are (deliberately, with short TTL).
+
+  DECISION (denial opacity): an unknown segment answers `sync.forbidden`
+  rather than `sync.not_found`. With two answers, an authenticated actor
+  learns whether a digest it guessed or saw names stored content. The
+  client already recovers from `sync.forbidden` without failing the round
+  (below), so a legitimate caller whose segment was forgotten re-pulls on
+  the next round.
 - The re-authorization costs one `resolveScopes` call per download, so a
   bootstrap that references N segments resolves N times. The server passes
   the download's requested scopes and `phase: 'segment-download'` to the
@@ -3781,15 +3790,15 @@ for clients without signed-URL support.
   its round budget (§7.8).
 - A server MAY eventually *forget* an expired segment entirely (object
   stores garbage-collect); from that point the segment is
-  indistinguishable from never-existing and `sync.not_found` applies —
-  the expired→forgotten transition is legal and clients MUST treat both
-  codes' recovery path identically (re-pull mints fresh descriptors).
+  indistinguishable from never-existing and the refusal above applies.
+  The expired→forgotten transition is legal; both recover by a re-pull
+  that mints fresh descriptors.
 - A rejected segment store read (`get` or `open`) ⇒ HTTP 503
   `sync.segment_store_unavailable` with `Retry-After: 5`, and the store's
   error reaches the host's observation hook (§5.4).
-- Unknown segment ⇒ HTTP 404 `sync.not_found`; known-but-expired
-  segment ⇒ HTTP 404 `sync.segment_expired` (§10.2 — the retryable one:
-  re-pulling mints fresh descriptors).
+- A segment the caller's grant authorizes whose publication expired ⇒
+  HTTP 404 `sync.segment_expired` (§10.2, retryable: re-pulling mints
+  fresh descriptors).
 - Response headers: `Content-Type: application/octet-stream`,
   `ETag: "<segmentId>"`, `Cache-Control: private, max-age=0`,
   `Vary: Authorization, X-Syncular-Scopes, Accept-Encoding`.
@@ -10048,7 +10057,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
 | `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in SSP2*; request-level |
 | `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in SSP2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
-| `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5) |
+| `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); every segment download refusal before the grant is established, an unknown segment included (§5.5) |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
 | `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor or uses the reserved server-command namespace (§1.5) |
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | A unit with an empty scope map, a requested `'*'`, a variable no table declares, or no covered table; a scope map listed twice; a registration digest that differs from a traveling list (`details.reason = "registration_digest"`); a `PROGRESS` id that names no registered unit or appears twice (§4.1); an undeclared resolved scope key (§3.2) |
@@ -10071,7 +10080,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.authority_unavailable` | internal | no | inspectServer | A local authority is attaching or attached (§12.3) and serves no sync or segment request; `details.state` is `attaching` or `attached` |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.limit_exceeded` | invalid-request | no | fixRequest | A request exceeds a configured server limit: decoded request bytes or `UNIT` frames per request (§1.7); request-level, HTTP 413. A registered-query watch session past its watch cap receives it as a `watch_error` ([REMOTE.md](./REMOTE.md)). `details.limit` names the limit and `details.max` its value — *new in SSP2* |
-| `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
+| `sync.not_found` | not-found | no | forceResync | Unknown sync resource (an unknown segment answers `sync.forbidden`, §5.5) |
 | `sync.segment_build_timeout` | internal | yes | retryLater | A pull response was still building at the 300 s build deadline (§1.6); written in-band as `ERROR` after the header frames and `KEEPALIVE` frames, or as HTTP 503 before them — *new in SSP2* |
 | `sync.segment_store_unavailable` | internal | yes | retryLater | A segment store call rejected during a pull or a segment download (§5.4, §5.5); HTTP 503 with `Retry-After: 5`, or an in-band `ERROR` after a pull's header frames (§1.6). `details.operation` names the call: `put`, `find`, `get` or `open` — *new in SSP2* |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |

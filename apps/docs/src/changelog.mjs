@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-26',
+    title: 'An unknown segment gets the refusal of a foreign one',
+    body: 'The segment download endpoint answered 404 `sync.not_found` for an unknown digest and 403 `sync.forbidden` for a stored segment the caller may not read, so an authenticated actor could test whether a digest names stored content. Every refusal before the grant is established, an unknown digest and a publication in another partition or log epoch included, now answers 403 `sync.forbidden` with the message `segment not authorized (§5.5)`. Clients already recover from that refusal without failing the round.',
+    links: [
+      {
+        href: '/concepts-scopes/',
+        label: 'Scopes',
+      },
+    ],
+  },
+  {
+    date: '2026-11-26',
     title: 'A local purge plan carries up to 1,024 targets',
     body: 'Both clients refused a `purgeLocalData` plan of more than 64 targets, so a directive over a dozen workspaces of 17 tables each had to be split across several calls, and a crash between them left the device half purged. A plan now carries up to 1,024 targets and still runs in one transaction.',
     links: [{ href: '/concepts-local-data-purge/', label: 'Local data purge' }],

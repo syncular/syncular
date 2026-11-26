@@ -2731,10 +2731,10 @@ mod native {
         ) -> Result<Vec<u8>, TransportError> {
             // The FULL content address (`sha256:<hex>`) is the path param —
             // the reference server keys its segment store by it (§5.1) and
-            // answers `sync.not_found` to a bare hex id. The requested-scopes
-            // header carries what the pull round granted; the server
-            // re-authorizes the download against it (§5.5) and answers
-            // `sync.forbidden` when it is missing.
+            // refuses a bare hex id as an unknown segment. The
+            // requested-scopes header carries what the pull round granted;
+            // the server re-authorizes the download against it (§5.5) and
+            // answers `sync.forbidden` when it is missing.
             let url = format!("{}/segments/{}", self.base_url, request.segment_id);
             self.authenticated(HeaderTarget::Segment, |headers| {
                 let req = self.finish_request(

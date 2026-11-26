@@ -380,6 +380,43 @@ describe('hono adapter', () => {
     expect(cached.headers.get('x-host-policy')).toBe('retained');
   });
 
+  test('GET /segments/:id refuses a foreign and an absent segment alike (§5.5)', async () => {
+    let allowed = ['p1'];
+    const app = await makeApp(undefined, undefined, undefined, {
+      resolveScopes: () => ({ project_id: allowed }),
+    });
+    const syncResponse = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    const ref = decodeMessage(
+      new Uint8Array(await syncResponse.arrayBuffer()),
+    ).frames.find((f) => f.type === 'SEGMENT_REF');
+    if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
+    allowed = ['p2'];
+    const refusals = [];
+    for (const segmentId of [ref.segmentId, `sha256:${'0'.repeat(64)}`]) {
+      for (const project of ['p1', 'p2']) {
+        const response = await app.request(`/segments/${segmentId}`, {
+          headers: {
+            authorization: 'Bearer good',
+            'x-syncular-scopes': canonicalScopeJson({ project_id: [project] }),
+          },
+        });
+        refusals.push({ status: response.status, body: await response.json() });
+      }
+    }
+    expect(refusals[0]).toMatchObject({
+      status: 403,
+      body: { code: 'sync.forbidden' },
+    });
+    for (const refusal of refusals) expect(refusal).toEqual(refusals[0]!);
+  });
+
   test('GET /segments/:id negotiates Content-Encoding (§5.8)', async () => {
     const app = await makeApp();
     // A title long enough that the rows segment clears the 1 KiB

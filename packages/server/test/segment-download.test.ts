@@ -156,7 +156,7 @@ for (const resolver of ['full', 'limited'] as const) {
       ).rejects.toMatchObject({ code: 'sync.forbidden' });
     });
 
-    test('unknown segments are sync.not_found', async () => {
+    test('an unknown segment is refused like a foreign one (§5.5)', async () => {
       const t = context();
       await expect(
         handleSegmentDownload(t.ctx, {
@@ -164,10 +164,13 @@ for (const resolver of ['full', 'limited'] as const) {
             'sha256:0000000000000000000000000000000000000000000000000000000000000000',
           scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
         }),
-      ).rejects.toMatchObject({ code: 'sync.not_found' });
+      ).rejects.toMatchObject({
+        code: 'sync.forbidden',
+        message: 'segment not authorized (§5.5)',
+      });
     });
 
-    test('segments from another partition are sync.not_found (no existence leak)', async () => {
+    test('a segment from another partition is refused like an unknown one', async () => {
       const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
       const ref = await bootstrapRef(t);
       const otherPartition = { ...t.ctx, partition: 'part-2' };
@@ -176,7 +179,10 @@ for (const resolver of ['full', 'limited'] as const) {
           segmentId: ref.segmentId,
           scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
         }),
-      ).rejects.toMatchObject({ code: 'sync.not_found' });
+      ).rejects.toMatchObject({
+        code: 'sync.forbidden',
+        message: 'segment not authorized (§5.5)',
+      });
     });
 
     test('identical empty segments from two partitions both download', async () => {
@@ -245,7 +251,10 @@ for (const resolver of ['full', 'limited'] as const) {
           segmentId: ref.segmentId,
           scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
         }),
-      ).rejects.toMatchObject({ code: 'sync.not_found' });
+      ).rejects.toMatchObject({
+        code: 'sync.forbidden',
+        message: 'segment not authorized (§5.5)',
+      });
     });
 
     test('a different actor without the publishing scope is forbidden', async () => {

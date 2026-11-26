@@ -583,12 +583,12 @@ describe('segment download events', () => {
         segmentId: 'sha256:missing',
         scopesHeader: '{}',
       }),
-      'sync.not_found',
+      'sync.forbidden',
     );
     const downloaded = ofType(t.events, 'segment.downloaded');
     expect(downloaded[0]).toMatchObject({
       outcome: 'error',
-      errorCode: 'sync.not_found',
+      errorCode: 'sync.forbidden',
     });
   });
 

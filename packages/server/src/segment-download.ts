@@ -162,7 +162,7 @@ async function downloadSegment(
     .get(request.segmentId)
     .catch(segmentStoreFailure(ctx.onError, 'segments', 'get'));
   if (entry === undefined) {
-    throw syncError('sync.not_found', 'unknown segment (§5.5)');
+    throw segmentRefused();
   }
   const record = await authorizePublication(
     ctx,
@@ -196,7 +196,7 @@ async function openSegment(
                 },
           );
   if (opened === undefined) {
-    throw syncError('sync.not_found', 'unknown segment (§5.5)');
+    throw segmentRefused();
   }
   let record: SegmentRecord;
   try {
@@ -211,6 +211,14 @@ async function openSegment(
     byteLength: opened.byteLength,
     headers: segmentHeaders(record),
   };
+}
+
+/**
+ * §5.5: every refusal before the caller's grant is established is this one
+ * error, so a caller cannot tell an absent segment from one it may not read.
+ */
+function segmentRefused(): SyncError {
+  return syncError('sync.forbidden', 'segment not authorized (§5.5)');
 }
 
 function segmentHeaders(record: SegmentRecord): Record<string, string> {
@@ -234,15 +242,14 @@ async function authorizePublication(
   stored: SegmentRecord,
 ): Promise<SegmentRecord> {
   // Select the caller's own publication context. A publication under a
-  // different partition or a stale log epoch is not this caller's grant, and
-  // the entry's existence must not leak across that boundary (§5.5).
+  // different partition or a stale log epoch is not this caller's grant.
   const inContext = stored.publications.filter(
     (publication) =>
       publication.partition === ctx.partition &&
       publication.logEpoch === logEpoch,
   );
   if (inContext.length === 0) {
-    throw syncError('sync.not_found', 'unknown segment (§5.5)');
+    throw segmentRefused();
   }
 
   const requested = parseScopesHeader(request.scopesHeader);
@@ -296,7 +303,7 @@ async function authorizePublication(
     );
   }
   if ([...digests.values()].every((digest) => digest === undefined)) {
-    throw syncError('sync.forbidden', 'segment scopes not held (§5.5)');
+    throw segmentRefused();
   }
   // The digest is the grant, but only inside the caller's partition and live
   // epoch: identical bytes published elsewhere never authorize this caller.
@@ -306,7 +313,7 @@ async function authorizePublication(
       publication.scopeDigest,
   );
   if (forDigest.length === 0) {
-    throw syncError('sync.forbidden', 'scope digest mismatch (§3.5, §5.5)');
+    throw segmentRefused();
   }
   // TTL is per publication: an unrelated refresh of another publication must
   // not extend this grant, and an expired old pin must not shadow a live one.
