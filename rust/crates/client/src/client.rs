@@ -3998,10 +3998,24 @@ impl SyncClient {
             )
     }
 
+    /// §7.6: only a code of a protocol family (§6.7, §10.3) is published. A
+    /// server or host transport may answer any code-like text, which can
+    /// carry application data.
     fn diagnostic_code(code: &str) -> String {
-        let valid = !code.is_empty()
-            && code.len() <= 96
-            && code.contains('.')
+        let valid = code.len() <= 96
+            && code.split_once('.').is_some_and(|(family, _)| {
+                matches!(
+                    family,
+                    "sync"
+                        | "blob"
+                        | "client"
+                        | "operation"
+                        | "presence"
+                        | "realtime"
+                        | "transport"
+                        | "storage"
+                )
+            })
             && code
                 .bytes()
                 .next()

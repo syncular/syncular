@@ -12348,6 +12348,38 @@ fn a_unit_limit_refusal_reaches_the_app_with_its_details_and_is_not_retried() {
 }
 
 #[test]
+fn diagnostics_publish_a_protocol_code_and_replace_a_host_code() {
+    for (answered, published) in [
+        ("patient.jane_doe", "client.unknown_failure"),
+        ("sync.auth_required", "sync.auth_required"),
+    ] {
+        let mut transport = failure_transport([Err(TransportError::new(answered, "refused"))]);
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1").unwrap();
+        client.subscribe(unit_scopes("project_id", "p1")).unwrap();
+        client.drain_sync_intents();
+        let SyncOutcome::Failed { error_code, .. } = client.sync(&mut transport) else {
+            panic!("expected a failed round");
+        };
+        assert_eq!(error_code, answered);
+        assert_eq!(
+            client.progress().snapshot().unwrap().error_code.as_deref(),
+            Some(published)
+        );
+        assert_eq!(
+            client
+                .diagnostics_snapshot()
+                .unwrap()
+                .last_round
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some(published)
+        );
+    }
+}
+
+#[test]
 fn local_purge_leaves_no_purged_value_in_any_file_of_the_replica() {
     let dir = std::env::temp_dir().join(format!("syncular-purge-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("replica dir");

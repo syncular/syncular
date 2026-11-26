@@ -167,6 +167,38 @@ describe('privacy-safe client diagnostics', () => {
     }
   });
 
+  test('publishes a protocol code and replaces a host code an HTTP server answered', async () => {
+    for (const [answered, published] of [
+      ['patient.jane_doe', 'client.unknown_failure'],
+      ['sync.auth_required', 'sync.auth_required'],
+    ] as const) {
+      const db = new BunClientDatabase();
+      const client = new SyncClient({
+        schema: { version: 1, tables: [] },
+        database: db,
+        clientId: 'diagnostic-code-privacy',
+        transport: httpSyncTransport('https://example.invalid/sync', {
+          fetch: Object.assign(
+            async () => Response.json({ code: answered }, { status: 403 }),
+            { preconnect: fetch.preconnect },
+          ),
+        }),
+      });
+      try {
+        await client.start();
+        await expect(client.sync()).rejects.toMatchObject({ code: answered });
+        expect(client.progressSnapshot()?.errorCode).toBe(published);
+        expect(client.diagnosticsSnapshot().lastRound).toMatchObject({
+          status: 'failed',
+          errorCode: published,
+        });
+      } finally {
+        await client.close();
+        db.close();
+      }
+    }
+  });
+
   test('distinguishes registration, bootstrap, zero-row completion, local work, and offline failure', async () => {
     const server = makeServer();
     const fixture = await makeClient(server, {

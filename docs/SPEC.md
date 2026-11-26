@@ -8362,7 +8362,13 @@ values, clinical/domain row counts, SQL, database paths or filenames, client
 ids, actor ids, lease ids, auth headers/tokens, encryption keys, mutation or
 rollback bodies, stack traces, arbitrary server/transport prose, or
 application-defined metadata. Error/reason fields are bounded code-like
-values; an invalid value becomes `client.unknown_failure`. Query owner ids
+values of a protocol family: `sync.`, `blob.`, `client.`, `operation.`,
+`presence.` (§6.7), `realtime.`, `transport.` or `storage.` (§10.3). Any
+other value, a host-defined code a server or host transport answered
+included, becomes `client.unknown_failure`: a code-like value can carry
+application data such as a patient name. The client checks the family only,
+not the suffix: a server or proxy that puts text into a code of a reserved
+family, such as `sync.jane_doe`, still reaches the published field. Query owner ids
 are returned by design, so applications MUST keep them stable, code-like, and
 free of patient/user data.
 

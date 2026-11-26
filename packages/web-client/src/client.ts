@@ -4974,8 +4974,16 @@ export class SyncClient {
       });
   }
 
+  /** §7.6: only a code of a protocol family (§6.7, §10.3) is published. A
+   * server or host transport may answer any code-like text, which can carry
+   * application data. */
   #diagnosticCode(code: string): string {
-    return isStableCode(code) ? code : 'client.unknown_failure';
+    return isStableCode(code) &&
+      /^(sync|blob|client|operation|presence|realtime|transport|storage)\./.test(
+        code,
+      )
+      ? code
+      : 'client.unknown_failure';
   }
 
   async #runSync(signal: AbortSignal | undefined): Promise<SyncSummary> {

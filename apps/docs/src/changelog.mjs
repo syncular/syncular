@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-26',
+    title: 'Diagnostics publish only protocol error codes',
+    body: '`diagnosticsSnapshot().lastRound.errorCode`, `SyncProgress.errorCode`, unit reason codes and the lease error code published any code-like value a server or host transport answered, so a code such as `patient.jane_doe` reached support displays. Both clients now publish a code only from a protocol family (`sync.`, `blob.`, `client.`, `operation.`, `presence.`, `realtime.`, `transport.`, `storage.`) and report every other code as `client.unknown_failure`. The error a call rejects with keeps the code the server answered.',
+    links: [
+      {
+        href: '/platform-web-troubleshooting/',
+        label: 'Web troubleshooting',
+      },
+    ],
+  },
+  {
+    date: '2026-11-26',
     title: 'A follower activates a client another tab already activated',
     body: "Two tabs that open with `securityPreflight: true` at the same time share one preflight, owned by the leader's tab. When the leader activated first, the follower's `activateSecurity()` failed with `sync.invalid_request` and its tab could not open the replica until a reload. The follower's call now returns on the active client, and the keys it passes extend the shared keyring. The leader's own tab still activates only out of a preflight, and the tab that owns a held preflight still alone releases it.",
     links: [

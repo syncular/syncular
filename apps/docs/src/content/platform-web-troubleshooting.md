@@ -62,6 +62,12 @@ same bounded `causeKind` and an optional `httpStatus`. `onDiagnostics` pushes
 the last-round evidence to each worker leader and follower. Tauri and React
 Native forward the native core's evidence. A new progress attempt clears its
 failure fields, and a successful round replaces the failed `lastRound`.
+Their `errorCode` is a code of a protocol family (`sync.`, `blob.`,
+`client.`, `operation.`, `presence.`, `realtime.`, `transport.`,
+`storage.`). A host-defined code a server or proxy answered, such as
+`patient.jane_doe`, appears there as `client.unknown_failure`; the error the
+call rejects with keeps the answered code. The client checks the family only:
+a server or proxy that answers `sync.jane_doe` reaches `errorCode` unchanged.
 
 Each `lastRound` carries `epoch` and `attempt`, and each progress event carries
 `epoch` and `attempt`. `attempt` is the progress attempt that ran the round;
