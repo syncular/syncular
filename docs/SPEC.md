@@ -6703,9 +6703,12 @@ so a follower call in flight when its leader departs runs again on the next
 core: the promoted tab's own core, or the next leader's after the follower
 binds to it. The follower becomes the owner there. A follower that opens with
 `securityPreflight: true` therefore opens across a handover in preflight.
-`activateSecurity` in flight at a handover rejects with
-`client.leader_handover`, because the follower cannot tell whether the
-departed core released the gate.
+`activateSecurity` in flight at a handover does not run again by itself,
+because the follower cannot tell whether the departed core released the gate.
+The follower handle calls `beginSecurityPreflight` on the next core and then
+`activateSecurity`, so the tab owns that core's preflight before it releases
+it; a preflight another tab owns there refuses with
+`client.security_preflight_owned`.
 
 **Browser worker startup ownership.** A persistent worker MUST acquire an
 exclusive Web Lock keyed by its physical OPFS pool directory before opening

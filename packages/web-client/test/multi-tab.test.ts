@@ -825,6 +825,74 @@ for (const next of ['promoted', 'rebound'] as const) {
   });
 }
 
+for (const next of ['promoted', 'rebound'] as const) {
+  test(`a follower whose activation outlives the leader activates ${next}`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-mt-activate-'));
+    try {
+      const group = makeGroup();
+      const database = {
+        mode: 'custom',
+        options: { path: join(directory, 'replica.db') },
+      } as const;
+      const leader = await group.make({
+        clientId: `mt-activate-handover-${next}`,
+        database,
+        transportGate: 'closed',
+      });
+      const other =
+        next === 'rebound'
+          ? await group.make({ database, transportGate: 'closed' })
+          : undefined;
+      const held = Promise.withResolvers<void>();
+      let holding = true;
+      const tab = await group.make({
+        database,
+        securityPreflight: true,
+        transportGate: 'closed',
+        // The departing leader never receives the follower's activation.
+        channelFactory: (name) => {
+          const channel = new BroadcastChannel(
+            name,
+          ) as unknown as CrossTabChannel;
+          return {
+            postMessage: (message) => {
+              if (
+                holding &&
+                message.t === 'req' &&
+                message.method === 'activateSecurity'
+              ) {
+                holding = false;
+                held.resolve();
+                return;
+              }
+              channel.postMessage(message);
+            },
+            addEventListener: (type, listener) =>
+              channel.addEventListener(type, listener),
+            removeEventListener: (type, listener) =>
+              channel.removeEventListener(type, listener),
+            close: () => channel.close(),
+          };
+        },
+      });
+      expect(tab.role).toBe('follower');
+      const activation = tab.activateSecurity();
+      await held.promise;
+      await leader.close();
+
+      // The next leader opens the durable preflight without an owner; the
+      // tab enters it there and activates.
+      await activation;
+      expect(tab.role).toBe(next === 'promoted' ? 'leader' : 'follower');
+      expect(await tab.securityLifecycle()).toBe('active');
+      if (other !== undefined)
+        expect(await other.securityLifecycle()).toBe('active');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 for (const via of ['addEncryptionKeys', 'activateSecurity'] as const) {
   test(`a key a follower adds through ${via} reveals the sealed row on the leader for every tab`, async () => {
     const secrets = {

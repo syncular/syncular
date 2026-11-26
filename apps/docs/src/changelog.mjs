@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-11-26',
+    title: 'A follower activation survives a leader handover',
+    body: 'A follower tab whose `activateSecurity()` was in flight when the leader tab reloaded or closed rejected with `client.leader_handover`, and an app that opens behind a security preflight failed its startup. The next leader opens a durable preflight with no owner, so the follower handle now enters the preflight on the next core and activates there. A preflight another tab owns there still refuses with `client.security_preflight_owned`.',
+    links: [{ href: '/platform-web-specifics/', label: 'Web specifics' }],
+  },
+  {
+    date: '2026-11-26',
     title:
       'A malformed scopes header no longer tells a stored segment from an absent one',
     body: 'The segment download endpoint read the segment before it checked the `X-Syncular-Scopes` header, so a malformed header answered 403 for an absent segment and 400 `sync.invalid_request` for a stored one. The server now checks the header first, and both answer 400.',

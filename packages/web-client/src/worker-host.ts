@@ -95,6 +95,7 @@ import {
   createTabCoordinator,
   type LeaderUnreachableEvent,
   type LeadershipState,
+  LEADER_HANDOVER_CODE,
   multiTabChannelName,
   SECURITY_PREFLIGHT_OWNED_CODE,
   TAKEOVER_REFUSED_CODE,
@@ -637,7 +638,20 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   activateSecurity(options: WorkerSecurityActivation = {}): Promise<void> {
-    return this.#call('activateSecurity', [options]);
+    // §7.1: the preflight this tab entered on a departed leader is gone, so it
+    // enters it on the next leader and activates there. A preflight another
+    // tab owns there still refuses.
+    return this.#call('activateSecurity', [options]).catch(
+      async (error: unknown) => {
+        if (
+          !(error instanceof ClientSyncError) ||
+          error.code !== LEADER_HANDOVER_CODE
+        )
+          throw error;
+        await this.#call('beginSecurityPreflight', []);
+        return this.#call('activateSecurity', [options]);
+      },
+    );
   }
 
   /** §5.11: extend the leader's active keyring; every tab sees the reveal. */

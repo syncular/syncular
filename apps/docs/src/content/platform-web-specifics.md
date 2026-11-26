@@ -146,6 +146,9 @@ core, so the follower runs them again there, and they settle with that core's
 result. A handle that opens with `securityPreflight: true` while the leader
 tab closes therefore opens in preflight on the next core and owns that
 preflight ([Windowed sync and local purge](/platform-web-reads-writes/#windowed-sync-and-local-purge)).
+An `activateSecurity()` in flight at the handover enters the preflight on the
+next core and then activates there; it rejects with
+`client.security_preflight_owned` when another tab owns that preflight.
 
 ### Leader probes
 
