@@ -80,6 +80,7 @@ test('mutate refuses every value the declared column type rejects', async () => 
   const cases: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
     ['string column, number', { ...valid, title: 7 }],
     ['integer column, string', { ...valid, priority: 'high' }],
+    ['integer column, fraction', { ...valid, priority: 0.28 }],
     [
       'integer column, unsafe number',
       { ...valid, priority: Number.MAX_SAFE_INTEGER + 1 },
@@ -167,6 +168,7 @@ test('patch refuses a malformed envelope and a wrong type before recording', asy
   for (const partial of [
     { payload: { $bytes: 'zz' } },
     { priority: 'high' },
+    { priority: 0.28 },
     { meta: { a: 1 } },
     { title: '\u0000' },
     { meta: '{"a":1e999}' },

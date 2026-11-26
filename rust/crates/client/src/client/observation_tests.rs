@@ -9659,6 +9659,11 @@ fn caller_value_failures_are_invalid_request_and_leave_no_outbox_entry() {
             ("payload", json!({"nested": true})),
             "expected exactly",
         ),
+        (
+            "integer fraction",
+            ("priority", json!(0.28)),
+            "expected an integer",
+        ),
         // §2.4/§7.1: the push admission values the server rejects.
         (
             "string with U+0000",
@@ -9735,6 +9740,11 @@ fn caller_value_failures_are_invalid_request_and_leave_no_outbox_entry() {
         (
             "patch wrong value type",
             ("priority", json!("high")),
+            "expected an integer",
+        ),
+        (
+            "patch integer fraction",
+            ("priority", json!(0.28)),
             "expected an integer",
         ),
         ("patch unknown column", ("nope", json!(1)), "unknown column"),
