@@ -683,6 +683,30 @@ test('only the tab that entered the preflight releases it', async () => {
   expect(await follower.securityLifecycle()).toBe('active');
 });
 
+test('a follower that joined the leader preflight activates after the leader did', async () => {
+  const group = makeGroup();
+  const leader = await group.make({
+    clientId: 'mt-activation-race',
+    securityPreflight: true,
+    transportGate: 'closed',
+  });
+  const follower = await group.make({
+    securityPreflight: true,
+    transportGate: 'closed',
+  });
+  expect(follower.role).toBe('follower');
+  expect(await follower.securityLifecycle()).toBe('preflight');
+  await leader.activateSecurity();
+  await follower.activateSecurity();
+  expect(await follower.securityLifecycle()).toBe('active');
+  expect(await follower.query('SELECT id FROM tasks')).toEqual([]);
+  // The leader's own tab still activates only out of a preflight.
+  await expectRejectsWithCode(
+    leader.activateSecurity(),
+    'sync.invalid_request',
+  );
+});
+
 test('a preflight whose owner tab closed stays closed until another tab enters it', async () => {
   const group = makeGroup();
   const leader = await group.make({ clientId: 'mt-orphan-lead' });
@@ -801,95 +825,102 @@ for (const next of ['promoted', 'rebound'] as const) {
   });
 }
 
-test('a key a follower adds reveals the sealed row on the leader for every tab', async () => {
-  const secrets = {
-    name: 'secrets',
-    columns: [
-      { name: 'id', type: 'string', nullable: false },
-      { name: 'project_id', type: 'string', nullable: false },
-      {
-        name: 'note',
-        type: 'bytes',
-        nullable: true,
-        encrypted: true,
-        declaredType: 'string',
-      },
-    ],
-    primaryKey: 'id',
-    scopes: ['project:{project_id}'],
-  } as const;
-  const schema = { version: 1, tables: [secrets] };
-  const sealedServer = makeServer(schema);
-  sealedServer.allowed['actor-1'] = { project_id: ['p1'] };
-  const sealedHttp = serveOverHttp(sealedServer);
-  const key = new Uint8Array(32).fill(0x2a);
-  const writer = await makeClient(sealedServer, {
-    clientId: 'mt-key-writer',
-    schema,
-    encryption: { keys: { secrets: key } },
-  });
-  try {
-    writer.client.subscribe({ project_id: 'p1' });
-    writer.client.mutate([
-      {
-        table: 'secrets',
-        op: 'upsert',
-        values: { id: 's1', project_id: 'p1', note: 'private' },
-      },
-    ]);
-    await writer.client.syncUntilIdle();
-
-    const group = makeGroup();
-    const endpoints = {
-      syncUrl: sealedHttp.syncUrl,
-      segmentsUrl: sealedHttp.segmentsUrl,
-    };
-    const leader = await group.make({
-      clientId: 'mt-key-lead',
+for (const via of ['addEncryptionKeys', 'activateSecurity'] as const) {
+  test(`a key a follower adds through ${via} reveals the sealed row on the leader for every tab`, async () => {
+    const secrets = {
+      name: 'secrets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        {
+          name: 'note',
+          type: 'bytes',
+          nullable: true,
+          encrypted: true,
+          declaredType: 'string',
+        },
+      ],
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    } as const;
+    const schema = { version: 1, tables: [secrets] };
+    const sealedServer = makeServer(schema);
+    sealedServer.allowed['actor-1'] = { project_id: ['p1'] };
+    const sealedHttp = serveOverHttp(sealedServer);
+    const key = new Uint8Array(32).fill(0x2a);
+    const writer = await makeClient(sealedServer, {
+      clientId: 'mt-key-writer',
       schema,
-      endpoints,
-      encryption: { keys: {} },
+      encryption: { keys: { secrets: key } },
     });
-    const follower = await group.make({ schema, endpoints });
-    expect(follower.role).toBe('follower');
-    await leader.subscribe({ project_id: 'p1' });
-    await leader.syncUntilIdle();
-    const read = 'SELECT note, _sync_sealed_key AS sealed FROM secrets';
-    expect(await follower.query(read)).toEqual([
-      { note: null, sealed: 'secrets' },
-    ]);
-
-    const changed: string[][] = [];
-    leader.onChange((batch) =>
-      changed.push(batch.tables.map((change) => change.table)),
-    );
-    await follower.addEncryptionKeys({ secrets: key });
-    for (const tab of [leader, follower])
-      expect(await tab.query(read)).toEqual([
-        { note: 'private', sealed: null },
+    try {
+      writer.client.subscribe({ project_id: 'p1' });
+      writer.client.mutate([
+        {
+          table: 'secrets',
+          op: 'upsert',
+          values: { id: 's1', project_id: 'p1', note: 'private' },
+        },
       ]);
-    // The leader core published the reveal as one revision for the table.
-    expect(changed).toEqual([['secrets']]);
-    // The gate never closed: the write path stays open on both tabs.
-    expect(await leader.securityLifecycle()).toBe('active');
-    await follower.mutate([
-      {
-        table: 'secrets',
-        op: 'upsert',
-        values: { id: 's1', project_id: 'p1', note: 'edited' },
-      },
-    ]);
-    await leader.syncUntilIdle();
-    await writer.client.syncUntilIdle();
-    expect(writer.client.query('SELECT note FROM secrets')).toEqual([
-      { note: 'edited' },
-    ]);
-  } finally {
-    await writer.client.close();
-    writer.db.close();
-    await sealedHttp.stop();
-  }
-});
+      await writer.client.syncUntilIdle();
+
+      const group = makeGroup();
+      const endpoints = {
+        syncUrl: sealedHttp.syncUrl,
+        segmentsUrl: sealedHttp.segmentsUrl,
+      };
+      const leader = await group.make({
+        clientId: 'mt-key-lead',
+        schema,
+        endpoints,
+        encryption: { keys: {} },
+      });
+      const follower = await group.make({ schema, endpoints });
+      expect(follower.role).toBe('follower');
+      await leader.subscribe({ project_id: 'p1' });
+      await leader.syncUntilIdle();
+      const read = 'SELECT note, _sync_sealed_key AS sealed FROM secrets';
+      expect(await follower.query(read)).toEqual([
+        { note: null, sealed: 'secrets' },
+      ]);
+
+      const changed: string[][] = [];
+      leader.onChange((batch) =>
+        changed.push(batch.tables.map((change) => change.table)),
+      );
+      // An active shared client: the follower's activation adds its keys.
+      if (via === 'activateSecurity')
+        await follower.activateSecurity({
+          encryption: { keys: { secrets: key } },
+        });
+      else await follower.addEncryptionKeys({ secrets: key });
+      for (const tab of [leader, follower])
+        expect(await tab.query(read)).toEqual([
+          { note: 'private', sealed: null },
+        ]);
+      // The leader core published the reveal as one revision for the table.
+      expect(changed).toEqual([['secrets']]);
+      // The gate never closed: the write path stays open on both tabs.
+      expect(await leader.securityLifecycle()).toBe('active');
+      await follower.mutate([
+        {
+          table: 'secrets',
+          op: 'upsert',
+          values: { id: 's1', project_id: 'p1', note: 'edited' },
+        },
+      ]);
+      await leader.syncUntilIdle();
+      await writer.client.syncUntilIdle();
+      expect(writer.client.query('SELECT note FROM secrets')).toEqual([
+        { note: 'edited' },
+      ]);
+    } finally {
+      await writer.client.close();
+      writer.db.close();
+      await sealedHttp.stop();
+    }
+  });
+}
 
 test('a supervisor installed while another tab holds preflight connects after that tab activates', async () => {
   const group = makeGroup();

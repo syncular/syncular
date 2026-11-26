@@ -152,7 +152,10 @@ core with `securityPreflight: true`, or the tab whose
 `beginSecurityPreflight()` enters the same gate and leaves the owner as it
 is. `activateSecurity()` from any other tab fails with
 `client.security_preflight_owned` and the gate stays closed; that tab waits
-for a status with `securityLifecycle: 'active'`. When the owner tab closes or
+for a status with `securityLifecycle: 'active'`. A follower whose
+`activateSecurity()` arrives after the owner released the gate finds the
+client active: the call returns, and the keys it passes extend the keyring.
+When the owner tab closes or
 crashes, the preflight stays closed, and a tab must call
 `beginSecurityPreflight()` itself, which makes it the owner, before its
 `activateSecurity()` releases the gate. A handle that opens with

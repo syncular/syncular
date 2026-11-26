@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-26',
+    title: 'A follower activates a client another tab already activated',
+    body: "Two tabs that open with `securityPreflight: true` at the same time share one preflight, owned by the leader's tab. When the leader activated first, the follower's `activateSecurity()` failed with `sync.invalid_request` and its tab could not open the replica until a reload. The follower's call now returns on the active client, and the keys it passes extend the shared keyring. The leader's own tab still activates only out of a preflight, and the tab that owns a held preflight still alone releases it.",
+    links: [
+      {
+        href: '/platform-web-reads-writes/',
+        label: 'Reads and writes on the web',
+      },
+    ],
+  },
+  {
+    date: '2026-11-26',
     title: 'An unknown segment gets the refusal of a foreign one',
     body: 'The segment download endpoint answered 404 `sync.not_found` for an unknown digest and 403 `sync.forbidden` for a stored segment the caller may not read, so an authenticated actor could test whether a digest names stored content. Every refusal before the grant is established, an unknown digest and a publication in another partition or log epoch included, now answers 403 `sync.forbidden` with the message `segment not authorized (§5.5)`. Clients already recover from that refusal without failing the round.',
     links: [

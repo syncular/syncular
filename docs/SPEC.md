@@ -6683,7 +6683,12 @@ active or when the preflight has no owner; while another tab owns it, the call
 enters the same gate and leaves the owner unchanged. `activateSecurity` from
 any tab other than the owner fails with the non-retryable client-local code
 `client.security_preflight_owned` and the details `{ method }`, and the gate
-stays closed. When the owner tab closes or its page ends, the leader learns it
+stays closed. `activateSecurity` from a follower tab while the core is active
+and no preflight is held (its own `beginSecurityPreflight` joined a preflight
+another tab has since released) returns without a change, and the
+activation's keys extend the keyring as `addEncryptionKeys` does. The owner
+rule is unchanged; the leader's own tab still fails with
+`sync.invalid_request` outside a preflight. When the owner tab closes or its page ends, the leader learns it
 through the tab's lock; the preflight stays closed and has no owner, and a tab
 releases it only after it calls `beginSecurityPreflight` and so becomes the
 owner. A preflight outlives its leader tab: the promoted tab's core opens the

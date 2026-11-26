@@ -1266,6 +1266,21 @@ export async function createSyncClientHandle(
               { method },
             );
           }
+          if (
+            method === 'activateSecurity' &&
+            preflight === undefined &&
+            tabId !== context.tabId &&
+            (await core.invoke('securityLifecycle', [])) === 'active'
+          ) {
+            // §7.1: a follower that activates after the shared client left
+            // preflight (its own request joined another tab's preflight)
+            // finds the client active; its keys extend the keyring.
+            const keys = (args[0] as WorkerSecurityActivation | undefined)
+              ?.encryption?.keys;
+            if (keys !== undefined)
+              await core.invoke('addEncryptionKeys', [keys]);
+            return undefined;
+          }
           const value = await core.invoke(method, args);
           if (method === 'activateSecurity') preflight = undefined;
           return value;
