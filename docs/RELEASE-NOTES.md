@@ -1,5 +1,108 @@
 # Syncular release notes
 
+## 0.108.0 release notes
+
+The segment download endpoint answered 404 `sync.not_found` for an unknown
+digest and 403 `sync.forbidden` for a stored segment the caller may not read,
+so an authenticated actor could test whether a digest names stored content
+(SYNCULAR-SEGMENT-EXISTENCE-001). Every refusal before the caller's grant is
+established now answers 403 `sync.forbidden` with the message
+`segment not authorized (§5.5)`: an unknown digest, a segment whose
+publications lie in another partition or log epoch, a digest mismatch, a
+revoked scope and a resolver failure. The buffered and the streaming path
+share the check. SPEC §5.5 already has both clients skip a segment refused
+with `sync.forbidden` without failing the round and settle its unit in the
+next round. The conformance scenario
+`scopes/segment-download-reauthorizes-every-time` asserts that a foreign and an
+absent segment answer the same error (SPEC §5.5).
+
+`diagnosticsSnapshot().lastRound.errorCode`, `SyncProgress.errorCode`, unit
+reason codes and the lease error code now publish only a code of a protocol
+family: `sync.`, `blob.`, `client.`, `operation.`, `presence.`, `realtime.`,
+`transport.` or `storage.`. A host-defined code a server, proxy or host
+transport answered, such as `patient.jane_doe`, becomes
+`client.unknown_failure`; the error the call rejects with keeps the answered
+code (SYNCULAR-DIAGNOSTIC-CODE-PRIVACY-001). The clients check the family
+and not the suffix, so a server that puts text into a `sync.` code still
+reaches these fields. Both clients change alike (SPEC §7.6).
+
+The server replaces each U+0000 in a rejection message with U+FFFD before it
+records or returns the result. PostgreSQL `JSONB` cannot store U+0000, so a
+validator message that echoed client text failed the whole push there with
+`22P05` while SQLite recorded the rejection (SYNCULAR-REJECTION-NUL-001,
+SPEC §6.7).
+
+`useRetainedWindow().error` now carries the failed attempt's
+`SyncRoundFailedError` while one of the hook's units is incomplete, and returns
+to `undefined` when the next attempt starts or the units complete, as a live
+query's `error` does. A view that reads through a retained window no longer
+needs a probe query to state a failed transfer
+(SYNCULAR-RETAINED-WINDOW-FAILURE-001).
+
+A follower tab whose `activateSecurity()` arrives after the leader's tab
+released a shared preflight failed with `sync.invalid_request`, and two tabs
+that opened together left one unable to open the replica until a reload. The
+leader now answers such a call on an active client without a change, and the
+keys the follower passes extend the keyring as `addEncryptionKeys` does. The
+tab that owns a held preflight still alone releases it, and the leader's own
+tab still activates only out of a preflight
+(SYNCULAR-FOLLOWER-ACTIVATION-RACE-001, SPEC §7.1).
+
+A follower whose leader lock request the browser rejects reports
+`handle.leadership` as `waiting` with reason `leader-start-failed` and code
+`client.worker_failed`, counted against the same three attempts as a failed
+core start. A follower still bound to its leader returns to `follower` and
+keeps serving calls. The rejection was unhandled before
+(SYNCULAR-FOLLOWER-LOCK-REJECTION-001).
+
+A progress snapshot equal field by field to the latest one keeps the latest
+snapshot's identity and calls no listener, in both clients and across worker
+and native bridges, so `useSyncProgress` renders no repeated progress
+(SYNCULAR-PROGRESS-EQUAL-001, SPEC §7.7).
+
+Three items of the batch did not reproduce on 0.107.4 and change nothing but
+tests. `mutate()` and `patch()` already refuse a fraction in an integer column
+in both clients (SYNCULAR-INTEGER-ENCODE-001). A reload whose first window
+claim omits a held unit keeps the unit, its cursor and its rows for the later
+claim, the SPEC §7.8 decision of 2026-11-17 (SYNCULAR-WINDOW-STARTUP-EVICT-001).
+A round no longer fails with `client.encryption_key_missing`: since 0.73 both
+clients seal such a row (SYNCULAR-DIAGNOSTICS-FAILURE-DETAILS-001).
+
+No public Rust item changes signature. `ProgressObserver` subscribers receive
+no callback for an equal snapshot; that is a behavior change of an existing
+item and semver-compatible.
+
+**Upgrading.**
+
+- A host, proxy or test that matched `sync.not_found` or HTTP 404 for an
+  unknown segment now sees 403 `sync.forbidden` with the message
+  `segment not authorized (§5.5)`. A segment whose publication expired still
+  answers 404 `sync.segment_expired` to a caller its grant authorizes.
+  Tests: `packages/server/test/segment-download.test.ts` (an unknown segment
+  is refused like a foreign one; a segment from another partition is refused
+  like an unknown one; a rotated log epoch denies the descriptor minted under
+  the old one), `packages/server-hono/src/index.test.ts` (GET /segments/:id
+  refuses a foreign and an absent segment alike).
+- Support displays that showed a host-defined round failure code from
+  diagnostics or progress now show `client.unknown_failure`; read the code of
+  the rejected call when the app needs it. Tests:
+  `packages/web-client/test/diagnostics.test.ts` (publishes a protocol code
+  and replaces a host code an HTTP server answered) and the Rust test
+  `diagnostics_publish_a_protocol_code_and_replace_a_host_code`.
+- A rejection message that contained U+0000 is now recorded and returned with
+  U+FFFD on every backend. Test: `packages/server/test/write-validation.test.ts`
+  (a NUL in a rejection message records the same rejection, SQLite and
+  PGlite).
+- Code that treated `useRetainedWindow().error` as a registration failure
+  only now also receives `SyncRoundFailedError` for a failed transfer; branch
+  on `instanceof SyncRoundFailedError` to tell them apart. Test:
+  `packages/react/test/hooks.test.tsx` (a failed round surfaces as error while
+  a retained unit is incomplete).
+- A listener that counted progress events to detect activity receives no
+  event for an equal snapshot. Tests: `packages/web-client/src/progress.test.ts`
+  (an equal snapshot keeps its identity and notifies no one) and the Rust
+  test `an_equal_update_notifies_no_one`.
+
 ## 0.107.5 release notes
 
 `purgeLocalData` accepts a plan of up to 1,024 targets in the TypeScript and
