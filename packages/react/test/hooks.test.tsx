@@ -775,6 +775,58 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     expect(after.at(-1)).toEqual({ isPending: false, error: undefined });
   });
 
+  test('a failed round surfaces as error while a retained unit is incomplete', async () => {
+    const client = new FakeClient();
+    const { result } = renderHook(() => useRetainedWindow(base, ['p1']), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.error).toBeUndefined();
+
+    const running = (attempt: number) => ({
+      epoch: 'e1',
+      attempt,
+      state: 'running' as const,
+      phase: 'download' as const,
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    await act(async () => {
+      client.progress.emit(running(1));
+      client.progress.update({
+        state: 'failed',
+        errorCode: 'sync.transport_failed',
+      });
+    });
+    expect(result.current).toMatchObject({
+      isPending: false,
+      error: { code: 'sync.transport_failed', attempt: 1 },
+    });
+    const failed = result.current;
+
+    // The next attempt is the retry: the failure clears until it fails too.
+    await act(async () => {
+      client.progress.emit(running(2));
+    });
+    expect(result.current).toEqual({ isPending: false, error: undefined });
+
+    await act(async () => {
+      client.progress.update({
+        state: 'failed',
+        errorCode: 'sync.transport_failed',
+      });
+    });
+    expect(result.current.error).toMatchObject({ attempt: 2 });
+    expect(result.current).not.toBe(failed);
+
+    // A complete unit states no transfer failure.
+    await act(async () => {
+      client.completeBootstrap(base);
+    });
+    await flushEffects();
+    expect(result.current).toEqual({ isPending: false, error: undefined });
+  });
+
   test('retains a declarative working set and releases only its claim', async () => {
     const client = new FakeClient();
     const { result, unmount } = renderHook(

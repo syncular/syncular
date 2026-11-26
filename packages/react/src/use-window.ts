@@ -29,7 +29,9 @@ export interface UseWindowResult {
 export interface UseRetainedWindowResult {
   /** True until the retained working set has reached the core window. */
   readonly isPending: boolean;
-  /** Registration failure, if the host rejects the window change. */
+  /** Registration failure, if the host rejects the window change; else the
+   * failed sync round (`SyncRoundFailedError`) while a retained unit is
+   * incomplete, until the next attempt starts, like a live query's error. */
   readonly error: Error | undefined;
 }
 
@@ -65,6 +67,33 @@ export function useRetainedWindow(
   );
   // oxlint-enable react-hooks/exhaustive-deps
   const [state, setState] = useState<UseRetainedWindowResult>(RETAINED_PENDING);
+  const entry = useMemo(() => store.window(stableBase), [store, stableBase]);
+  const windowState = useSyncExternalStore(
+    entry.subscribe,
+    entry.getSnapshot,
+    entry.getSnapshot,
+  );
+  const roundFailure = useSyncExternalStore(
+    store.roundFailure.subscribe,
+    store.roundFailure.getSnapshot,
+    store.roundFailure.getSnapshot,
+  );
+  // SPEC §7.5 failed transfer: an incomplete retained unit stops waiting on
+  // a failed attempt and waits again when the next one starts.
+  const failure =
+    state.error === undefined &&
+    roundFailure !== undefined &&
+    windowState.loaded &&
+    stableUnits.some((unit) => !windowComplete(windowState, unit))
+      ? roundFailure
+      : undefined;
+  const failed = useMemo(
+    () =>
+      failure === undefined
+        ? undefined
+        : { isPending: state.isPending, error: failure },
+    [failure, state.isPending],
+  );
 
   useEffect(() => {
     let active = true;
@@ -90,7 +119,7 @@ export function useRetainedWindow(
     };
   }, [stableBase, stableUnits, store]);
 
-  return state;
+  return failed ?? state;
 }
 
 export function useWindow(base: WindowBase): UseWindowResult {

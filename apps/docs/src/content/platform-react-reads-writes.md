@@ -99,6 +99,12 @@ doubling per consecutive failure up to 30,000 ms. A failure with
 `retryable: false` has no automatic next attempt. The query returns to `loading`
 or `partial` when the next attempt starts.
 
+`useRetainedWindow` reports the same failure: while one of its units is
+incomplete, `error` is the failed attempt's `SyncRoundFailedError`, and it
+returns to `undefined` when the next attempt starts or the units complete. A
+view that reads through a retained window states a failed transfer without a
+separate query.
+
 ## Cached reads during sync
 
 A query hook requests a local snapshot while its window claim registers. A
