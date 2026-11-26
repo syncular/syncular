@@ -772,6 +772,58 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     ]);
   });
 
+  test('a reload whose first claim omits a held unit keeps it for the later claim (§7.8)', async () => {
+    const server = makeServer();
+    const seeder = await makeClient(server, { clientId: 'reload-seeder' });
+    seeder.client.mutate(
+      ['p1', 'p2'].map((project) => ({
+        table: 'tasks',
+        op: 'upsert' as const,
+        values: taskValues(`t-${project}`, project),
+      })),
+    );
+    await seeder.client.sync();
+    const base = { variable: 'project_id' };
+    const first = await makeClient(server, { clientId: 'reload' });
+    await first.client.setWindow(base, ['p1', 'p2']);
+    await first.client.syncUntilIdle();
+    const held = first.client.units();
+    expect(held.map((unit) => unit.scopes)).toEqual([
+      { project_id: 'p1' },
+      { project_id: 'p2' },
+    ]);
+    await first.client.close();
+
+    // The reload: the first claim names p1 only, a round runs, and the
+    // second claim names p2 again.
+    const reloaded = await makeClient(server, {
+      clientId: 'reload',
+      database: first.db,
+    });
+    const store = new ReactiveClientStore(reloaded.client);
+    store.start();
+    try {
+      const own = store.retainWindow(base, ['p1']);
+      await own.ready;
+      await reloaded.client.syncUntilIdle();
+      expect(reloaded.client.units()).toEqual(held);
+      const peer = store.retainWindow(base, ['p2']);
+      await peer.ready;
+      await reloaded.client.syncUntilIdle();
+      expect(reloaded.client.units()).toEqual(held);
+      expect(first.db.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+        { id: 't-p1' },
+        { id: 't-p2' },
+      ]);
+    } finally {
+      store.dispose();
+      await reloaded.client.close();
+      await seeder.client.close();
+      first.db.close();
+      seeder.db.close();
+    }
+  });
+
   test('a unit registered outside the window completes a live view with no table change', async () => {
     const client = await makeClient(makeServer(), { clientId: 'subset-unit' });
     const batches: ClientChangeBatch[] = [];
