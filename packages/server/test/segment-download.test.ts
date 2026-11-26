@@ -11,6 +11,7 @@ import {
 } from '@syncular/core';
 import {
   handleSegmentDownload,
+  openSegmentDownload,
   RESOLVER_OUTAGE,
   MemorySegmentStore,
   scopeDigest,
@@ -168,6 +169,21 @@ for (const resolver of ['full', 'limited'] as const) {
         code: 'sync.forbidden',
         message: 'segment not authorized (§5.5)',
       });
+    });
+
+    test('a malformed scopes header answers alike for a stored and an absent segment (§5.5)', async () => {
+      const t = context({ limits: { inlineSegmentMaxBytes: 1 } });
+      const ref = await bootstrapRef(t);
+      const absent =
+        'sha256:0000000000000000000000000000000000000000000000000000000000000000';
+      for (const download of [handleSegmentDownload, openSegmentDownload])
+        for (const segmentId of [ref.segmentId, absent])
+          await expect(
+            download(t.ctx, { segmentId, scopesHeader: 'not json' }),
+          ).rejects.toMatchObject({
+            code: 'sync.invalid_request',
+            message: 'X-Syncular-Scopes is not JSON',
+          });
     });
 
     test('a segment from another partition is refused like an unknown one', async () => {

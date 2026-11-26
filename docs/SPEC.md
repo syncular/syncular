@@ -3763,7 +3763,10 @@ for clients without signed-URL support.
   mismatch, revoked status, and a resolution failure all answer the same
   HTTP 403 `sync.forbidden` with the static message `segment not
   authorized (§5.5)`, so a caller cannot tell absent content from content
-  it may not read. A segment reference obtained earlier is not a bearer
+  it may not read. The server checks the `X-Syncular-Scopes` header
+  before it reads the segment store, so a malformed header answers HTTP 400
+  `sync.invalid_request` alike for a stored and an absent segment. A
+  segment reference obtained earlier is not a bearer
   capability; only signed URLs are (deliberately, with short TTL).
 
   DECISION (denial opacity): an unknown segment answers `sync.forbidden`

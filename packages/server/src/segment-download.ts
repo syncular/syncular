@@ -157,6 +157,9 @@ async function downloadSegment(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
 ): Promise<SegmentDownloadResult> {
+  // §5.5: the header is checked before any lookup, so a malformed header
+  // answers the same for a stored and an absent segment.
+  const requested = parseScopesHeader(request.scopesHeader);
   const registry = await touchAuthenticatedPartition(ctx);
   const entry = await ctx.segments
     .get(request.segmentId)
@@ -166,7 +169,7 @@ async function downloadSegment(
   }
   const record = await authorizePublication(
     ctx,
-    request,
+    requested,
     registry,
     entry.record,
   );
@@ -177,6 +180,7 @@ async function openSegment(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
 ): Promise<SegmentStreamResult> {
+  const requested = parseScopesHeader(request.scopesHeader);
   const registry = await touchAuthenticatedPartition(ctx);
   const opened =
     ctx.segments.open !== undefined
@@ -200,7 +204,12 @@ async function openSegment(
   }
   let record: SegmentRecord;
   try {
-    record = await authorizePublication(ctx, request, registry, opened.record);
+    record = await authorizePublication(
+      ctx,
+      requested,
+      registry,
+      opened.record,
+    );
   } catch (error) {
     await opened.body.cancel();
     throw error;
@@ -237,7 +246,7 @@ function segmentHeaders(record: SegmentRecord): Record<string, string> {
  */
 async function authorizePublication(
   ctx: SyncRequestContext,
-  request: SegmentDownloadRequest,
+  requested: ScopeMap,
   { logEpoch, checkpointSchemaVersion }: PartitionTouch,
   stored: SegmentRecord,
 ): Promise<SegmentRecord> {
@@ -251,8 +260,6 @@ async function authorizePublication(
   if (inContext.length === 0) {
     throw segmentRefused();
   }
-
-  const requested = parseScopesHeader(request.scopesHeader);
 
   let resolved: ResolvedScopes;
   try {

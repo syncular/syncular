@@ -17,6 +17,13 @@
 export const changelog = [
   {
     date: '2026-11-26',
+    title:
+      'A malformed scopes header no longer tells a stored segment from an absent one',
+    body: 'The segment download endpoint read the segment before it checked the `X-Syncular-Scopes` header, so a malformed header answered 403 for an absent segment and 400 `sync.invalid_request` for a stored one. The server now checks the header first, and both answer 400.',
+    links: [{ href: '/concepts-scopes/', label: 'Scopes' }],
+  },
+  {
+    date: '2026-11-26',
     title: 'A retained window reports a failed transfer',
     body: "`useRetainedWindow` returned only its registration state, so a view that read through a retained window kept its placeholder for as long as the transfer failed. Its `error` now carries the failed attempt's `SyncRoundFailedError` while one of its units is incomplete, and clears when the next attempt starts or the units complete, with the retry semantics of a live query's error.",
     links: [
