@@ -156,7 +156,9 @@ function errorRecord(
       opIndex,
       status: 'error',
       code,
-      message,
+      // §6.7: PostgreSQL JSONB cannot store U+0000, so every backend records
+      // and returns it as U+FFFD.
+      message: message.replaceAll('\u0000', '\uFFFD'),
       retryable,
       ...(details !== undefined ? { details } : {}),
     },

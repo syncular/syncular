@@ -591,6 +591,45 @@ describe('whole-commit validation (§6.8)', () => {
     });
   }
 
+  for (const backend of ['sqlite', 'pglite'] as const) {
+    test(`${backend}: a NUL in a rejection message records the same rejection`, async () => {
+      const pg = backend === 'pglite' ? await PGlite.create() : undefined;
+      const storage =
+        pg === undefined
+          ? undefined
+          : new PostgresServerStorage(pgliteExecutor(pg));
+      if (storage !== undefined)
+        await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+      const t = makeContext({
+        ...(storage === undefined ? {} : { storage }),
+        commitValidator: () => {
+          throw new ValidationRejection(
+            'app.duplicate_article',
+            'sup-nord\u0000nm-1010',
+          );
+        },
+      });
+      const commit = pushCommit('nul', [
+        upsert('tasks', 't1', taskRow('t1', 'p1')),
+      ]);
+      const first = pushResults(await sync(t, [commit]))[0]?.results[0];
+      const replay = pushResults(await sync(t, [commit]))[0]?.results[0];
+      expect(first).toMatchObject({
+        opIndex: 0,
+        status: 'error',
+        code: 'app.duplicate_article',
+        message: 'sup-nord\uFFFDnm-1010',
+        retryable: false,
+      });
+      expect(replay).toEqual(first);
+      expect(
+        await t.ctx.storage.getRow('part-1', 'tasks', 't1'),
+      ).toBeUndefined();
+      t.storage.db.close();
+      if (pg !== undefined) await pg.close();
+    });
+  }
+
   test('rejects invalid authority refusal indexes as host errors', async () => {
     expect(() => new CommitAuthorizationRejection(-1, 'denied')).toThrow();
     expect(() => new CommitAuthorizationRejection(0.5, 'denied')).toThrow();

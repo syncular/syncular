@@ -5740,6 +5740,11 @@ opaque to the client runtime, which applies the generic rejection
 handling (drop the commit from the outbox; the app decides whether to
 re-push a corrected write).
 
+The server replaces each U+0000 in a rejection message with U+FFFD before it
+records or sends the result, on every storage backend. PostgreSQL `JSONB`
+cannot store U+0000, and a message that kept it would fail the push there
+while SQLite recorded the rejection.
+
 A deliberate host rejection MAY additionally attach the bounded
 `RejectionDetails` object of §6.3.1. The server validates and normalizes it at
 `ValidationRejection` construction time, persists it with the idempotent
