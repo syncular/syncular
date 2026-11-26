@@ -1,5 +1,24 @@
 # Syncular release notes
 
+## 0.108.1 release notes
+
+The segment download endpoint read the segment store before it checked the
+`X-Syncular-Scopes` header, so a malformed header answered 403
+`sync.forbidden` for an absent segment and 400 `sync.invalid_request` for a
+stored one in the caller's partition and epoch, which still told the two apart
+after 0.108.0 (SYNCULAR-SEGMENT-EXISTENCE-HEADER-001). The server now checks
+the header first on the buffered and the streaming path, and a malformed
+header answers 400 `sync.invalid_request` for both (SPEC §5.5). Test:
+`packages/server/test/segment-download.test.ts` (a malformed scopes header
+answers alike for a stored and an absent segment). The Rust authority serves
+no segment endpoint.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. A request with a malformed `X-Syncular-Scopes`
+header for an absent segment now answers 400 `sync.invalid_request` instead
+of 403 `sync.forbidden`.
+
 ## 0.108.0 release notes
 
 The segment download endpoint answered 404 `sync.not_found` for an unknown
