@@ -1,5 +1,25 @@
 # Syncular release notes
 
+## 0.107.5 release notes
+
+`purgeLocalData` accepts a plan of up to 1,024 targets in the TypeScript and
+Rust clients (SYNCULAR-PURGE-TARGET-LIMIT-001). Until 0.107.4 both refused
+more than 64 targets with `sync.invalid_request`, so a directive over 12
+workspaces of 17 tables (204 targets) had to be split across calls, and a
+crash between two calls left the device partly purged. Every target of a plan
+still runs in the one purge transaction with its receipt. The conformance
+scenario `window/local-purge-carries-a-plan-of-1024-targets` purges 288 rows
+through 1,024 targets in one call on every client and authority pairing, and
+checks that a plan of 1,025 targets fails before it removes a row (SPEC
+§7.3.4).
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. A host that splits a plan into batches of 64
+targets can pass the whole plan in one call. A selector holds up to 128
+values, so one target per table can also name every workspace of a
+directive.
+
 ## 0.107.4 release notes
 
 The first page of a unit's SQLite image now commits 1,024 rows and then
