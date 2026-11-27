@@ -2200,7 +2200,7 @@ fn a_reset_ends_the_restriction() {
 }
 
 #[test]
-fn a_restricted_unit_owns_the_rows_of_tables_outside_its_restriction() {
+fn a_restricted_unit_owns_and_completes_the_tables_outside_its_restriction() {
     let h = Harness::new();
     let restricted = UnitRecord {
         id: id_of(&p1()),
@@ -2226,6 +2226,96 @@ fn a_restricted_unit_owns_the_rows_of_tables_outside_its_restriction() {
     };
     assert_eq!(owners("notes").len(), 1);
     assert!(owners("tasks").is_empty());
+    // §7.5: its kept notes rows are complete through the kept cursor, and
+    // tasks stays pending until the restricted bootstrap ends.
+    let base = project_window();
+    let coverage = |table: &str| {
+        entry_coverage(
+            std::slice::from_ref(&restricted),
+            table,
+            h.client.schema.table(table),
+            &base,
+            "p1",
+        )
+        .0
+    };
+    assert_eq!(coverage("notes"), "complete");
+    assert_eq!(coverage("tasks"), "pending");
+}
+
+/// Reopens the replica at `path` under `schema` and returns the tables the
+/// open copied from their base halves.
+fn rebuilt_at_open(path: &str, schema: &Value) -> Vec<String> {
+    let client =
+        SyncClient::open_path("units-client".into(), schema, ClientLimits::default(), path)
+            .unwrap();
+    let rebuilt = client.overlay_rebuilt_tables.borrow().clone();
+    assert_eq!(
+        Harness::over(client).ids("notes"),
+        vec!["n1", "n2"],
+        "the visible notes keep the overlay"
+    );
+    rebuilt
+}
+
+#[test]
+fn an_open_rebuilds_the_overlay_of_the_tables_intent_names_only() {
+    let path = generation_db("intent-overlay");
+    let pending = synced_replica(&path, &generated(1, Some("t1"), Some("n1")));
+    // §7.1: the pending write names notes; tasks and its rows are untouched
+    // by a same-version reopen, a bump keeping both tables, and a bump
+    // recreating tasks.
+    for schema in [
+        generated(1, Some("t1"), Some("n1")),
+        generated(2, Some("t1"), Some("n1")),
+        generated(3, Some("t2"), Some("n1")),
+    ] {
+        assert_eq!(rebuilt_at_open(&path, &schema), vec!["notes"]);
+    }
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(3, Some("t2"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    let mut h = Harness::over(client);
+    let note = h.rows("notes", &[&["n1", "p1", "o1", "a"]]);
+    let task = h.rows("tasks", &[&["t1", "p1", "a"]]);
+    let pushed = h.commit(4, &[("notes", Op::Upsert, &["n2", "p1", "o1", "mine"], 1)]);
+    h.round(concat(vec![
+        vec![applied(&pending, 4)],
+        h.bootstrap(&p1(), 4, vec![note, task], vec![]),
+        live(4, vec![pushed]),
+    ]));
+    assert!(h.client.pending_commit_ids().is_empty());
+    drop(h);
+    // Without intent, neither a reopen nor a bump keeping every table copies
+    // a row or refills the kept FTS projection.
+    for schema in [
+        generated(3, Some("t2"), Some("n1")),
+        generated(4, Some("t2"), Some("n1")),
+    ] {
+        assert!(rebuilt_at_open(&path, &schema).is_empty());
+    }
+    let client = SyncClient::open_path(
+        "units-client".into(),
+        &generated(4, Some("t2"), Some("n1")),
+        ClientLimits::default(),
+        &path,
+    )
+    .unwrap();
+    let matches: i64 = client
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'mine'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(matches, 1, "the kept FTS projection still indexes n2");
+    drop(client);
+    std::fs::remove_file(path).unwrap();
 }
 
 // -- §3.3 re-arming a revoked window value ---------------------------------------

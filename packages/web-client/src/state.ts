@@ -114,8 +114,8 @@ export function subsetScopes(unit: UnitScopes, entry: UnitScopes): boolean {
 /**
  * §7.5 subset rule: the persisted units whose variables are a subset of the
  * entry's and whose values match it on them, or true when one of them is
- * complete for `table` and its echo restricts none of the entry's other
- * variables.
+ * complete for `table` (bootstrapped, or restricted to other tables) and
+ * its echo restricts none of the entry's other variables.
  */
 export function coverageCandidates(
   units: readonly UnitRecord[],
@@ -129,9 +129,13 @@ export function coverageCandidates(
   );
   return (
     found.some((unit) => {
-      const effective = owning(unit)
-        ? pairScopes(unit.scopes, table.name, unit.echo)
-        : undefined;
+      const effective =
+        owning(unit) ||
+        (unit.status === 'active' &&
+          unit.echo !== undefined &&
+          unit.restrict?.tables.includes(table.name) === false)
+          ? pairScopes(unit.scopes, table.name, unit.echo)
+          : undefined;
       return (
         effective !== undefined &&
         Object.keys(entry).every(

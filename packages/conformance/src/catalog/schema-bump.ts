@@ -660,15 +660,37 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   },
   {
     // §7.4.3, §4.7: a unit covering a kept and a changed table bootstraps the
-    // changed table only and joins the scan at its kept cursor.
+    // changed table only and joins the scan at its kept cursor; §7.5: its
+    // kept table reads complete before the first round.
     name: 'schema-bump/restricted-unit-bootstraps-changed-tables-only',
-    specRefs: ['§7.4.3', '§4.3', '§4.7', '§4.5'],
+    specRefs: ['§7.4.3', '§4.3', '§4.7', '§4.5', '§7.5'],
     requires: ['schema-window'],
     server: { schema: RESTRICT_V2, schemaWindow: [RESTRICT_V2, RESTRICT_V1] },
     async run(ctx) {
       const { a, cursor } = await restrictedBump(ctx);
+      check(a.api.querySnapshot !== undefined, 'querySnapshot is available');
+      // §7.5: the kept tasks rows are complete through the kept cursor
+      // before any round; docs stays pending until its bootstrap.
+      const complete = async (table: string) =>
+        (
+          await a.api.querySnapshot?.(
+            `SELECT id FROM ${table}`,
+            [],
+            [{ table, base: { variable: 'project_id' }, units: ['p1'] }],
+          )
+        )?.coverage.complete;
+      checkEqual(
+        [await complete('tasks'), await complete('docs')],
+        [true, false],
+        'the restricted unit completes its kept table only',
+      );
       const sent = a.sentRequests.length;
       const report = await syncIdle(a);
+      checkEqual(
+        await complete('docs'),
+        true,
+        'the restricted bootstrap completes docs',
+      );
       checkEqual(
         restrictsSent(a, sent)[0],
         { type: 'RESTRICT', cursor, tables: ['docs'] },

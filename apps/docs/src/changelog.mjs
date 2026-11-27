@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-27',
+    title: 'Restricted units prove coverage of their kept tables',
+    body: 'After a bump that changes one table of a unit, the unit takes a restriction and bootstraps only the changed table. Its rows of the unchanged tables are complete through its kept cursor, yet both client cores reported their window coverage pending until the restricted bootstrap finished, so a query over a kept table waited for a round that downloaded nothing and could not complete offline. Coverage of the unchanged tables is now complete as soon as the reset commits; coverage of the changed tables stays pending until their bootstrap completes.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#units-that-cover-changed-and-unchanged-tables',
+        label: 'Units that cover changed and unchanged tables',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
+    title: 'Native opens no longer copy unchanged tables',
+    body: 'The Rust client rebuilt the optimistic overlay of every table at a schema bump, and at every open with one pending, retained or acknowledged write: it deleted each visible table, copied it back from its base half and refilled every FTS5 projection. On a 420 MiB replica with 67,372 catalogue codes a bump that kept 140 of 142 tables took 2,188 ms, and a reopen with one pending write took 2,426 ms, against 48 ms without. Both now rebuild only the tables those writes name.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#which-tables-the-reset-keeps',
+        label: 'Which tables the reset keeps',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
     title: 'Window claims of one page task commit once',
     body: 'On the worker handle, the `setWindow` calls one page task makes, such as the retained windows and query coverage one React commit mounts, now reach the worker as one message and commit their entering values in one SQLite transaction. A cold sign-in with 11 claims had committed 11 times in the OPFS worker, about 48 ms each and 526 ms before the first sync request. Each call keeps its own revision and change batch, and a call that fails registers none of its values.',
     links: [{ href: '/concepts-windowing/', label: 'Windowing' }],

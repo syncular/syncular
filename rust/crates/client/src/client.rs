@@ -646,6 +646,9 @@ pub struct SyncClient {
     /// turn a batch of acknowledgements into one full overlay rebuild each.
     #[cfg(test)]
     overlay_rebuild_count: Cell<usize>,
+    /// Test-only: every table a rebuild copied from its base half.
+    #[cfg(test)]
+    overlay_rebuilt_tables: RefCell<Vec<String>>,
     #[cfg(test)]
     acknowledged_replay_count: Cell<usize>,
     /// Test-only structural performance signal: outcome retention is enforced
@@ -978,7 +981,10 @@ fn entry_coverage(
         .collect();
     let complete = candidates.iter().any(|unit| {
         unit.status == UnitStatus::Active
-            && !unit.bootstrapping()
+            && (!unit.bootstrapping()
+                || unit.restriction.as_ref().is_some_and(|restriction| {
+                    !restriction.tables.iter().any(|name| name == table)
+                }))
             && unit.echo.is_some()
             && pair_scopes(&unit.scopes, table, unit.echo.as_deref()).is_some_and(|effective| {
                 entry
@@ -2553,6 +2559,8 @@ impl SyncClient {
             #[cfg(test)]
             overlay_rebuild_count: Cell::new(0),
             #[cfg(test)]
+            overlay_rebuilt_tables: RefCell::new(Vec::new()),
+            #[cfg(test)]
             acknowledged_replay_count: Cell::new(0),
             #[cfg(test)]
             outcome_prune_count: Cell::new(0),
@@ -2650,16 +2658,8 @@ impl SyncClient {
             // encryption key stays with the send seam because hosts configure
             // keys after open.
             client.drop_unencodable_outbox(false, None)?;
-            if marker == Some(client.schema.version)
-                && (!client.outbox.is_empty()
-                    || !client.failed_commits.is_empty()
-                    || client.has_acknowledged_rows()?)
-            {
-                // Reconstruct the visible optimistic overlay from the durable
-                // base plus outbox instead of trusting a process-interrupted
-                // mirror.
-                client.overlay_dirty.set(true);
-                client.rebuild_overlay()?;
+            if marker == Some(client.schema.version) {
+                client.rebuild_intent_overlay()?;
             }
             // Every persisted active unit needs one catch-up pull on
             // open: realtime only covers changes after connection, while an
@@ -4589,13 +4589,8 @@ impl SyncClient {
                 // through `run_schema_reset`, which performs the same recovery after
                 // it creates the new physical tables and before its final replay.
                 self.drop_unencodable_outbox(false, None)?;
-                if marker == Some(self.schema.version)
-                    && (!self.outbox.is_empty()
-                        || !self.failed_commits.is_empty()
-                        || self.has_acknowledged_rows()?)
-                {
-                    self.overlay_dirty.set(true);
-                    self.rebuild_overlay()?;
+                if marker == Some(self.schema.version) {
+                    self.rebuild_intent_overlay()?;
                 }
                 self.prune_unknown_units(false)?;
                 self.save_unit_scope_schema()?;
@@ -4922,7 +4917,6 @@ impl SyncClient {
         }
         // The per-table insert SQL is derived from the OLD column lists.
         self.insert_sql.borrow_mut().clear();
-        self.overlay_dirty.set(true);
         // Drop every synced table (base + visible) that currently exists —
         // discovered from sqlite_master so a bump that adds/removes tables is
         // handled. Bookkeeping tables (`_syncular_outbox/_units/_meta`
@@ -5066,9 +5060,9 @@ impl SyncClient {
         // §7.4.4: the enclosing reset observation owns the publication, so the
         // recovery contributes its rejection, outcome, and table domains to it.
         self.drop_unencodable_outbox(false, Some(batch))?;
-        // Re-apply the surviving outbox optimistically over the empty tables.
-        self.rebuild_overlay()?;
-        Ok(())
+        // A recreated table without intent is empty in both halves, and a
+        // kept one without intent already shows its base rows.
+        self.rebuild_intent_overlay()
     }
 
     /// §7.4.4 send-time prepass: a persisted upsert whose values reference a
@@ -5153,6 +5147,7 @@ impl SyncClient {
                 for operation in &commit.ops {
                     if self.schema.table(&operation.table).is_some() {
                         batch.table(&operation.table);
+                        self.overlay_dirty.table(&operation.table);
                     }
                 }
             }
@@ -5164,10 +5159,9 @@ impl SyncClient {
             self.outbox
                 .retain(|commit| !incompatible_ids.contains(commit.client_commit_id.as_str()));
             self.rejections.extend(rejections);
-            // The dropped commits' purely-optimistic rows are undone: the
-            // visible projection is re-derived from the surviving base + outbox.
-            self.overlay_dirty.set(true);
-            self.rebuild_overlay()?;
+            // The dropped commits' purely-optimistic rows are undone: their
+            // tables are re-derived from the surviving base + outbox.
+            self.rebuild_overlay_if_dirty()?;
             batch.status = true;
             batch.rejections = true;
             batch.outcomes = true;
@@ -7495,15 +7489,16 @@ impl SyncClient {
                 self.rejections.push(rejection);
                 for operation in &commit.ops {
                     domains.table(operation.table.as_str());
+                    self.overlay_dirty.table(&operation.table);
                 }
             }
             domains.status = true;
             domains.rejections = true;
             domains.outcomes = true;
             self.prune_commit_outcomes()?;
-            // The visible projection is re-derived from the surviving base + outbox.
-            self.overlay_dirty.set(true);
-            self.rebuild_overlay()?;
+            // The dropped commits' tables are re-derived from the surviving
+            // base + outbox.
+            self.rebuild_overlay_if_dirty()?;
             Ok(())
         })();
         let result = match batch {
@@ -14458,6 +14453,35 @@ impl SyncClient {
         Ok(dropped)
     }
 
+    /// §7.1 at open and at the end of a reset: rebuilds the overlay of the
+    /// tables that acknowledged, retained failed or pending intent names,
+    /// from their base halves. Every other table already shows its base rows.
+    fn rebuild_intent_overlay(&mut self) -> Result<(), String> {
+        for commit in self.outbox.iter() {
+            for operation in &commit.ops {
+                self.overlay_dirty.table(&operation.table);
+            }
+        }
+        for (commit, _) in self.failed_commits.iter() {
+            for operation in &commit.ops {
+                self.overlay_dirty.table(&operation.table);
+            }
+        }
+        let mut statement = self.stored(
+            self.conn
+                .prepare("SELECT DISTINCT tbl FROM _syncular_acked_rows"),
+        )?;
+        let tables = self.stored(
+            self.stored(statement.query_map([], |row| row.get::<_, String>(0)))?
+                .collect::<Result<Vec<_>, _>>(),
+        )?;
+        drop(statement);
+        for table in tables {
+            self.overlay_dirty.table(&table);
+        }
+        self.rebuild_overlay_if_dirty()
+    }
+
     /// [`Self::rebuild_overlay`], skipped when neither the base tables nor
     /// the outbox changed since the last rebuild (the no-op sync round).
     fn rebuild_overlay_if_dirty(&mut self) -> Result<(), String> {
@@ -14515,6 +14539,10 @@ impl SyncClient {
                 }
             }
             for table in &tables {
+                #[cfg(test)]
+                self.overlay_rebuilt_tables
+                    .borrow_mut()
+                    .push(table.name.clone());
                 let visible = visible_table(&table.name);
                 let base = base_table(&table.name);
                 self.conn

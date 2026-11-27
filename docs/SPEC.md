@@ -4997,7 +4997,8 @@ whose read tables hold no intent has `intent: []`.
 **Coverage.** For each request the client evaluates every coverage entry of
 the declaration with the request's parameters and classifies each unit in the
 read transaction by the subset rule of §7.5: `complete`, `pending` (an active
-unit that has not finished its bootstrap or whose echo restricts the entry),
+unit that has not finished its bootstrap of the table or whose echo
+restricts the entry),
 `missing` (no such unit) or `revoked` (the unit is `revoked` or `failed`).
 `coverage` lists every entry with its table, unit and state, and `complete`
 is true only when every entry is `complete`. Rows are returned in every case
@@ -6605,8 +6606,10 @@ documents: a JSON boolean for a `boolean` column.
   from the idempotency record (§2.3).
 - Reconciliation MUST rebuild only tables whose server base or pending/retained
   operations changed. Unchanged visible tables and their FTS projections MUST
-  remain untouched. A schema reset or restart recovering an interrupted overlay
-  can rebuild the whole replica. A commit spanning tables dirties every table
+  remain untouched. An open and a schema reset rebuild exactly the tables
+  that acknowledged, retained or pending operations name: a kept table
+  (§7.4.3) without them already holds its server rows, and a table the reset
+  recreated is empty in both halves. A commit spanning tables dirties every table
   in that commit, including when rejection, resolution or revocation removes it.
   Imports MUST restrict protected-journal reads and replay to affected rows or
   tables, including empty bootstrap clears. Unique constraints can require
@@ -7581,8 +7584,8 @@ with `sync.local_corrupt` before mutation.
   code-unit order. The unit keeps the rows of its other covered tables,
   sends `RESTRICT` (§4.3) after every `PROGRESS`, and bootstraps only its
   bootstrap tables (§4.7). A restricted unit owns the rows of its covered
-  tables outside its bootstrap tables (§3.3 row ownership), as a
-  post-bootstrap unit does. The restriction ends when the unit's bootstrap
+  tables outside its bootstrap tables (§3.3 row ownership) and proves their
+  coverage (§7.5), as a post-bootstrap unit does. The restriction ends when the unit's bootstrap
   completes, at a `reset` (§4.6), when the unit is revoked or failed, when
   a revoked fenced record turns active again (§3.3), and at a foreign first
   page (§5.6). Every other unit that is not kept bootstraps whole, kept
@@ -8077,12 +8080,22 @@ an unsafe JSON number.
 window coverage, and `localRevision` from one SQLite read transaction. Coverage
 names each required entry `{ table, base, units }` and classifies each unit
 value of it. A coverage entry `{ variable, fixedScopes }` for a table and a
-value is complete when an active, bootstrapped unit for the table exists
+value is complete when an active unit for the table exists that has
+finished its bootstrap or holds a restriction (§7.4.3) excluding the table,
 whose scope variables are a subset of `{ variable, ...fixedScopes }`, whose
 values equal the entry's values on those variables, and whose persisted echo
 restricts none of the entry's other variables. It is pending when such a
 unit exists but none of them is complete, and missing when none exists. A
 pending value whose unit is `revoked` is listed as revoked too.
+
+DECISION (2026-11-27): a restricted unit proves coverage of the tables
+outside its restriction. Its rows of those tables are complete through its
+kept cursor, as a post-bootstrap unit's are through `P`, and it already owns
+them (§3.3). Before this, every query over a kept table of the unit read
+pending until the restricted bootstrap finished: after a bump that added one
+table to a facility unit, a native app's workspace gate over the kept
+`facilities` table waited 6.3 s for a round that downloaded nothing, and
+could not open offline.
 A window claim still registers exactly the units of its base (§4.8); the
 subset rule only decides which registered units prove an entry. A client MUST NOT compose
 rows from one read with coverage or revision from another. A result at revision
