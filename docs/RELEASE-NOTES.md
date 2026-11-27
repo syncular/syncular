@@ -1,5 +1,30 @@
 # Syncular release notes
 
+## 0.109.5 release notes
+
+The TypeScript client's `syncUntilIdle` round bound restarted when the round
+applied segment rows or received a socket chunk, and not when a segment
+download received bytes (SYNCULAR-IDLE-TIMEOUT-DOWNLOAD-PROGRESS-001). A
+browser on a link of about 270 KB/s downloading a 27 to 36 MB catalogue image
+received 16.4 MB in 60 s and was cut at 60,012 ms with `sync.idle_timeout`;
+the next round downloaded the image again from the start. Every `onProgress`
+report of a segment download, inline or prefetched, through a
+`SegmentDownloader` or its `fetchUrl`, now restarts the bound. A download
+that receives nothing for `timeoutMs` still aborts with `sync.idle_timeout`.
+SPEC §7.8 states the rule with a DECISION note. The Rust client already
+restarted its bound on every socket read of a segment download. Tests:
+`packages/web-client/test/idle-deadline.test.ts` (received segment bytes
+restart the round bound), where a 300-row image that arrives in four chunks
+600 ms apart under a 1,000 ms bound fails with `sync.idle_timeout` on 0.109.4
+and completes now, and (a segment download silent for the bound fails with
+sync.idle_timeout).
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. A custom `SegmentDownloader` keeps a long
+download alive by calling the request's `onProgress` as bytes arrive; one
+that reports only at the end is still cut after `timeoutMs`.
+
 ## 0.109.4 release notes
 
 At the start of a table, the server read its first rows page
