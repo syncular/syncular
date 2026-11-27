@@ -1440,6 +1440,28 @@ describe('range images (§5.3)', () => {
     ).toEqual(images.map((ref) => ref.segmentId));
   });
 
+  test('a client reusing stored range images reads rows only at the start of the table', async () => {
+    const t = await seededTable(100_000);
+    const images = (await bootstrap(t, 'client-1')).flatMap(
+      (pull) => pull.body,
+    );
+    const scans: (string | null | undefined)[] = [];
+    const scanRows = t.storage.scanRows.bind(t.storage);
+    t.storage.scanRows = async (partition, query) => {
+      scans.push(query.afterRowId);
+      return scanRows(partition, query);
+    };
+    const again = await bootstrap(t, 'client-2');
+    expect(
+      again.flatMap((pull) => pull.body).map((ref) => ref.segmentId),
+    ).toEqual(images.map((ref) => ref.segmentId));
+    // The first range's eligibility probe and the rows tail after the last
+    // range; the later ranges, resumed pulls included, read no row.
+    expect(scans).toHaveLength(2);
+    expect(scans[0]).toBeNull();
+    expect(images.length).toBeGreaterThanOrEqual(3);
+  });
+
   test('a stored image past the bound is rebuilt as range images', async () => {
     const t = await seededTable(Number.MAX_SAFE_INTEGER);
     const whole = (await bootstrap(t, 'client-1')).flatMap((pull) => pull.body);

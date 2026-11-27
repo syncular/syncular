@@ -366,22 +366,18 @@ function sqliteLaneEligible(
 }
 
 /**
- * §5.3 reuse lookup for the range image that starts after `rowCursor`. Only
- * a position with more than one rows page left can match a stored image, so
- * a smaller remainder skips the lookup. A stored image past the bound (built
- * under a larger one) does not match unless it holds a single row.
+ * §5.3 reuse lookup for the range image that starts after `rowCursor`. A
+ * stored image past the bound (built under a larger one) does not match
+ * unless it holds a single row.
  */
 async function findImage(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
-  limits: PullLimits,
   pair: BootstrapPair,
   scopePin: number,
   rowCursor: string | null,
-  probe: readonly StoredRow[],
   logEpoch: string,
 ): Promise<SegmentRecord | undefined> {
-  if (probe.length <= limits.limitSnapshotRows) return undefined;
   const stored = await ctx.segments
     .find(
       {
@@ -404,11 +400,51 @@ async function findImage(
     : undefined;
 }
 
+/**
+ * §5.3: the reads of a position inside a table's image lane, after its first
+ * range. A stored range image there that holds more than one rows page
+ * answers the position, and no row is read. Otherwise the rows page probe
+ * decides as at the start of the table: a stored image matches only while
+ * more than one rows page remains.
+ */
+async function imageLanePosition(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  pair: BootstrapPair,
+  scopePin: number,
+  rowCursor: string | null,
+  logEpoch: string,
+): Promise<{ scanned: StoredRow[]; stored: SegmentRecord | undefined }> {
+  const stored = await findImage(
+    ctx,
+    schema,
+    pair,
+    scopePin,
+    rowCursor,
+    logEpoch,
+  );
+  if (stored !== undefined && stored.rowCount > limits.limitSnapshotRows) {
+    return { scanned: [], stored };
+  }
+  const scanned = await ctx.storage.scanRows(ctx.partition, {
+    table: pair.table.name,
+    scopeFilter: pair.effective,
+    afterRowId: rowCursor,
+    limit: limits.limitSnapshotRows + 1,
+  });
+  return {
+    scanned,
+    stored: scanned.length > limits.limitSnapshotRows ? stored : undefined,
+  };
+}
+
 /** The reads a table's bootstrap needs before its first frame (§4.7, §5.3). */
 interface TableStart {
   /**
    * `limitSnapshotRows + 1` rows from the start cursor: the first page and
-   * the §5.3 image eligibility probe.
+   * the §5.3 image eligibility probe. Empty when `image.stored` answers a
+   * position inside the image lane unread.
    */
   readonly firstPage: StoredRow[];
   /** On the sqlite lane: the §4.7 scope pin and a stored image under it. */
@@ -430,37 +466,45 @@ async function readTableStart(
   horizonSeq: number,
   logEpoch: string,
 ): Promise<TableStart> {
-  const scan = ctx.storage.scanRows(ctx.partition, {
-    table: pair.table.name,
-    scopeFilter: pair.effective,
-    afterRowId: startRowCursor,
-    limit: limits.limitSnapshotRows + 1,
-  });
+  const scan = () =>
+    ctx.storage.scanRows(ctx.partition, {
+      table: pair.table.name,
+      scopeFilter: pair.effective,
+      afterRowId: startRowCursor,
+      limit: limits.limitSnapshotRows + 1,
+    });
   if (!sqliteLaneEligible(limits, pair.table, startRowCursor, imageLane)) {
-    return { firstPage: await scan };
+    return { firstPage: await scan() };
   }
   // §4.7: a sqlite-lane table pins at the newest commit carrying all of the
   // unit's values (never below the table's horizon, never above
   // maxCommitSeq), so a stored image stays the reuse key's match until this
   // scope changes (§5.3). The server computes the pin; a client token never supplies it.
-  const [firstPage, latest] = await Promise.all([
-    scan,
-    ctx.storage.latestScopedChangeSeq(ctx.partition, {
-      table: pair.table.name,
-      scopes: unit.scopes,
-    }),
-  ]);
-  const scopePin = Math.min(maxSeq, Math.max(latest, horizonSeq));
-  const stored = await findImage(
-    ctx,
-    schema,
-    limits,
-    pair,
-    scopePin,
-    startRowCursor,
-    firstPage,
-    logEpoch,
-  );
+  const latest = ctx.storage.latestScopedChangeSeq(ctx.partition, {
+    table: pair.table.name,
+    scopes: unit.scopes,
+  });
+  const pinOf = (seq: number) => Math.min(maxSeq, Math.max(seq, horizonSeq));
+  if (startRowCursor !== null) {
+    const scopePin = pinOf(await latest);
+    const { scanned, stored } = await imageLanePosition(
+      ctx,
+      schema,
+      limits,
+      pair,
+      scopePin,
+      startRowCursor,
+      logEpoch,
+    );
+    return { firstPage: scanned, image: { scopePin, stored } };
+  }
+  // At the start of a table only a snapshot past one rows page can match a
+  // stored image, so a table that stays on the rows lane costs no lookup.
+  const [firstPage, scopePin] = await Promise.all([scan(), latest.then(pinOf)]);
+  const stored =
+    firstPage.length > limits.limitSnapshotRows
+      ? await findImage(ctx, schema, pair, scopePin, null, logEpoch)
+      : undefined;
   return { firstPage, image: { scopePin, stored } };
 }
 
@@ -536,11 +580,9 @@ async function* sqliteImageSegment(
       const cached = await findImage(
         ctx,
         schema,
-        limits,
         pair,
         scopePin,
         rowCursor,
-        probe,
         logEpoch,
       );
       if (cached !== undefined) return cached;
@@ -664,18 +706,31 @@ async function* tableSegments(
   let image = start.image;
   let rows = 0;
   for (let page = 0; page < pageBudget; page++) {
-    const scanned =
+    // §5.3: every range of the table shares the scope pin computed at this
+    // section's table start.
+    const { scanned, stored } =
       page === 0
-        ? start.firstPage
-        : await storage.scanRows(partition, {
-            table: pair.table.name,
-            scopeFilter: pair.effective,
-            afterRowId: rowCursor,
-            limit: limits.limitSnapshotRows + 1,
-          });
+        ? { scanned: start.firstPage, stored: image?.stored }
+        : image !== undefined
+          ? await imageLanePosition(
+              ctx,
+              schema,
+              limits,
+              pair,
+              image.scopePin,
+              rowCursor,
+              logEpoch,
+            )
+          : {
+              scanned: await storage.scanRows(partition, {
+                table: pair.table.name,
+                scopeFilter: pair.effective,
+                afterRowId: rowCursor,
+                limit: limits.limitSnapshotRows + 1,
+              }),
+              stored: undefined,
+            };
     if (image !== undefined) {
-      // §5.3: every range of the table shares the scope pin computed at this
-      // section's table start.
       const record = yield* sqliteImageSegment(
         ctx,
         schema,
@@ -686,18 +741,7 @@ async function* tableSegments(
         digest,
         trace,
         logEpoch,
-        page === 0
-          ? image.stored
-          : await findImage(
-              ctx,
-              schema,
-              limits,
-              pair,
-              image.scopePin,
-              rowCursor,
-              scanned,
-              logEpoch,
-            ),
+        stored,
         scanned,
       );
       if (record !== undefined) {

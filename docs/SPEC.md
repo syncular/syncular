@@ -3581,10 +3581,14 @@ at the pin — the reference server's rule); below that, inline rows
 segments already avoid the extra round-trip. A client that does not
 advertise bit 2 is served the rows lane (§5.2) by capability
 negotiation — rows segments remain mandatory-to-implement, so this is
-version-skew tolerance, not a second implementation path. The reference
-server reads the stored-image lookup only after its eligibility probe shows a
-snapshot past one rows page, because a smaller snapshot cannot match a stored
-image; a table that stays on the rows lane therefore costs no lookup.
+version-skew tolerance, not a second implementation path. At the start of
+a table the reference server reads the stored-image lookup only after its
+eligibility probe shows a snapshot past one rows page, because a smaller
+snapshot cannot match a stored image; a table that stays on the rows lane
+therefore costs no lookup. At a later position on the image lane it reads the
+lookup first: a stored image holding more than one rows page answers the
+position, and the server reads none of its rows; otherwise the probe decides
+as at the start of the table.
 
 **Error codes.** No new codes: structural/metadata failures are
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,

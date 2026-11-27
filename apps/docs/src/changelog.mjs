@@ -16,6 +16,25 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-27',
+    title: 'Stored range images answer a pull without row reads',
+    body: 'Inside a table’s image lane, from the second range on and in a pull that resumes there, the server looks up the stored range image before it reads rows. An image that holds more than one rows page answers the position, and the server reads none of its rows. It used to read a page of 1,001 rows at every range and discard them on a hit. The first range of a table still reads its rows page first, so a table on the rows lane costs no store lookup.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#publishing-images-from-another-host',
+        label: 'Publishing images',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
+    title: 'Bootstrap extent counts follow the narrowest variable',
+    body: 'When the variable a scan seeks holds fewer than 4,096 index entries, the §4.7 extent count reads that range and looks each candidate up in the other filter variables by the full primary key, instead of reading every variable’s range. On PostgreSQL 17 a 1,000-row release under two variables of 140,000 and 150,000 entries counts in 6.5 ms instead of 63.4 ms. A scan and a count of one filter share one selectivity probe, and the probe starts at 1,024 entries, so a count takes two statements fewer.',
+    links: [
+      { href: '/server-storage-reference/', label: 'Server storage reference' },
+    ],
+  },
+  {
     date: '2026-11-26',
     title: 'A follower activation survives a leader handover',
     body: 'A follower tab whose `activateSecurity()` was in flight when the leader tab reloaded or closed rejected with `client.leader_handover`, and an app that opens behind a security preflight failed its startup. The next leader opens a durable preflight with no owner, so the follower handle now enters the preflight on the next core and activates there. A preflight another tab owns there still refuses with `client.security_preflight_owned`.',
