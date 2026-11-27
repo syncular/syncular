@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-11-27',
+    title:
+      'A stored image answers the start of a counted table without row reads',
+    body: 'A fresh bootstrap counts each table’s rows for its extent. At the start of a table counted past one rows page, the server now looks up the stored range image first, as it does from the second range on, and reads none of the table’s rows when that image holds more than one rows page. It used to read 1,001 rows at every table start and discard them on a hit. A table counted within one rows page still costs no store lookup and now reads its first page after the count.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#publishing-images-from-another-host',
+        label: 'Publishing images from another host',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
     title: 'Restricted units prove coverage of their kept tables',
     body: 'After a bump that changes one table of a unit, the unit takes a restriction and bootstraps only the changed table. Its rows of the unchanged tables are complete through its kept cursor, yet both client cores reported their window coverage pending until the restricted bootstrap finished, so a query over a kept table waited for a round that downloaded nothing and could not complete offline. Coverage of the unchanged tables is now complete as soon as the reset commits; coverage of the changed tables stays pending until their bootstrap completes.',
     links: [

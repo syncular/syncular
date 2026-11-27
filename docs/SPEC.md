@@ -3602,11 +3602,13 @@ reads none of its rows; otherwise the probe decides.
 DECISION (2026-11-27): the extent count gates the lookup at the start of a
 table. The reference server read the eligibility probe
 (`limitSnapshotRows + 1` rows) at every table start and discarded it when a
-stored image answered. A production server on warm stored images spent 770
-to 1,739 ms handling a cold pull, and 4,861 ms of query time across its 39
-queries, most of it in those discarded reads. A fresh pin already counts every pair for `UNIT_EXTENT`, so the gate costs no
-statement; a table within one rows page reads its first page after the count
-instead of beside it, one storage round trip later.
+stored image answered; a production server on warm stored images spent 770
+to 1,739 ms handling a cold pull. On PGlite a cold pull of a published
+3,000-row image ran 12 statements, one of them a discarded 1,001-row page
+read, and now runs 11. A fresh pin already counts every pair for
+`UNIT_EXTENT`, so the gate adds no statement; a table within one rows page
+reads its first page after the count instead of beside it, one storage round
+trip later.
 
 **Error codes.** No new codes: structural/metadata failures are
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,
