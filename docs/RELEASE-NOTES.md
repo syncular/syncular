@@ -1,5 +1,116 @@
 # Syncular release notes
 
+## 0.109.0 release notes
+
+### Bootstrap extent counts follow the narrowest variable
+
+`countScopedRows` ran the scan's selectivity probe, dropped its pick and read
+every filter variable's whole scope-index range, so a small release under a
+broad availability and content set paid for both broad ranges on every fresh
+bootstrap pin (SYNCULAR-COUNT-SCOPED-ROWS-VARIABLE-001). The count now takes
+the seek variable. While that variable holds fewer than 4,096 entries for its
+values, the count reads its range and looks each candidate up in every other
+variable by the full primary key; from 4,096 on it reads one range per
+variable as before, because a lookup per candidate costs more at that size
+(174,000 lookups took 400 ms against 70 ms for the ranges on PostgreSQL 17).
+The probe starts at 1,024 entries instead of 64, and a scan and a count of one
+filter that start together share one probe. On PostgreSQL 17, with a fresh
+storage per count as on a per-request host:
+
+| Filter | Entries per variable | 0.108.2 | 0.109.0 |
+|---|---|---|---|
+| A small release's relations | 233 against 87,300 and 87,500 | 36.5 ms, 3 statements | 1.3 ms, 2 statements |
+| A small release's codes | 1,000 against 140,000 and 150,000 | 63.4 ms, 4 statements | 6.5 ms, 2 statements |
+| A release's codes | 7,000 against 140,000 and 150,000 | 61.8 ms, 6 statements | 58.0 ms, 4 statements |
+| A large release's codes | 87,000 against 140,000 and 150,000 | 140.6 ms, 8 statements | 103.9 ms, 6 statements |
+| A large release's relations | 87,267 against 87,300 and 87,500 | 71.9 ms, 8 statements | 72.4 ms, 6 statements |
+
+Repeated runs of one version varied by up to 25 percent. Tests:
+`packages/server/test/postgres-explain.test.ts` (the extent count looks up a
+narrow seek range and reads broad ones once, checking which plan ran) and
+`packages/server/test/storage-query.test.ts` (a scan and a count of one filter
+started together share one probe). The Rust local authority already counts
+from its seek column and is unchanged.
+
+[Server storage reference](https://syncular.dev/server-storage-reference/)
+
+### Stored range images answer a pull without row reads
+
+From a table's second range image on, and at a resumed position on the image
+lane, the pull read a 1,001-row page before it looked up the stored range
+image and discarded the page on a hit (SYNCULAR-IMAGE-REUSE-SKIP-SCAN-001).
+It now looks the image up first; an image holding more than one rows page
+answers the position, and no row is read. The first range of a table keeps
+its probe-first order, so a table on the rows lane costs no store lookup
+(SPEC §5.3). A second client bootstrapping a stored 120-row table in range images
+read 10 rows pages and now reads 2: the first range's probe and the
+rows tail. Test: `packages/server/test/bootstrap.test.ts` (a client reusing
+stored range images reads rows only at the start of the table), which fails
+on 0.108.2.
+
+The extent count still runs for a bootstrap that stored images serve. The
+`UNIT_EXTENT` frame precedes the unit's segments and counts every covered
+table, so deriving it from image records would look up every range of every
+table before the first frame and fall back to the count whenever one range is
+missing; the count above reads the narrow range instead.
+
+[Publishing images](https://syncular.dev/concepts-bootstrap/#publishing-images-from-another-host)
+
+### Window claims of one page task commit once
+
+On a cold browser sign-in a web app mounted 11 retained windows and query
+coverage claims within 6 ms, and the OPFS worker committed each widen in its
+own SQLite transaction: about 48 ms per commit, 526 ms before the first
+`POST /sync` (SYNCULAR-SET-WINDOW-COALESCE-001). The reactive store now issues
+the window edits of one page task together, the worker handle sends that
+task's `setWindow` calls as one message, and the worker commits their widens
+in one transaction. Each call keeps its own savepoint, revision and change
+batch, published after the COMMIT, so a call that fails registers none of its
+values and the other calls keep theirs; a failed COMMIT rejects every call of
+the message (SPEC §7.8). A multi-tab follower's calls still reach the leader
+one by one, and claims spread over several page tasks commit once per task.
+Native handles go to the Rust core, which commits the same 11 widens in about
+25 ms. Tests: `packages/web-client/test/worker-rpc.test.ts` (window claims of
+one turn commit in one worker transaction: 10 commits on 0.108.2, 1 now; window
+edits of a batch that fails to commit all reject and register nothing).
+
+[Windowing](https://syncular.dev/concepts-windowing/)
+
+### A rows segment no longer holds back an image download
+
+The TypeScript client counted every held segment body against its two-image
+memory bound and topped up its download window before it took the applied
+body out, so in a pull of image, image, rows, image and image segments the
+fourth started only once the rows segment applied; a web app's pull
+downloaded nothing for 1,995 ms (SYNCULAR-SEGMENT-PREFETCH-ORDER-001). The
+client now starts an image while it holds fewer than two image bodies,
+counting the one it applies, and rows bodies count only against the
+eight-body window. The fourth image downloads while the second applies; the
+client still holds at most two image bodies (SPEC §5.3). The Rust client
+downloads one segment at a time and is unchanged. Test:
+`packages/web-client/test/bootstrap.test.ts` (a rows body does not hold back
+the next image download), which fails on 0.108.2.
+
+[Parallel downloads](https://syncular.dev/concepts-bootstrap/#parallel-downloads)
+
+Bundles: the client lane is 169,028 B (+213) and the worker lane 190,481 B
+(+425); the ceilings are unchanged.
+
+No public Rust item changes.
+
+**Upgrading.**
+
+- `countRowsSql`, exported from `@syncular/server`, binds the seek variable
+  and its values next to the filter: PostgreSQL records are
+  `{i, tbl, var, vals, vars}`, and SQLite binds
+  `[partition, tbl, var, vals, vars]`. A custom storage that calls it passes
+  the variable it seeks in `scanRows`.
+- The worker protocol's `call` message carries `calls`, an array of calls,
+  and the exported type `WorkerCallMessage` is renamed `WorkerCall` without
+  its `t` field. Only a hand-written worker fake sees it.
+
+Nothing else to do.
+
 ## 0.108.2 release notes
 
 A follower tab whose `activateSecurity()` was in flight when the leader tab
