@@ -35,21 +35,24 @@ export interface ScanProbe {
  *
  * A single-variable filter needs no probe. Otherwise `count` counts each
  * variable's entries in one statement, up to `cap`. The cap starts at
- * max(64, limit) and grows fourfold while the fewest count is shared by
+ * max(1,024, limit) and grows fourfold while the fewest count is shared by
  * several variables at the cap. A round runs only while every tied variable
  * has at least `cap` entries, so the probe ends at the first cap above the
- * smallest count `n`: at most 4n entries per variable in the last round, and
- * the pick is the variable with the fewest entries whatever the starting cap.
+ * smallest count `n`: at most max(4n, 1,024) entries per variable in the last
+ * round, and the pick is the variable with the fewest entries whatever the
+ * starting cap.
  *
  * `chosen` memoizes the pick per (partition, table, filter), at most 1,024
- * entries, so the page loop of a bootstrap probes once. A stale pick only
- * costs index reads: every scan still verifies all variables against the
- * stored scopes, so the choice never changes a result.
+ * entries, so the page loop of a bootstrap probes once, and a scan and an
+ * extent count of one filter started together share one probe. An empty
+ * intersection and a failed probe are not memoized. A stale pick only costs
+ * index reads: every scan and count still verifies all variables against
+ * the stored scopes, so the choice never changes a result.
  */
 export async function chooseScanVariable(
   partition: string,
   query: Pick<RowScanQuery, 'table' | 'scopeFilter' | 'limit'>,
-  chosen: Map<string, string>,
+  chosen: Map<string, Promise<string | undefined>>,
   count: (
     probes: readonly ScanProbe[],
     cap: number,
@@ -80,26 +83,32 @@ export async function chooseScanVariable(
   ]);
   const cached = chosen.get(key);
   if (cached !== undefined) return cached;
-  let tied = variables;
-  for (let cap = Math.max(64, query.limit); ; cap *= 4) {
-    const counts = tied.map(() => 0);
-    const probes = tied.map((variable, i) => ({
-      i,
-      tbl: query.table,
-      var: variable,
-      vals: scopeFilter[variable]!,
-    }));
-    for (const row of await count(probes, cap)) {
-      counts[Number(row.sub)] = Number(row.n);
+  const pick = (async () => {
+    let tied = variables;
+    for (let cap = Math.max(1_024, query.limit); ; cap *= 4) {
+      const counts = tied.map(() => 0);
+      const probes = tied.map((variable, i) => ({
+        i,
+        tbl: query.table,
+        var: variable,
+        vals: scopeFilter[variable]!,
+      }));
+      for (const row of await count(probes, cap)) {
+        counts[Number(row.sub)] = Number(row.n);
+      }
+      const fewest = Math.min(...counts);
+      if (fewest === 0) return undefined;
+      tied = tied.filter((_, i) => counts[i] === fewest);
+      if (fewest < cap || tied.length === 1) return tied[0];
     }
-    const fewest = Math.min(...counts);
-    if (fewest === 0) return undefined;
-    tied = tied.filter((_, i) => counts[i] === fewest);
-    if (fewest < cap || tied.length === 1) break;
-  }
+  })();
   if (chosen.size >= 1_024) chosen.delete(chosen.keys().next().value!);
-  chosen.set(key, tied[0]!);
-  return tied[0];
+  chosen.set(key, pick);
+  const forget = () => {
+    if (chosen.get(key) === pick) chosen.delete(key);
+  };
+  pick.then((variable) => variable ?? forget(), forget);
+  return pick;
 }
 
 /** Validate and resolve one exact trusted-host relational index lookup. */
@@ -217,7 +226,7 @@ export interface LiveCandidateRow {
 export async function readLiveWindowPages(
   partition: string,
   query: LiveWindowQuery,
-  chosen: Map<string, string>,
+  chosen: Map<string, Promise<string | undefined>>,
   probe: (
     probes: readonly ScanProbe[],
     cap: number,

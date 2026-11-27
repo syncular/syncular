@@ -760,10 +760,10 @@ for (const kind of KINDS) {
       rows: 10,
       statements: reads(1),
     });
-    // p-mid ties o1 at the caps 64 and 256 and counts 300 under 1,024.
+    // p-mid counts 300 entries under the first cap of 1,024.
     expect(await scan(read, ['p-mid'], 64)).toEqual({
       rows: 64,
-      statements: reads(4),
+      statements: reads(2),
     });
     // A value without entries ends the scan in the probe.
     expect(await scan(read, ['p-none'], 1)).toEqual({
@@ -1066,13 +1066,23 @@ for (const kind of KINDS) {
     ];
     const lines =
       kind === 'postgres'
-        ? await plan(countRowsSql('postgres'), [
-            PARTITION,
-            JSON.stringify([{ i: 0, tbl: 'docs', vars }]),
-          ])
+        ? await plan(
+            countRowsSql('postgres'),
+            [
+              PARTITION,
+              JSON.stringify([
+                { i: 0, tbl: 'docs', var: 'project_id', vals: ['p1'], vars },
+              ]),
+            ],
+            // Statistics as autovacuum keeps them; without any, every path
+            // costs one row and the by-row index ties the primary key.
+            'ANALYZE sync_row_scopes;',
+          )
         : await plan(countRowsSql('sqlite'), [
             PARTITION,
             'docs',
+            'project_id',
+            JSON.stringify(['p1']),
             JSON.stringify(vars),
           ]);
     const text = lines.join('\n');
@@ -1082,14 +1092,19 @@ for (const kind of KINDS) {
       expect(text).not.toContain('sync_row_scopes_by_row');
       expect(text).not.toContain('Seq Scan');
     } else {
-      // `b` ranges each variable once on the covering primary key.
+      // Every scope read seeks the covering primary key: the seek range, the
+      // per-candidate lookups by the full key, and the per-variable ranges.
       const scopeSteps = lines.filter((line) =>
-        /^(SCAN|SEARCH) b\b/.test(line),
+        /^(SCAN|SEARCH) (b|o|sync_row_scopes)\b/.test(line),
       );
-      expect(scopeSteps).toHaveLength(1);
-      expect(scopeSteps[0]).toMatch(
-        /^SEARCH b USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 \(partition=\? AND tbl=\? AND var=\? AND value=\?/,
-      );
+      expect(scopeSteps.length).toBeGreaterThan(0);
+      for (const step of scopeSteps)
+        expect(step).toMatch(
+          /^SEARCH \w+ USING COVERING INDEX sqlite_autoindex_sync_row_scopes_1 \(partition=\? AND tbl=\? AND var=\? AND value=\?/,
+        );
+      expect(
+        scopeSteps.some((step) => step.includes('value=? AND row_id=?)')),
+      ).toBe(true);
     }
   });
 }
@@ -1271,11 +1286,10 @@ for (const kind of KINDS) {
       return drain().length;
     };
     // A quiet pull reads one candidate statement; D1 runs each behind its
-    // published-schema guard. The first pull adds one probe statement per
-    // round for all 50 units: r0 ties with its set and availability at the
-    // caps 64 and 256, so it takes three rounds; the others decide in one.
+    // published-schema guard. The first pull adds one probe statement for
+    // all 50 units: every unit decides under the first cap of 1,024.
     const per = kind === 'd1' ? 2 : 1;
-    expect(await pull()).toBe(4 * per);
+    expect(await pull()).toBe(2 * per);
     expect(await pull()).toBe(per);
   });
 }

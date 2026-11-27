@@ -33,23 +33,23 @@ test('the variable with the fewest entries wins after one probe', async () => {
       count,
     ),
   ).toBe('c');
-  expect(calls).toEqual([{ vars: ['a', 'b', 'c'], cap: 64 }]);
+  expect(calls).toEqual([{ vars: ['a', 'b', 'c'], cap: 1_024 }]);
 });
 
 test('the cap grows fourfold while variables tie at it', async () => {
-  const { calls, count } = counter({ a: 300, b: 70, c: 1_000 });
+  const { calls, count } = counter({ a: 3_000, b: 700, c: 10_000 });
   expect(
     await chooseScanVariable(
       'p',
-      query({ a: ['x'], b: ['y'], c: ['z'] }, 100),
+      query({ a: ['x'], b: ['y'], c: ['z'] }, 2_000),
       new Map(),
       count,
     ),
   ).toBe('b');
-  // The cap starts at the limit when it is above 64.
-  expect(calls).toEqual([{ vars: ['a', 'b', 'c'], cap: 100 }]);
+  // The cap starts at the limit when it is above 1,024.
+  expect(calls).toEqual([{ vars: ['a', 'b', 'c'], cap: 2_000 }]);
 
-  const tied = counter({ a: 300, b: 1_000_000, c: 1_000_000 });
+  const tied = counter({ a: 3_000, b: 1_000_000, c: 1_000_000 });
   expect(
     await chooseScanVariable(
       'p',
@@ -59,9 +59,8 @@ test('the cap grows fourfold while variables tie at it', async () => {
     ),
   ).toBe('a');
   expect(tied.calls).toEqual([
-    { vars: ['a', 'b', 'c'], cap: 64 },
-    { vars: ['a', 'b', 'c'], cap: 256 },
     { vars: ['a', 'b', 'c'], cap: 1_024 },
+    { vars: ['a', 'b', 'c'], cap: 4_096 },
   ]);
 });
 
@@ -90,7 +89,7 @@ test('a three-way tie past 65,536 entries goes to the fewest entries', async () 
   ).toBe('catalogue_content_release_id');
   // The probe stops at the first cap above the fewest entries.
   expect(catalogue.calls.map((call) => call.cap)).toEqual([
-    1_000, 4_000, 16_000, 64_000, 256_000,
+    1_024, 4_096, 16_384, 65_536, 262_144,
   ]);
 
   // Equal counts end the growth once the cap passes them; the
@@ -139,7 +138,7 @@ test('a single variable needs no probe and an empty filter fails', async () => {
 });
 
 test('the pick is memoized per filter in at most 1,024 entries', async () => {
-  const chosen = new Map<string, string>();
+  const chosen = new Map<string, Promise<string | undefined>>();
   const { calls, count } = counter({ a: 5_000, b: 10 });
   await chooseScanVariable(
     'p',
@@ -173,4 +172,38 @@ test('the pick is memoized per filter in at most 1,024 entries', async () => {
     );
   }
   expect(chosen.size).toBe(1_024);
+});
+
+test('a scan and a count of one filter started together share one probe', async () => {
+  const chosen = new Map<string, Promise<string | undefined>>();
+  const { calls, count } = counter({ a: 5_000, b: 10 });
+  const filter = { a: ['x'], b: ['y'] };
+  expect(
+    await Promise.all([
+      chooseScanVariable('p', query(filter, 1_001), chosen, count),
+      chooseScanVariable('p', query(filter, 0), chosen, count),
+    ]),
+  ).toEqual(['b', 'b']);
+  expect(calls).toEqual([{ vars: ['a', 'b'], cap: 1_024 }]);
+});
+
+test('an empty intersection and a failed probe are probed again', async () => {
+  const chosen = new Map<string, Promise<string | undefined>>();
+  const entries: Record<string, number> = { a: 5_000 };
+  const { calls, count } = counter(entries);
+  const filter = { a: ['x'], b: ['y'] };
+  expect(
+    await chooseScanVariable('p', query(filter), chosen, count),
+  ).toBeUndefined();
+  entries.b = 10;
+  expect(await chooseScanVariable('p', query(filter), chosen, count)).toBe('b');
+  expect(calls).toHaveLength(2);
+
+  const failing = async () => {
+    throw new Error('probe failed');
+  };
+  await expect(
+    chooseScanVariable('q', query(filter), chosen, failing),
+  ).rejects.toThrow('probe failed');
+  expect(await chooseScanVariable('q', query(filter), chosen, count)).toBe('b');
 });

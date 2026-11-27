@@ -1253,7 +1253,7 @@ class PostgresTransaction implements StorageTransaction {
   #writerVersion: number;
   #resolveTable: (name: string) => CompiledTable;
   /** The storage's `chooseScanVariable` picks. */
-  readonly #scanVariables: Map<string, string>;
+  readonly #scanVariables: Map<string, Promise<string | undefined>>;
   #open = true;
   /** Set by `preparePushApply`: commits close with a result and roll back alone. */
   #pushApply = false;
@@ -1316,7 +1316,7 @@ class PostgresTransaction implements StorageTransaction {
     prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     resolve: () => void,
     reject: (error: unknown) => void,
-    scanVariables: Map<string, string>,
+    scanVariables: Map<string, Promise<string | undefined>>,
   ) {
     this.#scanVariables = scanVariables;
     // One pinned connection carries one statement at a time: node-postgres
@@ -2142,7 +2142,7 @@ export class PostgresServerStorage implements ServerStorage {
    */
   readonly #pageBatches = new Map<string, PendingPage[]>();
   /** `chooseScanVariable` picks, shared with this storage's transactions. */
-  readonly #scanVariables = new Map<string, string>();
+  readonly #scanVariables = new Map<string, Promise<string | undefined>>();
 
   constructor(exec: PgExecutor) {
     this.#exec = exec;
@@ -3535,6 +3535,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       partition,
       {
         tbl: query.table,
+        var: variable,
+        vals: query.scopeFilter[variable],
         vars: Object.entries(query.scopeFilter).map(([name, vals]) => ({
           var: name,
           vals,

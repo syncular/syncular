@@ -462,7 +462,10 @@ export abstract class SqliteFamilyStorage {
    */
   protected abstract readonly checkpointSchemaVersionSql: string;
   /** `chooseScanVariable` picks, shared with this storage's transactions. */
-  protected readonly scanVariables = new Map<string, string>();
+  protected readonly scanVariables = new Map<
+    string,
+    Promise<string | undefined>
+  >();
 
   /** Run one statement and return its rows. */
   protected abstract all<T>(
@@ -1171,6 +1174,8 @@ export abstract class SqliteFamilyStorage {
     const [row] = await this.guardedAll<{ n: number }>(countRowsSql('sqlite'), [
       partition,
       query.table,
+      variable,
+      JSON.stringify(query.scopeFilter[variable]),
       JSON.stringify(
         Object.entries(query.scopeFilter).map(([name, vals]) => ({
           var: name,

@@ -216,7 +216,7 @@ class D1Transaction
     query: AuthoritativeQueryRequest,
   ) => BoundAuthoritativeQuery;
   readonly #pushApplySerialized: boolean;
-  readonly #scanVariables: Map<string, string>;
+  readonly #scanVariables: Map<string, Promise<string | undefined>>;
   /** Each push commit reaches D1 as its own batch when it closes (§6.4). */
   readonly persistsCommitsOnClose = true;
   readonly #buffer: SqliteStatementSpec[] = [];
@@ -261,7 +261,7 @@ class D1Transaction
     resolveTable: (name: string) => CompiledTable,
     prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     pushApplySerialized: boolean,
-    scanVariables: Map<string, string>,
+    scanVariables: Map<string, Promise<string | undefined>>,
   ) {
     super(partition);
     this.#db = db;

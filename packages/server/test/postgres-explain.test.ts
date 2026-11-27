@@ -341,9 +341,9 @@ test('listRowsReferencingBlob candidate scan is index-driven (no Seq Scan)', asy
   await db.close();
 });
 
-test('the §4.7 extent count reads each variable once, exact against brute force', async () => {
+test('the §4.7 extent count looks up a narrow seek range and reads broad ones once, exact against brute force', async () => {
   // A catalogue-shaped pair: one seek variable and two more filter variables
-  // over tens of thousands of rows.
+  // over tens of thousands of rows; one release holds 3,334 rows.
   const columns: readonly RowColumn[] = [
     { name: 'id', type: 'string', nullable: false },
     { name: 'set_id', type: 'string', nullable: false },
@@ -374,7 +374,7 @@ test('the §4.7 extent count reads each variable once, exact against brute force
     scopes: {
       set_id: `s${i % 3}`,
       availability: i % 5 === 0 ? 'hidden' : 'public',
-      release_id: `v${i % 7}`,
+      release_id: `v${i % 9}`,
     },
   }));
   for (let offset = 0; offset < rows.length; offset += 1_000) {
@@ -414,58 +414,72 @@ test('the §4.7 extent count reads each variable once, exact against brute force
         ),
       ).length,
     );
-  const result = await db.query<{ 'QUERY PLAN': unknown }>(
-    `EXPLAIN (FORMAT JSON) ${countRowsSql('postgres')}`,
-    [
-      PARTITION,
-      JSON.stringify(
-        filters.map((scopeFilter, i) => ({
-          i,
-          tbl: 'relations',
-          vars: Object.entries(scopeFilter).map(([name, vals]) => ({
-            var: name,
-            vals,
-          })),
-        })),
-      ),
-    ],
-  );
-  const raw = result.rows[0]!['QUERY PLAN'];
   interface PlanNode {
     readonly 'Node Type': string;
-    readonly 'Parent Relationship'?: string;
     readonly 'Relation Name'?: string;
     readonly 'Index Name'?: string;
     readonly 'Index Cond'?: string;
+    readonly 'Actual Loops': number;
     readonly Plans?: readonly PlanNode[];
   }
-  const [{ Plan }] = (typeof raw === 'string' ? JSON.parse(raw) : raw) as [
-    { Plan: PlanNode },
-  ];
-  const nodes: PlanNode[] = [];
-  const walk = (node: PlanNode) => {
-    nodes.push(node);
-    node.Plans?.forEach(walk);
+  // The scope reads of one count, with how often each ran.
+  const scopeReads = async (
+    scopeFilter: Record<string, string[]>,
+    seek: string,
+  ) => {
+    const result = await db.query<{ 'QUERY PLAN': unknown }>(
+      `EXPLAIN (ANALYZE, FORMAT JSON) ${countRowsSql('postgres')}`,
+      [
+        PARTITION,
+        JSON.stringify([
+          {
+            i: 0,
+            tbl: 'relations',
+            var: seek,
+            vals: scopeFilter[seek],
+            vars: Object.entries(scopeFilter).map(([name, vals]) => ({
+              var: name,
+              vals,
+            })),
+          },
+        ]),
+      ],
+    );
+    const raw = result.rows[0]!['QUERY PLAN'];
+    const [{ Plan }] = (typeof raw === 'string' ? JSON.parse(raw) : raw) as [
+      { Plan: PlanNode },
+    ];
+    const nodes: PlanNode[] = [];
+    const walk = (node: PlanNode) => {
+      if (node['Relation Name'] === 'sync_row_scopes') nodes.push(node);
+      node.Plans?.forEach(walk);
+    };
+    walk(Plan);
+    // Every scope read is an index-only range of the primary key; the by-row
+    // index never answers a lookup.
+    for (const node of nodes) {
+      expect(node['Node Type']).toBe('Index Only Scan');
+      expect(node['Index Name']).toBe('sync_row_scopes_pkey');
+    }
+    const ran = (lookup: boolean) =>
+      nodes.some(
+        (node) =>
+          node['Actual Loops'] > 0 &&
+          /\(var = f(_\d+)?\.var\)/.test(node['Index Cond']!) &&
+          node['Index Cond']!.includes('(row_id = ') === lookup,
+      );
+    return { lookups: ran(true), ranges: ran(false) };
   };
-  walk(Plan);
-  // Each variable's entries come from one index-only range of the primary
-  // key; the by-row index never answers a per-candidate probe.
-  const scopeScans = nodes.filter(
-    (node) => node['Relation Name'] === 'sync_row_scopes',
-  );
-  expect(scopeScans.length).toBeGreaterThan(0);
-  for (const node of scopeScans) {
-    expect(node['Node Type']).toBe('Index Only Scan');
-    expect(node['Index Name']).toBe('sync_row_scopes_pkey');
-    expect(node['Index Cond']).toContain('(var = f.var)');
-  }
-  // The one correlated subplan is the per-record count; nothing correlates
-  // per candidate row.
-  expect(
-    nodes.filter((node) => node['Parent Relationship'] === 'SubPlan'),
-  ).toHaveLength(1);
-  expect(nodes.filter((node) => /Anti|Semi/.test(node['Node Type']))).toEqual(
-    [],
-  );
+  // 3,334 release entries: each candidate is looked up in the other two
+  // variables, whose ranges are never read.
+  expect(await scopeReads(filters[1]!, 'release_id')).toEqual({
+    lookups: true,
+    ranges: false,
+  });
+  // 6,667 entries: each variable's range is read once instead.
+  expect(await scopeReads(filters[0]!, 'release_id')).toEqual({
+    lookups: false,
+    ranges: true,
+  });
   await db.close();
 });
