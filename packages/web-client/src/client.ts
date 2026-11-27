@@ -5984,27 +5984,32 @@ export class SyncClient {
     // trip per page. Eight downloads run at once: a cold load brings dozens of
     // rows segments, and eight halve the waves of four that took 3.3 s for
     // eight small segments. The client holds that many bodies, the one being
-    // applied and the rest ahead. An image starts only beside at most one
-    // other body, so at most two are images (§5.3 client memory); later
-    // descriptors wait in order. The
-    // loop takes each body out of the map before applying it and tops the
-    // window up at the next descriptor. Eligibility mirrors the loop: a
+    // applied and the rest ahead. An image starts only while the client holds
+    // fewer than two image bodies, so it holds at most two (§5.3 client
+    // memory); rows bodies do not count against that, and later descriptors
+    // wait in order. The loop tops the window up when it reaches a
+    // descriptor and takes its body out of the map. Eligibility mirrors the loop: a
     // descriptor outside an applied section or from an unconfigured
     // downloader is never queued, and a failure is only observed where the
     // loop awaits it. A promise left over because an earlier frame ended
     // apply is handled at creation, never unhandled.
+    let reporting: SegmentRefFrame | undefined;
     const queued: [SegmentRefFrame, UnitScopes][] = [];
     const prefetched = new Map<
       SegmentRefFrame,
       Promise<{ bytes: Uint8Array; downloadMs: number }>
     >();
     const prefetch = () => {
-      for (
-        let next;
-        prefetched.size < 8 &&
-        !(queued[0]?.[0].mediaType === 'sqlite' && prefetched.size > 1) &&
-        (next = queued.shift());
-      ) {
+      for (let next; (next = queued[0]); queued.shift()) {
+        const held = new Set(prefetched.keys());
+        if (reporting !== undefined) held.add(reporting);
+        if (
+          held.size >= 8 ||
+          (next[0].mediaType === 'sqlite' &&
+            [...held].filter((frame) => frame.mediaType === 'sqlite').length >
+              1)
+        )
+          return;
         const [frame, scopes] = next;
         const pending = this.#downloadSegment(
           frame,
@@ -6021,7 +6026,6 @@ export class SyncClient {
         prefetched.set(frame, pending);
       }
     };
-    let reporting: SegmentRefFrame | undefined;
     if (mode === 'pull') {
       let open: UnitRecord | undefined;
       for (const frame of message.frames) {
@@ -6203,10 +6207,10 @@ export class SyncClient {
                 this.#progress.update({ rowsProcessed: frame.rowCount });
                 break;
               }
+              reporting = frame;
               prefetch();
               const pending = prefetched.get(frame);
               prefetched.delete(frame);
-              if (pending !== undefined) reporting = frame;
               const { scopes } = section.unit;
               try {
                 ({ bytes, downloadMs } = (yield () =>

@@ -3299,8 +3299,8 @@ advance. After the last chunk commits outside any open transaction, the client
 runs `PRAGMA wal_checkpoint(TRUNCATE)`: a WAL replica otherwise keeps the
 largest chunk's pages in its `-wal` file.
 
-**Client memory.** A client holds at most two image bodies at once: the one
-it applies and one it downloads ahead. A client that fetches a response's
+**Client memory.** A client holds at most two image bodies at once, counting
+the one it applies; rows bodies do not count against this bound. A client that fetches a response's
 segment bodies before it applies them fetches at most two image bodies per
 batch, applies them, and stops the unit section before the next image
 without persisting its `SUB_END`; the next pull presents the same resume
@@ -3308,8 +3308,14 @@ token and continues with the §5.6 applied-segment rule. Peak memory then
 follows `maxImageSegmentBytes`, never the table size.
 
 The TypeScript client queues every segment download of a pull response and
-runs at most eight of them at once. The image bound above applies inside that
-window. The Rust client downloads a response's segments one at a time.
+holds at most eight bodies at once, the one it applies included. Inside that
+window it starts an image only while it holds fewer than two image bodies.
+
+DECISION (2026-11-27): a rows body does not hold back an image download. The
+TypeScript client counted every held body against the two-image bound, so in
+a web app's pull of image, image, rows, image and image segments the fourth
+started only once the rows segment applied, and the pull downloaded nothing
+for 1,995 ms. The Rust client downloads a response's segments one at a time.
 
 DECISION (2026-11-17): an image copy filters held rows out of its `SELECT`.
 The TypeScript client up to 0.78.1 copied with `ON CONFLICT … DO UPDATE … WHERE`
@@ -8618,6 +8624,15 @@ eviction yields between its chunks (§4.8). A later change of the same base
 supersedes a shrink that has not started. The Rust client runs window changes on
 its serialized owner, which holds the whole round, so a native claim that widens
 waits for the round.
+
+DECISION (2026-11-27): the TypeScript worker handle sends the `setWindow` calls
+of one page task as one message, and the worker commits their widens in one
+transaction; each call keeps its savepoint, its revision and its change batch,
+published after the COMMIT, and a failed COMMIT rejects every call of the
+message. On a cold browser sign-in a web app's retained windows and query
+coverage issued 11 widens within 6 ms; each committed on its own in the OPFS
+worker (rollback journal, about 48 ms per commit, 526 ms before the first
+`POST /sync`).
 
 DECISION (2026-11-17): a widen does not wait for the round. A web app's reader
 whose claim added an already complete unit stayed `loading` until the round

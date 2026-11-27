@@ -17,6 +17,23 @@
 export const changelog = [
   {
     date: '2026-11-27',
+    title: 'Window claims of one page task commit once',
+    body: 'On the worker handle, the `setWindow` calls one page task makes, such as the retained windows and query coverage one React commit mounts, now reach the worker as one message and commit their entering values in one SQLite transaction. A cold sign-in with 11 claims had committed 11 times in the OPFS worker, about 48 ms each and 526 ms before the first sync request. Each call keeps its own revision and change batch, and a call that fails registers none of its values.',
+    links: [{ href: '/concepts-windowing/', label: 'Windowing' }],
+  },
+  {
+    date: '2026-11-27',
+    title: 'A rows segment no longer holds back an image download',
+    body: 'The TypeScript client counted every held segment body against its two-image memory bound, so a pull of image, image, rows, image and image segments started the fourth only once the rows segment applied and downloaded nothing for 1,995 ms. Rows bodies no longer count against the bound: the fourth image downloads while the second applies, and the client still holds at most two image bodies.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#parallel-downloads',
+        label: 'Parallel downloads',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
     title: 'Stored range images answer a pull without row reads',
     body: 'Inside a table’s image lane, from the second range on and in a pull that resumes there, the server looks up the stored range image before it reads rows. An image that holds more than one rows page answers the position, and the server reads none of its rows. It used to read a page of 1,001 rows at every range and discard them on a hit. The first range of a table still reads its rows page first, so a table on the rows lane costs no store lookup.',
     links: [

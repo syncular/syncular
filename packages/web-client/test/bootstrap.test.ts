@@ -5,6 +5,7 @@
  * incremental at the pin, and cursor-expired re-bootstrap (§4.6).
  */
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import {
   PROTOCOL_WIRE_VERSION,
   unitId,
@@ -137,31 +138,52 @@ describe('fresh bootstrap', () => {
 
 describe('external segments (SEGMENT_REF)', () => {
   /**
-   * A response whose frames are the only authority: N rows pages, one row
-   * each, content-addressed so a misordered apply fails §5.1 verification.
+   * A response whose frames are the only authority: N pages, one row each
+   * (a rows segment or a §5.3 image), content-addressed so a misordered apply
+   * fails §5.1 verification.
    */
   async function pageResponse(
     ids: readonly string[],
-    mediaType: 'rows' | 'sqlite',
+    media: 'rows' | 'sqlite' | readonly ('rows' | 'sqlite')[],
   ): Promise<{
     response: Uint8Array;
-    pages: { segmentId: string; bytes: Uint8Array }[];
+    pages: { segmentId: string; bytes: Uint8Array; mediaType: string }[];
   }> {
+    const mediaOf = (index: number) =>
+      typeof media === 'string' ? media : media[index]!;
+    const image = (id: string) => {
+      const file = new Database(':memory:');
+      file.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, done INTEGER NOT NULL, priority INTEGER, meta TEXT, _syncular_version INTEGER NOT NULL); CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      file
+        .query("INSERT INTO tasks VALUES (?, 'p1', ?, 0, NULL, NULL, 1)")
+        .run(id, `row ${id}`);
+      file.exec(
+        "INSERT INTO _syncular_segment VALUES (1, 'tasks', 1, 1, 'digest', 1)",
+      );
+      const bytes = new Uint8Array(file.serialize());
+      file.close();
+      return bytes;
+    };
     const pages = await Promise.all(
-      ids.map(async (id) => {
-        const bytes = encodeRowsSegment({
-          table: 'tasks',
-          schemaVersion: 1,
-          columns: TASK_COLUMNS,
-          blocks: [
-            [
-              {
-                serverVersion: 1,
-                values: [id, 'p1', `row ${id}`, false, null, null],
-              },
-            ],
-          ],
-        });
+      ids.map(async (id, index) => {
+        const bytes =
+          mediaOf(index) === 'sqlite'
+            ? image(id)
+            : encodeRowsSegment({
+                table: 'tasks',
+                schemaVersion: 1,
+                columns: TASK_COLUMNS,
+                blocks: [
+                  [
+                    {
+                      serverVersion: 1,
+                      values: [id, 'p1', `row ${id}`, false, null, null],
+                    },
+                  ],
+                ],
+              });
         const digest = await crypto.subtle.digest(
           'SHA-256',
           bytes.slice().buffer as ArrayBuffer,
@@ -169,7 +191,11 @@ describe('external segments (SEGMENT_REF)', () => {
         const hex = [...new Uint8Array(digest)]
           .map((byte) => byte.toString(16).padStart(2, '0'))
           .join('');
-        return { segmentId: `sha256:${hex}`, bytes };
+        return {
+          segmentId: `sha256:${hex}`,
+          bytes,
+          mediaType: mediaOf(index),
+        };
       }),
     );
     return {
@@ -190,7 +216,7 @@ describe('external segments (SEGMENT_REF)', () => {
           ...pages.map((page) => ({
             type: 'SEGMENT_REF' as const,
             segmentId: page.segmentId,
-            mediaType,
+            mediaType: page.mediaType,
             table: 'tasks',
             byteLength: page.bytes.byteLength,
             rowCount: 1,
@@ -208,17 +234,17 @@ describe('external segments (SEGMENT_REF)', () => {
   /** One client whose segment downloads park on manual gates. */
   async function gatedClient(
     ids: readonly string[],
-    mediaType: 'rows' | 'sqlite' = 'rows',
+    media: 'rows' | 'sqlite' | readonly ('rows' | 'sqlite')[] = 'rows',
   ): Promise<{
     client: SyncClient;
-    pages: { segmentId: string; bytes: Uint8Array }[];
+    pages: { segmentId: string; bytes: Uint8Array; mediaType: string }[];
     started: string[];
     gates: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
     /** Settles once `count` downloads have started. */
     issued: (count: number) => Promise<void>;
   }> {
     const db = new BunClientDatabase();
-    const { response, pages } = await pageResponse(ids, mediaType);
+    const { response, pages } = await pageResponse(ids, media);
     const started: string[] = [];
     const gates = new Map<
       string,
@@ -322,6 +348,70 @@ describe('external segments (SEGMENT_REF)', () => {
       await expect(round).rejects.toThrow('dropped');
       expect(started).toHaveLength(2);
     } finally {
+      await client.close();
+    }
+  });
+
+  test('a rows body does not hold back the next image download (§5.3 client memory)', async () => {
+    const { client, pages, started, gates, issued } = await gatedClient(
+      ['a', 'b', 'c', 'd', 'e'],
+      ['sqlite', 'sqlite', 'rows', 'sqlite', 'sqlite'],
+    );
+    const ids = pages.map((page) => page.segmentId);
+    // The descriptor the apply loop reached, and at every download start the
+    // image bodies held: from that descriptor on, started and not applied.
+    let applying = -1;
+    const waiters: Array<() => void> = [];
+    const off = client.onProgress((progress) => {
+      if (progress.phase !== 'download' || progress.segmentId === undefined)
+        return;
+      applying = ids.indexOf(progress.segmentId);
+      for (const waiter of waiters.splice(0)) waiter();
+    });
+    const reached = (index: number) =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (applying >= index) resolve();
+          else waiters.push(check);
+        };
+        check();
+      });
+    const held: number[] = [];
+    const record = () =>
+      held.push(
+        started.filter(
+          (id) =>
+            ids.indexOf(id) >= Math.max(applying, 0) &&
+            pages[ids.indexOf(id)]!.mediaType === 'sqlite',
+        ).length,
+      );
+    try {
+      const round = client.sync();
+      await issued(3);
+      await drainMicrotasks();
+      record();
+      expect(started).toEqual(ids.slice(0, 3));
+      // Image 1 applies; while the loop holds image 2, image 4 starts.
+      gates.get(ids[0]!)!.resolve();
+      await reached(1);
+      await drainMicrotasks();
+      record();
+      expect(started).toEqual(ids.slice(0, 4));
+      // Image 2 applies; the rows segment leaves one image ahead, so image 5
+      // starts.
+      gates.get(ids[1]!)!.resolve();
+      await reached(2);
+      await drainMicrotasks();
+      record();
+      expect(started).toEqual(ids);
+      for (const id of ids.slice(2)) gates.get(id)!.resolve();
+      expect((await round).segmentRowsApplied).toBe(5);
+      expect(Math.max(...held)).toBe(2);
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual(
+        ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id })),
+      );
+    } finally {
+      off();
       await client.close();
     }
   });
