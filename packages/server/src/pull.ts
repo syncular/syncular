@@ -402,10 +402,10 @@ async function findImage(
 
 /**
  * §5.3: the reads of a position inside a table's image lane, after its first
- * range. A stored range image there that holds more than one rows page
- * answers the position, and no row is read. Otherwise the rows page probe
- * decides as at the start of the table: a stored image matches only while
- * more than one rows page remains.
+ * range, or at the start of a table counted past one rows page (§4.7). A
+ * stored range image there that holds more than one rows page answers the
+ * position, and no row is read. Otherwise the rows page probe decides: a
+ * stored image matches only while more than one rows page remains.
  */
 async function imageLanePosition(
   ctx: SyncRequestContext,
@@ -443,8 +443,8 @@ async function imageLanePosition(
 interface TableStart {
   /**
    * `limitSnapshotRows + 1` rows from the start cursor: the first page and
-   * the §5.3 image eligibility probe. Empty when `image.stored` answers a
-   * position inside the image lane unread.
+   * the §5.3 image eligibility probe. Empty when `image.stored` answers the
+   * position unread.
    */
   readonly firstPage: StoredRow[];
   /** On the sqlite lane: the §4.7 scope pin and a stored image under it. */
@@ -465,6 +465,7 @@ async function readTableStart(
   maxSeq: number,
   horizonSeq: number,
   logEpoch: string,
+  count: Promise<number> | undefined,
 ): Promise<TableStart> {
   const scan = () =>
     ctx.storage.scanRows(ctx.partition, {
@@ -485,7 +486,13 @@ async function readTableStart(
     scopes: unit.scopes,
   });
   const pinOf = (seq: number) => Math.min(maxSeq, Math.max(seq, horizonSeq));
-  if (startRowCursor !== null) {
+  // A fresh pin's §4.7 count of the pair shows a snapshot past one rows page
+  // before any row is read; the start of the table then reads as a later
+  // position on the image lane.
+  if (
+    startRowCursor !== null ||
+    (count !== undefined && (await count) > limits.limitSnapshotRows)
+  ) {
     const scopePin = pinOf(await latest);
     const { scanned, stored } = await imageLanePosition(
       ctx,
@@ -498,8 +505,9 @@ async function readTableStart(
     );
     return { firstPage: scanned, image: { scopePin, stored } };
   }
-  // At the start of a table only a snapshot past one rows page can match a
-  // stored image, so a table that stays on the rows lane costs no lookup.
+  // At the start of an uncounted table only a snapshot past one rows page
+  // can match a stored image, so a table that stays on the rows lane costs
+  // no lookup.
   const [firstPage, scopePin] = await Promise.all([scan(), latest.then(pinOf)]);
   const stored =
     firstPage.length > limits.limitSnapshotRows
@@ -881,6 +889,17 @@ export function planBootstrap(
   const tableIndex = resume?.tableIndex ?? 0;
   const rowCursor = resume?.rowCursor ?? null;
   const image = resume?.image === true;
+  // §4.7: a fresh pin counts every active pair once; a resume carries the
+  // token's counts, and a token minted without them stays without.
+  const counts =
+    resume === undefined
+      ? new Map(
+          [...unit.pairs].map(([table, scopeFilter]) => [
+            table,
+            ctx.storage.countScopedRows(ctx.partition, { table, scopeFilter }),
+          ]),
+        )
+      : undefined;
   const starts = new Map<number, Promise<TableStart>>();
   for (
     let index = tableIndex;
@@ -901,24 +920,19 @@ export function planBootstrap(
       maxSeq,
       Math.max(horizon.seq, horizon.tables.get(table.name) ?? -1),
       logEpoch,
+      counts?.get(table.name),
     );
     // A section that stops early never awaits the later starts.
     start.catch(() => undefined);
     starts.set(index, start);
   }
-  // §4.7: a fresh pin counts every active pair once; a resume carries the
-  // token's counts, and a token minted without them stays without.
   const extent =
-    resume === undefined
-      ? Promise.all(
-          [...unit.pairs].map(([table, scopeFilter]) =>
-            ctx.storage.countScopedRows(ctx.partition, { table, scopeFilter }),
-          ),
-        ).then((counts) => ({
-          rowsTotal: counts.reduce((sum, count) => sum + count, 0),
+    counts !== undefined
+      ? Promise.all(counts.values()).then((values) => ({
+          rowsTotal: values.reduce((sum, count) => sum + count, 0),
           rowsDone: 0,
         }))
-      : resume.rowsTotal !== undefined && resume.rowsDone !== undefined
+      : resume?.rowsTotal !== undefined && resume.rowsDone !== undefined
         ? Promise.resolve({
             rowsTotal: resume.rowsTotal,
             rowsDone: resume.rowsDone,

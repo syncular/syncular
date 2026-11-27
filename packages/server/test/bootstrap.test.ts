@@ -1440,11 +1440,10 @@ describe('range images (§5.3)', () => {
     ).toEqual(images.map((ref) => ref.segmentId));
   });
 
-  test('a client reusing stored range images reads rows only at the start of the table', async () => {
+  test('a client reusing stored range images reads only the rows tail after them', async () => {
     const t = await seededTable(100_000);
-    const images = (await bootstrap(t, 'client-1')).flatMap(
-      (pull) => pull.body,
-    );
+    const first = await bootstrap(t, 'client-1');
+    const images = first.flatMap((pull) => pull.body);
     const scans: (string | null | undefined)[] = [];
     const scanRows = t.storage.scanRows.bind(t.storage);
     t.storage.scanRows = async (partition, query) => {
@@ -1452,14 +1451,42 @@ describe('range images (§5.3)', () => {
       return scanRows(partition, query);
     };
     const again = await bootstrap(t, 'client-2');
-    expect(
-      again.flatMap((pull) => pull.body).map((ref) => ref.segmentId),
-    ).toEqual(images.map((ref) => ref.segmentId));
-    // The first range's eligibility probe and the rows tail after the last
-    // range; the later ranges, resumed pulls included, read no row.
-    expect(scans).toHaveLength(2);
-    expect(scans[0]).toBeNull();
+    expect(again.flatMap((pull) => pull.body)).toEqual(images);
+    expect(again.map((pull) => pull.inline)).toEqual(
+      first.map((pull) => pull.inline),
+    );
+    // The fresh pin's §4.7 count shows the table past one rows page, so the
+    // first range's stored image answers without an eligibility probe, like
+    // the later ranges; only the rows tail after the last range is read.
+    const tail = ids[images.reduce((sum, ref) => sum + ref.rowCount, 0) - 1];
+    expect(scans).toEqual([tail]);
     expect(images.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('a counted table within one rows page costs no reuse lookup', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit(
+        'c1',
+        ids.slice(0, 10).map((id) => upsert('tasks', id, taskRow(id, 'p1'))),
+      ),
+    ]);
+    let finds = 0;
+    const find = t.segments.find.bind(t.segments);
+    t.segments.find = async (key, nowMs) => {
+      finds += 1;
+      return find(key, nowMs);
+    };
+    const s = section(
+      await sync(
+        t,
+        pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 10 }),
+      ),
+      P1,
+    );
+    expect(refSegments(s.body)).toEqual([]);
+    expect(inlineSegments(s.body)).toHaveLength(1);
+    expect(finds).toBe(0);
   });
 
   test('a stored image past the bound is rebuilt as range images', async () => {

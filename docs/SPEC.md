@@ -3588,13 +3588,25 @@ segments already avoid the extra round-trip. A client that does not
 advertise bit 2 is served the rows lane (§5.2) by capability
 negotiation — rows segments remain mandatory-to-implement, so this is
 version-skew tolerance, not a second implementation path. At the start of
-a table the reference server reads the stored-image lookup only after its
-eligibility probe shows a snapshot past one rows page, because a smaller
-snapshot cannot match a stored image; a table that stays on the rows lane
-therefore costs no lookup. At a later position on the image lane it reads the
-lookup first: a stored image holding more than one rows page answers the
-position, and the server reads none of its rows; otherwise the probe decides
-as at the start of the table.
+a table on a fresh pin the reference server waits for the pair's extent
+count (§4.7); a count above one rows page lets it read the stored-image
+lookup first, as at a later position on the image lane. Otherwise, and where
+the bootstrap holds no count for the table (a resumed section that reaches
+it), the server reads the lookup only after its eligibility probe shows a
+snapshot past one rows page, because a smaller snapshot cannot match a
+stored image; a table that stays on the rows lane therefore costs no lookup.
+At a later position on the image lane it reads the lookup first: a stored
+image holding more than one rows page answers the position, and the server
+reads none of its rows; otherwise the probe decides.
+
+DECISION (2026-11-27): the extent count gates the lookup at the start of a
+table. The reference server read the eligibility probe
+(`limitSnapshotRows + 1` rows) at every table start and discarded it when a
+stored image answered. A production server on warm stored images spent 770
+to 1,739 ms handling a cold pull, and 4,861 ms of query time across its 39
+queries, most of it in those discarded reads. A fresh pin already counts every pair for `UNIT_EXTENT`, so the gate costs no
+statement; a table within one rows page reads its first page after the count
+instead of beside it, one storage round trip later.
 
 **Error codes.** No new codes: structural/metadata failures are
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,

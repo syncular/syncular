@@ -220,6 +220,14 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   });
   expect(published.rowCount).toBe(2);
   const findsBefore = segments.found();
+  // The fresh pin's §4.7 count shows two rows: the stored image answers the
+  // start of the table, and no row is read.
+  let scans = 0;
+  const scanRows = storage.scanRows.bind(storage);
+  storage.scanRows = async (partition, query) => {
+    scans += 1;
+    return scanRows(partition, query);
+  };
   const first = await sync(
     pullFrames([P1], { accept: 0b0111, limitSnapshotRows: 1 }),
     'client-3',
@@ -236,5 +244,6 @@ test('the §5.3 reuse lookup runs only for a snapshot past one rows page', async
   expect(second.frames.find((frame) => frame.type === 'SEGMENT_REF')).toEqual(
     ref,
   );
+  expect(scans).toBe(0);
   await db.close();
 });
