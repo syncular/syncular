@@ -3581,7 +3581,16 @@ mod tests {
                     if event["type"] == "change" && event["batch"]["outcomesChanged"] == true {
                         let _ = ack_tx.send(());
                     }
-                    if image_sent.load(Ordering::SeqCst) && event["type"] == "change" {
+                    // The batch that applies the delivered commit, not an
+                    // earlier status batch of the same round.
+                    if image_sent.load(Ordering::SeqCst)
+                        && event["type"] == "change"
+                        && event["batch"]["appliedCommits"]
+                            .as_array()
+                            .is_some_and(|commits| {
+                                commits.iter().any(|commit| commit["commitSeq"] == 3)
+                            })
+                    {
                         let _ = delivered_tx.send(());
                     }
                 },
