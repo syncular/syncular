@@ -11,6 +11,7 @@ import type { SyncProgress } from './progress';
  * this thin, multiplexed postMessage protocol. Exactly SIX message types
  * (`init`, `call`, `ready`, `result`, `error`, `event`) — every logical
  * API method multiplexes over `call`, every notification over `event`.
+ * A `call` message carries one call, or the `setWindow` calls of one page turn.
  *
  * Both sides derive their typing from ONE shared shape: `WorkerApi`.
  * The worker implements it (`worker-entry.ts`); the handle projects it
@@ -281,10 +282,9 @@ export type WorkerMethod = keyof WorkerApi;
 // Messages (6 types total)
 // ---------------------------------------------------------------------------
 
-/** `call` for method M, with args typed straight off `WorkerApi`. */
-export type WorkerCallMessage = {
+/** One call of method M, with args typed straight off `WorkerApi`. */
+export type WorkerCall = {
   [M in WorkerMethod]: {
-    readonly t: 'call';
     readonly id: number;
     readonly method: M;
     readonly args: Parameters<WorkerApi[M]>;
@@ -297,7 +297,7 @@ export type MainToWorkerMessage =
       readonly id: number;
       readonly config: WorkerInitConfig;
     }
-  | WorkerCallMessage;
+  | { readonly t: 'call'; readonly calls: readonly WorkerCall[] };
 
 export interface WorkerErrorShape {
   readonly details?: Readonly<Record<string, unknown>>;

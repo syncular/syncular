@@ -15,3 +15,11 @@ export const HOST_COALESCE_MS = 50;
  * `syncUntilIdle()` always sends a request.
  */
 export const HOST_DRIVE: unique symbol = Symbol('syncular.hostDrive');
+
+/**
+ * §4.8: keys the core method that runs `fn` in one transaction. Every apply
+ * batch inside keeps its savepoint and its revision and publishes its change
+ * batch after the COMMIT. The worker host runs the window edits of one page
+ * turn through it. The package entry does not export it.
+ */
+export const ONE_TRANSACTION: unique symbol = Symbol('syncular.oneTransaction');

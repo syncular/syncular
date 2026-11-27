@@ -1,3 +1,5 @@
+import type { MainToWorkerMessage } from '../../src/worker-protocol';
+
 const workerScope = globalThis as unknown as {
   addEventListener(
     type: 'message',
@@ -7,33 +9,31 @@ const workerScope = globalThis as unknown as {
 };
 
 workerScope.addEventListener('message', (event: MessageEvent) => {
-  const message = event.data as {
-    readonly t?: string;
-    readonly id?: number;
-    readonly config?: { readonly clientId?: string };
-    readonly method?: string;
-  };
+  const message = event.data as MainToWorkerMessage;
   if (message.t === 'init') {
     workerScope.postMessage({
       t: 'result',
       id: message.id,
-      value: { clientId: message.config?.clientId ?? crypto.randomUUID() },
+      value: { clientId: message.config.clientId ?? crypto.randomUUID() },
     });
     return;
   }
-  if (message.t !== 'call') return;
-  const value =
-    message.method === 'statusSnapshot'
-      ? {
-          currentSchemaVersion: 1,
-          outbox: 0,
-          upgrading: false,
-          syncNeeded: false,
-        }
-      : message.method === 'query'
-        ? []
-        : undefined;
-  workerScope.postMessage({ t: 'result', id: message.id, value });
+  for (const call of message.calls)
+    workerScope.postMessage({
+      t: 'result',
+      id: call.id,
+      value:
+        call.method === 'statusSnapshot'
+          ? {
+              currentSchemaVersion: 1,
+              outbox: 0,
+              upgrading: false,
+              syncNeeded: false,
+            }
+          : call.method === 'query'
+            ? []
+            : undefined,
+    });
 });
 
 workerScope.postMessage({ t: 'ready' });

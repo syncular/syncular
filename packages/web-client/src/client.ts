@@ -1,4 +1,4 @@
-import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
+import { HOST_COALESCE_MS, HOST_DRIVE, ONE_TRANSACTION } from './host-drive';
 import { BLOB_COMMIT_REFS } from './blob';
 import type {
   AuthorityReadPolicy,
@@ -3550,6 +3550,19 @@ export class SyncClient {
    */
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
     await this.setWindowCommand(base, units);
+  }
+
+  /** §4.8: see {@link ONE_TRANSACTION}. */
+  [ONE_TRANSACTION]<T>(fn: () => T): T {
+    const held: (() => void)[] = (this.#held = []);
+    let result: T;
+    try {
+      result = this.#observedTransaction(fn);
+    } finally {
+      this.#held = undefined;
+    }
+    for (const publish of held) publish();
+    return result;
   }
 
   /** Exact core command result consumed by automatic host loops (§7.5). */

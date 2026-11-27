@@ -1144,6 +1144,7 @@ export class ReactiveClientStore {
   readonly #queries = new ObservationCache();
   readonly #windows = new ObservationCache();
   readonly #windowClaims = new Map<string, WindowClaimGroup>();
+  readonly #windowTurn: WindowClaimGroup[] = [];
   #offChange: (() => void) | undefined;
   #offLeadership: (() => void) | undefined;
   #offScopes: (() => void) | undefined;
@@ -1392,30 +1393,52 @@ export class ReactiveClientStore {
     group.requested = true;
     if (group.scheduled || group.running) return;
     group.scheduled = true;
+    // §4.8: the groups of one turn read their window states together and then
+    // edit in one turn, so a worker core commits their widens together.
+    if (this.#windowTurn.push(group) > 1) return;
     scheduleMicrotask(() => {
-      group.scheduled = false;
-      void this.#flushWindow(group);
+      const groups = this.#windowTurn.splice(0);
+      const turn = Promise.allSettled(
+        groups.map(async (each) =>
+          each.unclaimed === undefined
+            ? this.client.windowState(each.base)
+            : undefined,
+        ),
+      );
+      for (const [index, each] of groups.entries()) {
+        each.scheduled = false;
+        void this.#flushWindow(
+          each,
+          turn.then((reads) => reads[index]!),
+        );
+      }
     });
   }
 
-  async #flushWindow(group: WindowClaimGroup): Promise<void> {
+  async #flushWindow(
+    group: WindowClaimGroup,
+    turn: Promise<PromiseSettledResult<WindowState | undefined>>,
+  ): Promise<void> {
     const baseKey = windowBaseKey(group.base);
     if (group.running || this.#windowClaims.get(baseKey) !== group) return;
     group.running = true;
     try {
+      // §7.8: a claim never releases a unit the core held before this
+      // group's first edit until a claim of this store has named it.
+      if (group.unclaimed === undefined) {
+        const read = await turn;
+        if (read.status === 'rejected') throw read.reason;
+        group.unclaimed = new Set(read.value!.units);
+      }
+      const unclaimed = group.unclaimed;
       while (group.requested) {
         group.requested = false;
-        // §7.8: a claim never releases a unit the core held before this
-        // group's first edit until a claim of this store has named it.
-        group.unclaimed ??= new Set(
-          (await this.client.windowState(group.base)).units,
-        );
         if (this.#windowClaims.get(baseKey) !== group) return;
         const claimed = new Set(
           [...group.claims.values()].flatMap((set) => [...set]),
         );
-        for (const unit of claimed) group.unclaimed.delete(unit);
-        const units = [...claimed, ...group.unclaimed].sort();
+        for (const unit of claimed) unclaimed.delete(unit);
+        const units = [...claimed, ...unclaimed].sort();
         const key = canonicalValue(units);
         if (key !== group.appliedKey) {
           group.inFlightUnits = new Set(units);

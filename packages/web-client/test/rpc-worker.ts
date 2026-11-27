@@ -56,6 +56,45 @@ startSyncWorker({
     }
     const options =
       config.database.mode === 'custom' ? config.database.options : undefined;
+    // A test that counts SQLite commits gets one 'commit' message per
+    // outermost transaction that committed; after a 'fail-commit' message the
+    // next outermost transaction rolls back with storage.full.
+    if (
+      typeof options === 'object' &&
+      options !== null &&
+      'countCommits' in options
+    )
+      return new (class extends BunClientDatabase {
+        #depth = 0;
+        #failNext = false;
+        constructor() {
+          super();
+          addEventListener('message', (event) => {
+            if ((event as MessageEvent).data.t === 'fail-commit')
+              this.#failNext = true;
+          });
+        }
+        override transaction<T>(fn: () => T): T {
+          this.#depth += 1;
+          try {
+            const result = super.transaction(() => {
+              const value = fn();
+              if (this.#depth === 1 && this.#failNext) {
+                this.#failNext = false;
+                throw new ClientSyncError(
+                  'storage.full',
+                  'simulated full disk',
+                );
+              }
+              return value;
+            });
+            if (this.#depth === 1) postMessage({ t: 'commit' });
+            return result;
+          } finally {
+            this.#depth -= 1;
+          }
+        }
+      })();
     // A test that needs a replica on disk passes its path.
     return new BunClientDatabase(
       typeof options === 'object' && options !== null && 'path' in options

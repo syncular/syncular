@@ -18,7 +18,7 @@ import type { compileLocalProjections } from './projection';
 import type { defineAuthorityReads } from './authority';
 import type { defineOutboxControl } from './outbox-control';
 import type { definePreviousVersionContext } from './previous-version-context';
-import { HOST_COALESCE_MS, HOST_DRIVE } from './host-drive';
+import { HOST_COALESCE_MS, HOST_DRIVE, ONE_TRANSACTION } from './host-drive';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import {
@@ -55,7 +55,7 @@ import {
   WORKER_METHOD_UNAVAILABLE_CODE,
   type WorkerApi,
   type SyncWorkerEvent,
-  type WorkerCallMessage,
+  type WorkerCall,
   type WorkerInitConfig,
   type WorkerInitResult,
   type WorkerMethod,
@@ -664,7 +664,7 @@ export function startSyncWorkerCore(
     'previousVersionDiscard',
   ]);
 
-  async function dispatch(message: WorkerCallMessage): Promise<unknown> {
+  async function dispatch(message: WorkerCall): Promise<unknown> {
     const method = api[message.method] as
       | ((...args: unknown[]) => unknown)
       | undefined;
@@ -701,19 +701,38 @@ export function startSyncWorkerCore(
       run(message.id, () => init(message.config));
       return;
     }
-    if (message.t === 'call') {
-      run(
-        message.id,
-        () => dispatch(message),
-        message.method === 'query'
-          ? (value) => queryTransferables(value as readonly unknown[])
-          : message.method === 'querySnapshot'
-            ? (value) =>
-                queryTransferables(
-                  (value as { readonly rows: readonly unknown[] }).rows,
-                )
-            : undefined,
-      );
+    if (message.t !== 'call') return;
+    // §4.8: several calls are the window edits of one page turn. Their
+    // widens commit in one transaction, each in its own savepoint. A
+    // transaction that fails to commit fails each call.
+    const batch = message.calls.length > 1 ? client : undefined;
+    let failure: { error: unknown } | undefined;
+    const dispatchAll = () => {
+      for (const call of message.calls)
+        run(
+          call.id,
+          batch === undefined
+            ? () => dispatch(call)
+            : async () => {
+                const value = await dispatch(call);
+                if (failure) throw failure.error;
+                return value;
+              },
+          call.method === 'query'
+            ? (value) => queryTransferables(value as readonly unknown[])
+            : call.method === 'querySnapshot'
+              ? (value) =>
+                  queryTransferables(
+                    (value as { readonly rows: readonly unknown[] }).rows,
+                  )
+              : undefined,
+        );
+    };
+    try {
+      if (batch === undefined) dispatchAll();
+      else batch[ONE_TRANSACTION](dispatchAll);
+    } catch (error) {
+      failure = { error };
     }
   });
 

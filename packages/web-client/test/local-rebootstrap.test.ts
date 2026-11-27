@@ -9,6 +9,7 @@ import {
   singleOwnerLock,
   decodeLocalDataRebootstrapResult,
   INVALID_HOST_RESPONSE_CODE,
+  type MainToWorkerMessage,
 } from '@syncular/client';
 import {
   decodeLocalDataRebootstrapReceipt,
@@ -59,25 +60,21 @@ function malformedResultWorker(value: unknown): Worker {
         listeners.add(listener as (event: MessageEvent) => void);
       }
     },
-    postMessage: (message: {
-      readonly t: string;
-      readonly id?: number;
-      readonly method?: string;
-    }) => {
+    postMessage: (message: MainToWorkerMessage) => {
       if (message.t === 'init') {
         queueMicrotask(() =>
           emit({ t: 'result', id: message.id, value: { clientId: 'host' } }),
         );
-      } else if (message.t === 'call') {
+        return;
+      }
+      for (const call of message.calls)
         queueMicrotask(() =>
           emit({
             t: 'result',
-            id: message.id,
-            value:
-              message.method === 'rebootstrapLocalData' ? value : undefined,
+            id: call.id,
+            value: call.method === 'rebootstrapLocalData' ? value : undefined,
           }),
         );
-      }
     },
     terminate: () => {},
   } as unknown as Worker;

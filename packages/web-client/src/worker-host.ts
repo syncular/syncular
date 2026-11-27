@@ -124,6 +124,7 @@ import type { WindowBase } from './window';
 import {
   type LocalAuthorityState,
   type MainToWorkerMessage,
+  type WorkerCall,
   NOT_LEADER_CODE,
   type SyncWorkerEvent,
   WORKER_FAILED_CODE,
@@ -1023,6 +1024,13 @@ async function startWorkerCore(options: {
   // releases its physical Web Lock; the next document waits for that lock.
   globalThis.addEventListener?.('pagehide', terminate);
 
+  // §4.8: the window edits of one turn leave in one message, and the worker
+  // commits their widens in one transaction. Any other call sends them first.
+  const windowEdits: WorkerCall[] = [];
+  const send = (calls: readonly WorkerCall[]) => {
+    if (calls.length > 0)
+      worker.postMessage({ t: 'call', calls } satisfies MainToWorkerMessage);
+  };
   const invoke = (
     method: string,
     args: readonly unknown[],
@@ -1031,12 +1039,12 @@ async function startWorkerCore(options: {
     const id = nextId.value++;
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({
-        t: 'call',
-        id,
-        method,
-        args,
-      } as MainToWorkerMessage);
+      const call = { id, method, args } as WorkerCall;
+      if (method !== 'setWindow') {
+        send(windowEdits.splice(0));
+        send([call]);
+      } else if (windowEdits.push(call) === 1)
+        queueMicrotask(() => send(windowEdits.splice(0)));
     });
   };
 

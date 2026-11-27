@@ -18,6 +18,7 @@ import {
   LOCAL_AUTHORITY_UNCONFIGURED_CODE,
   type LeaderLease,
   type LeaderLock,
+  type MainToWorkerMessage,
   NOT_LEADER_CODE,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   STORAGE_BUSY_CODE,
@@ -46,6 +47,7 @@ import {
   outcomeOf,
 } from './helpers';
 import { computeBlobId } from '../src/blob';
+import { ReactiveClientStore } from '../src/reactive-store';
 import { createSyncProfiler } from '../src/dev-profiler';
 import { HOST_DRIVE } from '../src/host-drive';
 import { type HttpTestServer, serveOverHttp } from './http-server';
@@ -101,32 +103,25 @@ function scriptedWorker(
         listeners.add(listener as (event: MessageEvent) => void);
       }
     },
-    postMessage: (message: {
-      readonly t: string;
-      readonly id?: number;
-      readonly method?: string;
-      readonly args?: readonly unknown[];
-    }) => {
+    postMessage: (message: MainToWorkerMessage) => {
       if (message.t === 'init') {
         queueMicrotask(() =>
           emit({ t: 'result', id: message.id, value: { clientId: 'host' } }),
         );
         return;
       }
-      if (message.t !== 'call') return;
-      void Promise.resolve(
-        answer(message.method ?? '', message.args ?? []),
-      ).then((reply) =>
-        emit(
-          reply.error !== undefined
-            ? { t: 'error', id: message.id, error: reply.error }
-            : {
-                t: 'result',
-                id: message.id,
-                value: reply.replied ? reply.value : undefined,
-              },
-        ),
-      );
+      for (const call of message.calls)
+        void Promise.resolve(answer(call.method, call.args)).then((reply) =>
+          emit(
+            reply.error !== undefined
+              ? { t: 'error', id: call.id, error: reply.error }
+              : {
+                  t: 'result',
+                  id: call.id,
+                  value: reply.replied ? reply.value : undefined,
+                },
+          ),
+        );
     },
     terminate: () => {},
   } as unknown as Worker;
@@ -521,6 +516,91 @@ test('worker re-registration of an active unit keeps its completeness', async ()
   ).toEqual([p1, p2, p1]);
   expect(await handle.subscribe({ project_id: 'p2' })).toBe(p2);
   expect(await handle.unit(p2)).toEqual(complete);
+});
+
+test('window claims of one turn commit in one worker transaction (§4.8)', async () => {
+  let commits = 0;
+  const { handle } = await makeHandle({
+    clientId: 'rpc-window-turn',
+    autoSync: false,
+    database: { mode: 'custom', options: { countCommits: true } },
+    worker: () => {
+      const worker = new Worker(WORKER_URL);
+      worker.addEventListener('message', (event) => {
+        if ((event.data as { t?: string }).t === 'commit') commits += 1;
+      });
+      return worker;
+    },
+  });
+  const store = new ReactiveClientStore(handle);
+  const bases = Array.from({ length: 11 }, (_, index) => ({
+    variable: 'projectId',
+    fixedScopes: { org_id: `o${index}` },
+  }));
+  const revision = await handle.localRevision();
+  const before = commits;
+  let changes = 0;
+  handle.onChange(() => {
+    changes += 1;
+  });
+  // A cold mount: every retained window claims in one turn, and one claim
+  // fails on its second value after its first was written.
+  const claims = bases.map((base, index) =>
+    store
+      .retainWindow(base, index === 5 ? ['p1', '*'] : ['p1', 'p2'])
+      .ready.then(
+        () => undefined,
+        (error: unknown) => error,
+      ),
+  );
+  const outcomes = await Promise.all(claims);
+  expect(commits - before).toBe(1);
+  // Each widen keeps its revision and change batch, as on the Rust core.
+  expect(await handle.localRevision()).toBe(revision + 10n);
+  expect(changes).toBe(10);
+  expect(outcomes[5]).toMatchObject({ code: 'sync.invalid_subscription' });
+  for (const [index, base] of bases.entries())
+    expect(await handle.windowState(base)).toEqual(
+      index === 5
+        ? { units: [], pending: [], revoked: [] }
+        : { units: ['p1', 'p2'], pending: ['p1', 'p2'], revoked: [] },
+    );
+});
+
+test('window edits of a batch that fails to commit all reject and register nothing (§4.8)', async () => {
+  let worker: Worker | undefined;
+  const { handle } = await makeHandle({
+    clientId: 'rpc-window-turn-failure',
+    autoSync: false,
+    database: { mode: 'custom', options: { countCommits: true } },
+    worker: () => (worker = new Worker(WORKER_URL)),
+  });
+  const first = { variable: 'projectId', fixedScopes: { org_id: 'o1' } };
+  const second = { variable: 'projectId', fixedScopes: { org_id: 'o2' } };
+  await handle.windowState(first);
+  worker!.postMessage({ t: 'fail-commit' });
+  const outcomes = await Promise.all(
+    [first, second].map((base) =>
+      handle.setWindow(base, ['p1']).then(
+        () => undefined,
+        (error: unknown) => error,
+      ),
+    ),
+  );
+  expect(outcomes).toMatchObject([
+    { code: 'storage.full' },
+    { code: 'storage.full' },
+  ]);
+  expect(await handle.windowState(first)).toEqual({
+    units: [],
+    pending: [],
+    revoked: [],
+  });
+  expect(await handle.windowState(second)).toEqual({
+    units: [],
+    pending: [],
+    revoked: [],
+  });
 });
 
 const projectTitles: AuthorityQuery = {
@@ -1617,9 +1697,13 @@ test('forged worker authority RPC arguments reach the core one-argument refusal'
     });
     worker.postMessage({
       t: 'call',
-      id: 987654,
-      method: 'authorityRead',
-      args: [[], { sql: 'SELECT title FROM tasks' }],
+      calls: [
+        {
+          id: 987654,
+          method: 'authorityRead',
+          args: [[], { sql: 'SELECT title FROM tasks' }],
+        },
+      ],
     });
     expect((await reply).code).toBe('client.authority_read_forbidden');
     expect(await handle.securityLifecycle()).toBe('preflight');

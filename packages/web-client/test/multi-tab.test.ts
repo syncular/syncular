@@ -26,6 +26,7 @@ import {
   type LeaderLock,
   type LeaderUnreachableEvent,
   type LeadershipState,
+  type MainToWorkerMessage,
   MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
@@ -224,23 +225,19 @@ function fakeReadyWorker(
         queueMicrotask(() => emit({ t: 'ready' }));
       }
     },
-    postMessage: (message: {
-      t: string;
-      id?: number;
-      method?: string;
-      config?: WorkerInitConfig;
-    }) => {
-      if (message.t === 'call' && message.method === held) return;
-      if (message.t === 'init' && message.config !== undefined) {
+    postMessage: (message: MainToWorkerMessage) => {
+      if (message.t === 'init') {
         initConfigs.push(message.config);
         queueMicrotask(() =>
           emit({ t: 'result', id: message.id, value: { clientId } }),
         );
-      } else if (message.t === 'call') {
-        queueMicrotask(() =>
-          emit({ t: 'result', id: message.id, value: undefined }),
-        );
+        return;
       }
+      for (const call of message.calls)
+        if (call.method !== held)
+          queueMicrotask(() =>
+            emit({ t: 'result', id: call.id, value: undefined }),
+          );
     },
     terminate: noop,
   } as unknown as Worker;
@@ -3372,9 +3369,9 @@ test('a follower disconnectRealtime in flight when the leader tab closes settles
     worker: () => {
       const worker = fakeReadyWorker('replay-follower', []);
       const post = worker.postMessage.bind(worker);
-      worker.postMessage = (message: { t: string; method?: string }) => {
-        if (message.t === 'call' && message.method !== undefined)
-          workerMethods.push(message.method);
+      worker.postMessage = (message: MainToWorkerMessage) => {
+        if (message.t === 'call')
+          workerMethods.push(...message.calls.map((call) => call.method));
         post(message);
       };
       return worker;
