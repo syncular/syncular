@@ -1,5 +1,32 @@
 # Syncular release notes
 
+## 0.109.4 release notes
+
+At the start of a table, the server read its first rows page
+(`limitSnapshotRows + 1` rows, the §5.3 eligibility probe) before it looked
+up a stored image, and discarded those rows when the image answered
+(SYNCULAR-TABLE-START-IMAGE-SCAN-001). A production server on warm stored
+images spent 770 to 1,739 ms handling a cold pull. A fresh bootstrap already
+counts each table's rows for `UNIT_EXTENT`; a table counted past one rows
+page now looks up the stored image first and reads none of its rows when the
+image holds more than one rows page. A table counted within one rows page
+costs no lookup, as before, and reads its first page after the count instead
+of beside it. A resumed section that reaches a new table holds no per-table
+count and keeps the probe-first order. Frames are unchanged, and no
+statement is added: on PGlite a cold pull of a published 3,000-row image runs
+11 statements instead of 12. The selectivity probe and the count's own
+statements stay, so a pull whose time goes to the count gains less. Tests:
+`packages/server/test/bootstrap.test.ts` (a client reusing stored range
+images reads only the rows tail after them), which counts 2 row scans on
+0.109.3 and 1 (the tail) now, and `packages/server/test/image-publishing.test.ts`
+(the §5.3 reuse lookup runs only for a snapshot past one rows page), where
+two cold pulls of a published image read no rows on PostgreSQL. The Rust
+authority serves inline rows only and has no image lane.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do.
+
 ## 0.109.3 release notes
 
 **The Rust client rebuilds only the overlay that intent names
