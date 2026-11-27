@@ -8818,9 +8818,9 @@ like an exhausted round budget: it resolves with `budgetExhausted: true` and
 the aggregate report, records no failed round, leaves progress at the state of
 its last completed round, and schedules no further rounds. Each round is also
 bounded by `timeoutMs` on its own. The bound runs from the round's start and
-restarts whenever the round applies segment rows or receives response bytes
-(the transports that report them are named below), so it measures time without
-progress: a round that keeps importing, or whose server keeps writing
+restarts whenever the round applies segment rows or receives response or
+segment bytes (the transports that report them are named below), so it measures
+time without progress: a round that keeps importing, or whose server keeps writing
 `KEEPALIVE` frames (§1.6), is never cut, and a round that waits `timeoutMs` on
 its transport with nothing received and no rows applied reaches it. A round that
 reaches the bound fails with the client-local, retryable `sync.idle_timeout`
@@ -8836,7 +8836,9 @@ The TypeScript client hands every transport call of a round one abort signal
 `BlobTransport` upload calls); the round bound aborts it and a socket round,
 and the aborted round fails with `sync.idle_timeout`. It restarts the bound
 after each image statement (at most 1,024 rows) and every 1,024 rows of a rows
-segment, and on every `0x01` chunk of a socket round's response. Its
+segment, on every `0x01` chunk of a socket round's response, and whenever a
+segment download reports received bytes (the `onProgress` of a
+`SegmentDownloader` request or of its `fetchUrl`). Its
 `SyncTransport` delivers a response body whole, so an HTTP round restarts the
 bound only on applied rows. A transport that ignores
 the signal keeps its round outstanding until it answers. The Rust client
@@ -8856,6 +8858,12 @@ drives rounds itself sets the bound with `PreparedSyncRound::set_idle_deadline`;
 a custom `Transport` that does not implement `set_idle_bound` ignores it, as
 with `set_round_deadline`. Every host loop, the Tauri plugin's owner thread
 included, drives with the 60 s default.
+
+DECISION (2026-11-27): received segment bytes restart the TypeScript round
+bound, as every socket read does in the Rust client. A browser on a link of
+about 270 KB/s downloading a 27 to 36 MB catalogue image received 16.4 MB in
+60 s and was cut at 60,012 ms with `sync.idle_timeout`, discarding the bytes
+and starting the download again on the next round.
 
 DECISION (2026-11-19): a received `KEEPALIVE` restarts the round bound, and the
 default stays 60 s with no host setting. A server whose build hangs keeps the

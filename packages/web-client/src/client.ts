@@ -6947,6 +6947,11 @@ export class SyncClient {
       );
     }
     let bytes: Uint8Array;
+    // §7.8: received segment bytes are progress of the round.
+    const received = (bytesReceived: number) => {
+      this.#roundProgressed?.();
+      onProgress(bytesReceived);
+    };
     // §7.7: from the request's start to its last body byte.
     const started = performance.now();
     if (frame.url !== undefined) {
@@ -6965,7 +6970,7 @@ export class SyncClient {
         frame.urlExpiresAtMs,
         `segment download grant expired; pull again (§5.4)`,
       );
-      bytes = await fetchUrl(frame.url, onProgress, signal, frame.byteLength);
+      bytes = await fetchUrl(frame.url, received, signal, frame.byteLength);
     } else {
       bytes = await downloader({
         segmentId: frame.segmentId,
@@ -6980,7 +6985,7 @@ export class SyncClient {
           ),
         ),
         byteLength: frame.byteLength,
-        onProgress,
+        onProgress: received,
         context: this.#transportContext,
         ...definedObject({ signal }),
       });

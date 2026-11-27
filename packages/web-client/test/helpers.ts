@@ -357,6 +357,8 @@ export interface MakeClientOptions {
   readonly realtime?: RealtimeConnector;
   /** Replace the loopback round transport (faults and counters bypassed). */
   readonly transport?: SyncTransport;
+  /** Replace the loopback segment downloader (faults and counters bypassed). */
+  readonly segments?: SyncClientConfig['segments'];
   /** The client's timer seam; defaults to `setTimeout`. */
   readonly schedule?: SyncClientConfig['schedule'];
   /** SPEC §8.8 realtime policy; absent ⇒ `optional`. */
@@ -486,38 +488,40 @@ export async function makeClient(
         }
         return response;
       }),
-    segments: async (request: SegmentFetchRequest) => {
-      downloads.push(request.segmentId);
-      if (faults.stallSegmentDownloadOnce) {
-        faults.stallSegmentDownloadOnce = false;
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'segment download timed out',
-          true,
-          { causeKind: 'timeout' },
-        );
-      }
-      const result = await handleSegmentDownload(server.ctxFor(actorId), {
-        segmentId: request.segmentId,
-        scopesHeader: request.requestedScopesJson,
-      });
-      segmentCalls += 1;
-      if (faults.corruptSegmentDownload === segmentCalls) {
-        faults.corruptSegmentDownload = 0;
-        segmentCalls = 0;
-        const corrupted = result.bytes.slice();
-        corrupted[corrupted.length - 1] =
-          (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
-        return corrupted;
-      }
-      if (faults.extendSegmentDownloadOnce) {
-        faults.extendSegmentDownloadOnce = false;
-        const extended = new Uint8Array(result.bytes.length + 1);
-        extended.set(result.bytes);
-        return extended;
-      }
-      return result.bytes;
-    },
+    segments:
+      options.segments ??
+      (async (request: SegmentFetchRequest) => {
+        downloads.push(request.segmentId);
+        if (faults.stallSegmentDownloadOnce) {
+          faults.stallSegmentDownloadOnce = false;
+          throw new ClientSyncError(
+            'sync.transport_failed',
+            'segment download timed out',
+            true,
+            { causeKind: 'timeout' },
+          );
+        }
+        const result = await handleSegmentDownload(server.ctxFor(actorId), {
+          segmentId: request.segmentId,
+          scopesHeader: request.requestedScopesJson,
+        });
+        segmentCalls += 1;
+        if (faults.corruptSegmentDownload === segmentCalls) {
+          faults.corruptSegmentDownload = 0;
+          segmentCalls = 0;
+          const corrupted = result.bytes.slice();
+          corrupted[corrupted.length - 1] =
+            (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+          return corrupted;
+        }
+        if (faults.extendSegmentDownloadOnce) {
+          faults.extendSegmentDownloadOnce = false;
+          const extended = new Uint8Array(result.bytes.length + 1);
+          extended.set(result.bytes);
+          return extended;
+        }
+        return result.bytes;
+      }),
     realtime:
       options.realtime ??
       (async (handlers) => {

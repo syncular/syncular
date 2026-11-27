@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-27',
+    title: 'Segment bytes keep a web round alive',
+    body: 'The web client’s round bound in `syncUntilIdle` restarted on applied rows and socket chunks, and not on the bytes of a segment download. A browser on a link of about 270 KB/s downloading a 27 to 36 MB catalogue image received 16.4 MB and was cut at 60 s with `sync.idle_timeout`, then downloaded the image again from the start. Every `onProgress` report of a segment download now restarts the bound; a download that receives nothing for `timeoutMs` still fails the round.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#running-rounds-until-idle',
+        label: 'Running rounds until idle',
+      },
+    ],
+  },
+  {
+    date: '2026-11-27',
     title:
       'A stored image answers the start of a counted table without row reads',
     body: 'A fresh bootstrap counts each table’s rows for its extent. At the start of a table counted past one rows page, the server now looks up the stored range image first, as it does from the second range on, and reads none of the table’s rows when that image holds more than one rows page. It used to read 1,001 rows at every table start and discard them on a hit. A table counted within one rows page still costs no store lookup and now reads its first page after the count.',

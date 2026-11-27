@@ -9,7 +9,11 @@ import {
   type RealtimeHandlers,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { handleSyncRequest, type SqliteValue } from '@syncular/server';
+import {
+  handleSegmentDownload,
+  handleSyncRequest,
+  type SqliteValue,
+} from '@syncular/server';
 import {
   makeClient,
   makeServer,
@@ -164,6 +168,83 @@ test('a round that keeps applying rows is not cut: each applied chunk restarts i
   expect(drive.segmentRowsApplied).toBe(3000);
   expect(tableRows(local.db, 'tasks')).toHaveLength(3000);
   expect(timers.size).toBe(0);
+  await local.client.close();
+  local.db.close();
+});
+
+/**
+ * §7.8: a round whose 300-row image arrives in four chunks, each 600 ms
+ * after the last on the client clock, under a 1,000 ms bound. With `stall`
+ * the download goes silent after its first chunk.
+ */
+async function streamedSegmentRound(stall: boolean) {
+  const server = makeServer();
+  const seeder = await makeClient(server, { clientId: 'stream-seeder' });
+  seeder.client.mutate(
+    Array.from({ length: 300 }, (_, i) => ({
+      table: 'tasks',
+      op: 'upsert' as const,
+      values: taskValues(`t${String(i).padStart(3, '0')}`, 'p1', 'row'),
+    })),
+  );
+  await seeder.client.sync();
+  let now = 0;
+  const timers = new Set<{ readonly due: number; readonly fire: () => void }>();
+  const advance = (ms: number) => {
+    now += ms;
+    for (const timer of [...timers])
+      if (timer.due <= now) {
+        timers.delete(timer);
+        timer.fire();
+      }
+  };
+  const local = await makeClient(server, {
+    clientId: 'stream-download',
+    realtimePolicy: 'off',
+    limits: { limitSnapshotRows: 100, accept: 0b0111 },
+    schedule: (fire, delayMs) => {
+      const timer = { due: now + delayMs, fire };
+      timers.add(timer);
+      return () => timers.delete(timer);
+    },
+    segments: async (request) => {
+      const { bytes } = await handleSegmentDownload(server.ctxFor('actor-1'), {
+        segmentId: request.segmentId,
+        scopesHeader: request.requestedScopesJson,
+      });
+      for (let chunk = 1; chunk <= 4; chunk++) {
+        advance(600);
+        request.onProgress?.(Math.floor((bytes.length * chunk) / 4));
+        if (stall) {
+          advance(1000);
+          return new Promise<Uint8Array>((_, reject) =>
+            request.signal?.addEventListener('abort', () =>
+              reject(request.signal?.reason),
+            ),
+          );
+        }
+      }
+      return bytes;
+    },
+  });
+  local.client.subscribe({ project_id: 'p1' });
+  return { local, drive: local.client.syncUntilIdle({ timeoutMs: 1000 }) };
+}
+
+test('received segment bytes restart the round bound', async () => {
+  const { local, drive } = await streamedSegmentRound(false);
+  await expect(drive).resolves.toMatchObject({ segmentRowsApplied: 300 });
+  expect(tableRows(local.db, 'tasks')).toHaveLength(300);
+  await local.client.close();
+  local.db.close();
+});
+
+test('a segment download silent for the bound fails with sync.idle_timeout', async () => {
+  const { local, drive } = await streamedSegmentRound(true);
+  await expect(drive).rejects.toMatchObject({
+    code: 'sync.idle_timeout',
+    details: { timeoutMs: 1000, rounds: 0 },
+  });
   await local.client.close();
   local.db.close();
 });
