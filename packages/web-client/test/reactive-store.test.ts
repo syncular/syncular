@@ -2772,6 +2772,66 @@ describe('security preflight gate (SPEC §5.11)', () => {
     expect(store.conflicts.getSnapshot().error).toBe(failure);
     store.dispose();
   });
+
+  test('a claim whose window state read the gate refused reads once and again on activation', async () => {
+    let reads = 0;
+    let refuse = true;
+    const client = new (class extends FakeReactiveClient {
+      override windowState(): WindowState {
+        reads += 1;
+        if (refuse)
+          throw new ClientSyncError(
+            'client.security_preflight_required',
+            'protected reads require activateSecurity',
+          );
+        return super.windowState();
+      }
+    })();
+    client.currentStatus = { ...STATUS, securityLifecycle: 'preflight' };
+    const store = new ReactiveClientStore(client);
+    store.start();
+    let settled = false;
+    void store.retainWindow(BASE, ['p1']).ready.then(() => (settled = true));
+    await drainMicrotasks(48);
+    expect(reads).toBe(1);
+    expect(settled).toBe(false);
+
+    refuse = false;
+    client.currentStatus = STATUS;
+    client.emit(batch(1n, { status: STATUS }));
+    await drainMicrotasks(48);
+    expect(reads).toBe(2);
+    expect(settled).toBe(true);
+    expect(client.setWindowCalls).toEqual([{ base: BASE, units: ['p1'] }]);
+    store.dispose();
+  });
+
+  test('a claim whose window state read failed rejects once and the next claim reads again', async () => {
+    let reads = 0;
+    const failure = new ClientSyncError('sync.local_corrupt', 'corrupt');
+    const client = new (class extends FakeReactiveClient {
+      override windowState(): WindowState {
+        reads += 1;
+        if (reads === 1) throw failure;
+        return super.windowState();
+      }
+    })();
+    const store = new ReactiveClientStore(client);
+    let error: unknown;
+    void store.retainWindow(BASE, ['p1']).ready.catch((cause) => {
+      error = cause;
+    });
+    await drainMicrotasks(48);
+    expect(reads).toBe(1);
+    expect(error).toBe(failure);
+
+    await store.retainWindow(BASE, ['p2']).ready;
+    expect(reads).toBe(2);
+    expect(client.setWindowCalls).toEqual([
+      { base: BASE, units: ['p1', 'p2'] },
+    ]);
+    store.dispose();
+  });
 });
 
 describe('schema bump availability (SPEC §7.4.5)', () => {

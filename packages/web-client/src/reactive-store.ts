@@ -1423,22 +1423,21 @@ export class ReactiveClientStore {
     if (group.running || this.#windowClaims.get(baseKey) !== group) return;
     group.running = true;
     try {
-      // §7.8: a claim never releases a unit the core held before this
-      // group's first edit until a claim of this store has named it.
-      if (group.unclaimed === undefined) {
-        const read = await turn;
-        if (read.status === 'rejected') throw read.reason;
-        group.unclaimed = new Set(read.value!.units);
-      }
-      const unclaimed = group.unclaimed;
       while (group.requested) {
         group.requested = false;
+        // §7.8: a claim never releases a unit the core held before this
+        // group's first edit until a claim of this store has named it.
+        if (group.unclaimed === undefined) {
+          const read = await turn;
+          if (read.status === 'rejected') throw read.reason;
+          group.unclaimed = new Set(read.value!.units);
+        }
         if (this.#windowClaims.get(baseKey) !== group) return;
         const claimed = new Set(
           [...group.claims.values()].flatMap((set) => [...set]),
         );
-        for (const unit of claimed) unclaimed.delete(unit);
-        const units = [...claimed, ...unclaimed].sort();
+        for (const unit of claimed) group.unclaimed.delete(unit);
+        const units = [...claimed, ...group.unclaimed].sort();
         const key = canonicalValue(units);
         if (key !== group.appliedKey) {
           group.inFlightUnits = new Set(units);
