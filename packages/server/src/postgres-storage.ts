@@ -1268,6 +1268,10 @@ class PostgresTransaction implements StorageTransaction {
   #nextCommitSeq: number | undefined;
   /** The `commitSeq` the open push commit appended, until it closes. */
   #openCommitSeq: number | undefined;
+  /** Set by `pinSnapshot`: the snapshot holds one cursor. */
+  #pinned = false;
+  /** The pinned snapshot's cursor read, shared by every registered query. */
+  #snapshotCursor: Promise<unknown> | undefined;
   /**
    * The open commit's upserts staged per table name (row id → row and its
    * push operation index), its §5.9.4 reference sets, and its commit append.
@@ -1741,15 +1745,17 @@ class PostgresTransaction implements StorageTransaction {
     if (this.#nextCommitSeq !== undefined) {
       return { rows: result.rows, maxCommitSeq: this.#nextCommitSeq - 1 };
     }
-    const cursor = await this.#client.query<{ max_commit_seq: unknown }>(
-      'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
-      [this.#partition],
-    );
+    // A pinned snapshot reads its cursor once for all its registered queries.
+    const read = () =>
+      this.#client
+        .query<{ max_commit_seq: unknown }>(
+          'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
+          [this.#partition],
+        )
+        .then(({ rows }) => rows[0]?.max_commit_seq);
+    const cursor = this.#pinned ? (this.#snapshotCursor ??= read()) : read();
     // asNumber maps the absent row of a partition without a commit to 0.
-    return {
-      rows: result.rows,
-      maxCommitSeq: asNumber(cursor.rows[0]?.max_commit_seq),
-    };
+    return { rows: result.rows, maxCommitSeq: asNumber(await cursor) };
   }
 
   async preparePushApply(
@@ -1819,6 +1825,7 @@ class PostgresTransaction implements StorageTransaction {
     await this.#client.query(
       'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
     );
+    this.#pinned = true;
   }
 
   async advanceCheckpoint(

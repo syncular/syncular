@@ -32,6 +32,7 @@ import {
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
+  prepareReadTransaction,
   type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
@@ -1075,6 +1076,68 @@ describe('statements under the partition lock (SYNCULAR-PUSH-LOCK-STATEMENTS-001
     // Per commit: the savepoint, the row write and the query; the first
     // commit's append and result precede the second commit's savepoint.
     expect(statements).toHaveLength(2 + 3 + 1 + 3 + 1);
+  });
+
+  test('a pinned read snapshot reads the cursor once for all its registered queries (SYNCULAR-SNAPSHOT-MAX-COMMIT-SEQ-001)', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const storage = new PostgresServerStorage(counting.executor);
+    const cursorReads = () =>
+      counting.transactions
+        .flat()
+        .filter((text) =>
+          /^SELECT max_commit_seq FROM sync_partitions WHERE partition=\$1$/.test(
+            text,
+          ),
+        ).length;
+    try {
+      const ctx = await context(storage);
+      await sync(ctx, [
+        pushCommit('seed', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      ]);
+      const committed = await storage.getMaxCommitSeq('part-1');
+      expect(committed).toBe(1);
+
+      counting.transactions.length = 0;
+      const snapshot = await storage.begin('part-1');
+      try {
+        await prepareReadTransaction(snapshot, TEST_SCHEMA.version);
+        const concurrent = await Promise.all([
+          snapshot.queryAuthoritative!(tasksInProject),
+          snapshot.queryAuthoritative!(tasksInProject),
+          snapshot.queryAuthoritative!(docsInProject),
+        ]);
+        const later = await snapshot.queryAuthoritative!(tasksInProject);
+        expect(
+          [...concurrent, later].map(({ rows, maxCommitSeq }) => [
+            rows.map((row) => String(row.id)),
+            maxCommitSeq,
+          ]),
+        ).toEqual([
+          [['t1'], committed],
+          [['t1'], committed],
+          [[], committed],
+          [['t1'], committed],
+        ]);
+        expect(cursorReads()).toBe(1);
+      } finally {
+        await snapshot.rollback();
+      }
+
+      // Unpinned, each statement reads committed state of its own start, so
+      // every query reads the cursor beside its rows.
+      counting.transactions.length = 0;
+      const unpinned = await storage.begin('part-1');
+      try {
+        await unpinned.queryAuthoritative!(tasksInProject);
+        await unpinned.queryAuthoritative!(tasksInProject);
+        expect(cursorReads()).toBe(2);
+      } finally {
+        await unpinned.rollback();
+      }
+    } finally {
+      await db.close();
+    }
   });
 
   test('a registered query over a table the commit did not write runs before its write', async () => {
