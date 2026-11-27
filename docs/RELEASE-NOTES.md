@@ -1,5 +1,50 @@
 # Syncular release notes
 
+## 0.109.3 release notes
+
+**The Rust client rebuilds only the overlay that intent names
+(SYNCULAR-SCHEMA-RESET-OVERLAY-001).** At a schema bump, and at a
+same-version open with one pending, retained or acknowledged write, the Rust
+client rebuilt the optimistic overlay of every table: it deleted each visible
+table, copied it back from `_syncular_base_*` and refilled every FTS5
+projection, inside `SyncClient::open_path`. On a 420 MiB replica with 67,372
+catalogue codes, 67,372 FTS rows and 87,267 relation edges, a bump that kept
+140 of 142 tables took 2,188 ms and a reopen with one pending write on one
+table took 2,426 ms, against 48 ms for a plain reopen. The open and the reset
+now rebuild exactly the tables that the outbox, retained failed commits and
+acknowledged rows name. A kept table without such writes already shows its
+base rows, and a table the reset recreated is empty in both halves, so
+neither is copied and no FTS projection of them is refilled. A pending commit
+the open or the send-time prepass drops rebuilds the tables it touched
+instead of the whole replica. SPEC §7.1 states the rule. Test:
+`rust/crates/client/src/client/units_tests.rs` (an open rebuilds the overlay
+of the tables intent names only), which fails on 0.109.2: a reopen with one
+pending `notes` write copies `tasks` and `notes`. The TypeScript client
+already replayed only the tables with intent.
+
+**Restricted units prove coverage of their kept tables
+(SYNCULAR-RESTRICT-COVERAGE-001).** A unit that covers a changed and an
+unchanged table takes a restriction at a bump and bootstraps only the changed
+table, keeping its other rows complete through its kept cursor. Both client
+cores reported its window coverage `pending` for every table until the
+restricted bootstrap finished, so a query over a kept table, such as an app's
+workspace gate, waited for a sync round that downloaded nothing, and could not
+complete offline after an app update. Coverage now counts an active unit with
+a persisted echo as complete for a table its restriction excludes; tables in
+the restriction stay `pending` until their bootstrap completes. SPEC §7.5
+carries the rule and a DECISION note, and §7.4.3 links it. Tests: the
+conformance scenario `schema-bump/restricted-unit-bootstraps-changed-tables-only`
+now reads coverage right after the bump on every pairing (red on 0.109.2), and
+`units_tests.rs` (a restricted unit owns and completes the tables outside its
+restriction).
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. After the upgrade, a query over a table that a
+bump kept reads `complete` before the first sync round when its unit holds a
+restriction; an app that waited for `upgrading` to clear before reading kept
+tables can drop that wait.
+
 ## 0.109.2 release notes
 
 A PostgreSQL transaction pinned by `prepareReadTransaction` read
