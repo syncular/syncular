@@ -1,5 +1,29 @@
 # Syncular release notes
 
+## 0.109.2 release notes
+
+A PostgreSQL transaction pinned by `prepareReadTransaction` read
+`max_commit_seq` from `sync_partitions` again for every
+`tx.queryAuthoritative`, although its `REPEATABLE READ READ ONLY` snapshot
+holds one value (SYNCULAR-SNAPSHOT-MAX-COMMIT-SEQ-001). A maintenance job that
+ran 7 registered queries in one pinned transaction sent 7 identical cursor
+reads over the connection. The pinned transaction now reads the cursor once,
+with its first registered query, and concurrent queries share that read. An
+unpinned transaction reads committed state per statement and still reads the
+cursor beside each query; a transaction that holds the partition lock still
+reads none. SQLite reads the cursor in process, and D1 sends it in the
+query's own batch, so both are unchanged. Test:
+`packages/server/test/push-round-trips.test.ts` (a pinned read snapshot reads
+the cursor once for all its registered queries), which counts 4 cursor reads
+for 4 queries on 0.109.1 and 1 on 0.109.2.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do. A host that pins its read transaction by sending
+`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY` on the connection
+itself gets one cursor read per query; call `prepareReadTransaction(tx,
+schema.version)` or `tx.pinSnapshot()` instead.
+
 ## 0.109.1 release notes
 
 In 0.109.0 a window claim whose first `windowState` read rejected scheduled
