@@ -1,5 +1,28 @@
 # Syncular release notes
 
+## 0.109.1 release notes
+
+In 0.109.0 a window claim whose first `windowState` read rejected scheduled
+itself again in the same turn, without end (SYNCULAR-WINDOW-FLUSH-SPIN-001).
+The read of the units the core held before the group's first edit had moved
+ahead of the loop that clears the group's pending request, so the request
+survived the rejection and the group ran again at once. A worker handle
+refuses `windowState` with `client.security_preflight_required` until
+`activateSecurity()`, so an app that claimed a window during the security
+preflight kept a browser tab above 100 percent CPU, read the window state on
+every microtask and added one activation callback per pass. The client now
+clears the request before that read. A refused read waits for activation and
+runs once more then; another failure rejects the claim's `ready` once, and the
+next claim reads again. Window claims of one page task still commit together.
+Tests: `packages/web-client/test/reactive-store.test.ts` (a claim whose window
+state read the gate refused reads once and again on activation; a claim whose
+window state read failed rejects once and the next claim reads again), which
+hang on 0.109.0.
+
+No public Rust item changes.
+
+**Upgrading.** Nothing to do.
+
 ## 0.109.0 release notes
 
 ### Bootstrap extent counts follow the narrowest variable
